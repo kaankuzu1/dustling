@@ -17,7 +17,7 @@ public struct TrashInspector: Sendable {
         self.sizer = sizer
     }
 
-    private enum Failure { case denied, other(String) }
+    private enum Failure { case denied, symlink, other(String) }
 
     private enum Discovered {
         case location(URL)
@@ -36,6 +36,7 @@ public struct TrashInspector: Sendable {
             case .failure(let url, _):
                 total.unreadable.append(url)
             case .location(let location):
+                if verified(location) != nil { total.unreadable.append(location); continue }
                 switch Self.list(location) {
                 case .failure:
                     total.unreadable.append(location)
@@ -63,6 +64,10 @@ public struct TrashInspector: Sendable {
             case .failure(let url, let failure):
                 entries.append(Self.failureEntry(url, failure))
             case .location(let location):
+                if let failure = verified(location) {
+                    entries.append(Self.failureEntry(location, failure))
+                    continue
+                }
                 switch Self.list(location) {
                 case .failure(let failure):
                     entries.append(Self.failureEntry(location, failure))
@@ -108,7 +113,7 @@ public struct TrashInspector: Sendable {
 
     private func discover() -> [Discovered] {
         var found: [Discovered] = []
-        probe(environment.userTrash, into: &found)
+        check([environment.userTrash], reporting: environment.userTrash, into: &found)
 
         let volumes = environment.volumesDirectory
         switch Self.list(volumes) {
@@ -116,26 +121,59 @@ public struct TrashInspector: Sendable {
             found.append(.failure(volumes, failure))
         case .success(let entries):
             for volume in entries.sorted(by: { $0.path < $1.path }) {
-                // A symlink here (e.g. "Macintosh HD" -> /) would double count the boot volume.
-                if (try? volume.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true { continue }
-                let trash = volume.appending(path: ".Trashes/\(environment.userID)", directoryHint: .isDirectory)
-                probe(trash, into: &found)
+                // A symlinked volume (e.g. "Macintosh HD" -> /) is an alias, not a trash.
+                switch Self.lstatKind(volume) {
+                case .symlink, .missing: continue
+                case .denied, .other: continue   // not a volume we can inspect; its Trash is unreachable
+                case .directory, .nonDirectory: break
+                }
+                let trashes = volume.appending(path: ".Trashes", directoryHint: .isDirectory)
+                let trash = trashes.appending(path: "\(environment.userID)", directoryHint: .isDirectory)
+                check([trashes, trash], reporting: trash, into: &found)
             }
         }
         return found
     }
 
-    /// Existing locations count; a missing one is simply not a location.
-    private func probe(_ url: URL, into found: inout [Discovered]) {
-        var st = stat()
-        if stat(url.path, &st) == 0 {
-            found.append(.location(url))
-            return
+    /// Re-verifies a location right before it is listed or deleted from.
+    private func verified(_ location: URL) -> Failure? {
+        var found: [Discovered] = []
+        let trashes = location.deletingLastPathComponent()
+        let isVolumeTrash = trashes.lastPathComponent == ".Trashes"
+        check(isVolumeTrash ? [trashes, location] : [location], reporting: location, into: &found)
+        if case .failure(_, let failure)? = found.first { return failure }
+        return nil
+    }
+
+    /// Every component must be a real directory, never a symlink. A missing one means no location.
+    private func check(_ components: [URL], reporting location: URL, into found: inout [Discovered]) {
+        for component in components {
+            switch Self.lstatKind(component) {
+            case .missing: return
+            case .symlink: found.append(.failure(location, .symlink)); return
+            case .denied: found.append(.failure(location, .denied)); return
+            case .other(let text): found.append(.failure(location, .other(text))); return
+            case .directory, .nonDirectory: continue
+            }
         }
-        switch errno {
-        case ENOENT, ENOTDIR: break
-        case EPERM, EACCES: found.append(.failure(url, .denied))
-        default: found.append(.failure(url, .other(String(cString: strerror(errno)))))
+        found.append(.location(location))
+    }
+
+    private enum Kind { case directory, nonDirectory, symlink, missing, denied, other(String) }
+
+    private static func lstatKind(_ url: URL) -> Kind {
+        var st = stat()
+        if lstat(url.path, &st) != 0 {
+            switch errno {
+            case ENOENT, ENOTDIR: return .missing
+            case EPERM, EACCES: return .denied
+            default: return .other(String(cString: strerror(errno)))
+            }
+        }
+        switch st.st_mode & S_IFMT {
+        case S_IFLNK: return .symlink
+        case S_IFDIR: return .directory
+        default: return .nonDirectory
         }
     }
 
@@ -160,6 +198,7 @@ public struct TrashInspector: Sendable {
         let reason: String
         switch failure {
         case .denied: reason = noAccessReason
+        case .symlink: reason = "trash location is a symbolic link, not emptied"
         case .other(let text): reason = text
         }
         return JournalEntry(originalPath: url.path, bytes: 0, outcome: .failed(reason: reason))

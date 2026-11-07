@@ -129,4 +129,69 @@ struct TrashInspectorTests {
         let record = inspector.emptyTrash()
         #expect(record.entries.contains { $0.originalPath == "<log>" && $0.bytes == 0 })
     }
+
+    // MARK: - Symlinked trash locations
+
+    private static let symlinkReason = "trash location is a symbolic link, not emptied"
+
+    private func link(_ at: URL, to target: URL) throws {
+        try FileManager.default.createDirectory(
+            at: at.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: at, withDestinationURL: target)
+    }
+
+    /// /var vs /private/var: listing a directory may report the resolved prefix.
+    private func norm(_ path: String?) -> String? {
+        path.map { $0.hasPrefix("/private/") ? String($0.dropFirst("/private".count)) : $0 }
+    }
+
+    private func expectRefused(_ sandbox: TestSandbox, location: URL, survivor: URL) {
+        let (inspector, _) = makeInspector(sandbox)
+        #expect(inspector.size().unreadable.map { norm($0.path) } == [norm(location.path)])
+        #expect(inspector.size().bytes == 0)
+        let record = inspector.emptyTrash()
+        #expect(record.entries.count == 1)
+        #expect(norm(record.entries.first?.originalPath) == norm(location.path))
+        #expect(record.entries.first?.bytes == 0)
+        #expect(record.entries.first?.outcome == .failed(reason: Self.symlinkReason))
+        #expect(FileManager.default.fileExists(atPath: survivor.path))
+    }
+
+    @Test func symlinkedHomeTrashIsRefused() throws {
+        let sandbox = try TestSandbox()
+        let outside = try sandbox.file("outside/precious.txt")
+        try link(sandbox.environment.userTrash, to: outside.deletingLastPathComponent())
+        expectRefused(sandbox, location: sandbox.environment.userTrash, survivor: outside)
+    }
+
+    @Test func symlinkedTrashesDirectoryIsRefused() throws {
+        let sandbox = try TestSandbox()
+        let outside = try sandbox.file("outside/\(uid(sandbox))/f")
+        let vol = sandbox.environment.volumesDirectory.appending(path: "Ext")
+        try link(vol.appending(path: ".Trashes"), to: outside.deletingLastPathComponent().deletingLastPathComponent())
+        expectRefused(
+            sandbox, location: vol.appending(path: ".Trashes/\(uid(sandbox))"), survivor: outside)
+    }
+
+    @Test func symlinkedUidTrashIsRefused() throws {
+        let sandbox = try TestSandbox()
+        let outside = try sandbox.file("outside/f")
+        let vol = sandbox.environment.volumesDirectory.appending(path: "Ext")
+        let loc = vol.appending(path: ".Trashes/\(uid(sandbox))")
+        try link(loc, to: outside.deletingLastPathComponent())
+        expectRefused(sandbox, location: loc, survivor: outside)
+    }
+
+    @Test func symlinkedVolumeEntryIsSkipped() throws {
+        let sandbox = try TestSandbox()
+        let f = try sandbox.file("bootdir/.Trashes/\(uid(sandbox))/f")
+        try link(sandbox.environment.volumesDirectory.appending(path: "Boot"),
+                 to: sandbox.root.appending(path: "bootdir"))
+        let (inspector, _) = makeInspector(sandbox)
+        #expect(inspector.trashLocations().isEmpty)
+        #expect(inspector.size().unreadable.isEmpty)
+        let record = inspector.emptyTrash()
+        #expect(record.entries.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: f.path))
+    }
 }
