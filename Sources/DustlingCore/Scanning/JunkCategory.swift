@@ -74,6 +74,7 @@ public struct JunkItem: Sendable, Identifiable {
 public enum ScanIssue: Equatable, Sendable {
     case unreadable(URL)
     case missingFullDiskAccess(URL)
+    case commandFailed(command: String, reason: String)
 }
 
 public struct CategoryScan: Sendable {
