@@ -47,7 +47,7 @@ public struct AppScout: Sendable {
             entries = try FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: keys, options: [])
         } catch {
-            unreadable.append(directory)
+            if !Self.isMissing(error) { unreadable.append(directory) }
             return
         }
         for entry in entries.sorted(by: { $0.path < $1.path }) {
@@ -68,6 +68,19 @@ public struct AppScout: Sendable {
                 search(entry, depth: depth + 1, apps: &apps, unreadable: &unreadable, seen: &seen)
             }
         }
+    }
+
+    /// True when the failure means the directory does not exist (ENOENT/ENOTDIR), judged from the
+    /// POSIX error behind the Cocoa error, like the junk scanner.
+    private static func isMissing(_ error: Error) -> Bool {
+        let error = error as NSError
+        var posix: Int32?
+        if error.domain == NSPOSIXErrorDomain { posix = Int32(error.code) }
+        if let under = error.userInfo[NSUnderlyingErrorKey] as? NSError, under.domain == NSPOSIXErrorDomain {
+            posix = Int32(under.code)
+        }
+        if let posix { return posix == ENOENT || posix == ENOTDIR }
+        return error.code == NSFileReadNoSuchFileError || error.code == NSFileNoSuchFileError
     }
 
     private static func isInsideSystemApplications(_ url: URL) -> Bool {

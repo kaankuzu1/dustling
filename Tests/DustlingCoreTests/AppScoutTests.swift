@@ -104,4 +104,14 @@ import Testing
         #expect(result.apps.map(\.displayName) == ["Fine"])
         #expect(result.unreadable.map(\.lastPathComponent) == ["Locked"])
     }
+
+    @Test func missingApplicationDirectoryIsNotReportedUnreadable() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.app("Applications/Fine.app", bundleID: "fine")
+        var env = sandbox.environment
+        env.applicationDirectories.append(sandbox.root.appending(path: "NoSuchApplications"))
+        let result = AppScout(environment: env, sizer: DirectorySizer()).discoverWithIssues()
+        #expect(result.unreadable.isEmpty)
+        #expect(result.apps.map(\.displayName) == ["Fine"])
+    }
 }
