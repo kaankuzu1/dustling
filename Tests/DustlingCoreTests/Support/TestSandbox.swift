@@ -62,12 +62,16 @@ final class TestSandbox {
         _ relativePath: String,
         bundleID: String?,
         executable: String = "App",
-        script: String? = nil
+        script: String? = nil,
+        displayName: String? = nil,
+        bundleName: String? = nil
     ) throws -> URL {
         let url = try directory(relativePath)
         let macOS = try directory(relativePath + "/Contents/MacOS")
         var plist: [String: Any] = ["CFBundleExecutable": executable]
         if let bundleID { plist["CFBundleIdentifier"] = bundleID }
+        if let displayName { plist["CFBundleDisplayName"] = displayName }
+        if let bundleName { plist["CFBundleName"] = bundleName }
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try data.write(to: url.appending(path: "Contents/Info.plist"))
         let exe = macOS.appending(path: executable)
