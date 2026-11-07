@@ -136,6 +136,7 @@ enum Commands {
         var urls: [URL] = []
         var extra: [JournalEntry] = []
         var shownBytes: UInt64 = 0
+        var roots = Set<URL>()
         for scan in chosen {
             let inUse = scan.items.filter { $0.inUseByBundleID != nil }
             let usable = scan.items.filter { $0.inUseByBundleID == nil }
@@ -143,6 +144,9 @@ enum Commands {
                 + "\(Format.bytes(scan.bytes)), \(Format.plural(scan.items.count, "item"))")
             for item in inUse {
                 Format.printWarning("Skipping \(item.url.lastPathComponent): the app is open right now")
+                extra.append(JournalEntry(
+                    originalPath: item.url.path(percentEncoded: false), bytes: item.bytes,
+                    outcome: .skipped(reason: "in use by \(item.inUseByBundleID ?? "a running app")")))
             }
             if scan.category.requiresAdmin {
                 for item in usable {
@@ -153,32 +157,54 @@ enum Commands {
                     Format.printWarning("\(scan.category.title) needs admin rights and will not be touched")
                 }
             } else {
-                urls += usable.map(\.url)
-                shownBytes += usable.reduce(0) { $0 + $1.bytes }
+                // The guard's allowed roots are the folders the scan really resolved for this category
+                // (its fixed roots, or an expansion such as Containers/<id>/Data/Library/Caches).
+                // Every item is a direct child of one of them; anything else is not touched.
+                for item in usable {
+                    let parent = item.url.deletingLastPathComponent()
+                    if Self.isResolvedRoot(parent, of: scan.category) {
+                        urls.append(item.url)
+                        shownBytes += item.bytes
+                        roots.insert(parent)
+                    } else {
+                        extra.append(JournalEntry(
+                            originalPath: item.url.path(percentEncoded: false), bytes: item.bytes,
+                            outcome: .skipped(reason: "outside the cleanup area")))
+                    }
+                }
             }
         }
         guard !urls.isEmpty else {
             print("Nothing to move to the Trash.")
-            return extra.isEmpty ? 0 : 2
+            return extra.contains { $0.outcome == .needsAdmin } ? 2 : 0
         }
 
-        let roots = chosen.filter { !$0.category.requiresAdmin }.flatMap { $0.category.roots }
-            + chosen.filter { !$0.category.requiresAdmin }.flatMap { scan in
-                scan.items.map { $0.url.deletingLastPathComponent() }
-            }
         guard Format.confirm("Move \(urls.count) items (\(Format.bytes(shownBytes))) to Trash? [y/N]", assumeYes: assumeYes) else {
             print("Cancelled.")
             return 0
         }
 
         let record = await makeRunner().run(
-            urls, kind: .junkClean, allowedRoots: Array(Set(roots)), extraEntries: extra) { _, _ in }
+            urls, kind: .junkClean, allowedRoots: Array(roots), extraEntries: extra) { _, _ in }
         Format.printEntries(record)
         let code = Format.printTotals(record)
         if record.bytesMovedToTrash > 0 {
             print("Space is freed when the Trash is emptied: dustling empty-trash")
         }
         return code
+    }
+
+    /// True when `folder` is one of the category's fixed roots, or an expansion of it
+    /// (`<expansion.parent>/<child>/<subpath>`).
+    private static func isResolvedRoot(_ folder: URL, of category: JunkCategory) -> Bool {
+        let path = Format.path(folder)
+        if category.roots.contains(where: { Format.path($0) == path }) { return true }
+        return category.expansions.contains { expansion in
+            let suffix = "/" + expansion.subpath
+            guard path.hasSuffix(suffix) else { return false }
+            let child = URL(filePath: String(path.dropLast(suffix.count)))
+            return Format.path(child.deletingLastPathComponent()) == Format.path(expansion.parent)
+        }
     }
 
     // MARK: apps

@@ -46,13 +46,20 @@ enum Format {
         return text.count > 1 && text.hasSuffix("/") ? String(text.dropLast()) : text
     }
 
-    /// Prints issues, collapsing long runs (a missing Full Disk Access grant produces one per
-    /// container) into the first few plus a count, so the output stays readable but nothing is hidden.
+    /// Prints every issue except that `.missingFullDiskAccess` lines beyond the first `limit` are
+    /// collapsed into one count line (a missing grant produces one per container). Every
+    /// `.unreadable` and `.commandFailed` issue is always printed.
     static func printIssues(_ issues: [ScanIssue], limit: Int = 4) {
-        for item in issues.prefix(limit) { print(issue(item)) }
-        if issues.count > limit {
-            print("  ! ...and \(issues.count - limit) more like these (\(issues.count) in total)")
+        var shownFDA = 0
+        var hiddenFDA = 0
+        for item in issues {
+            if case .missingFullDiskAccess = item {
+                if shownFDA < limit { print(issue(item)); shownFDA += 1 } else { hiddenFDA += 1 }
+            } else {
+                print(issue(item))
+            }
         }
+        if hiddenFDA > 0 { print("  ! \u{2026}and \(hiddenFDA) more folders need Full Disk Access") }
     }
 
     static func printWarning(_ text: String) {
