@@ -165,4 +165,61 @@ struct RunJournalTests {
         #expect(try j.all() == [good])
         #expect(j.unreadableRecords().map(\.lastPathComponent) == [bad.lastPathComponent])
     }
+
+    @Test func failedMoveIsReportedAndOthersStillRestore() throws {
+        let s = try TestSandbox()
+        let bad = try s.file("home/blk/a.log")
+        let good = try s.file("home/ok/b.log")
+        let run = trashedRun(s, [bad, good])
+        let j = journal(s)
+        try j.save(run)
+        // Replace the parent folder with a regular file so recreating it fails.
+        try FileManager.default.removeItem(at: s.root.appending(path: "home/blk"))
+        try Data("x".utf8).write(to: s.root.appending(path: "home/blk"))
+        let out = try j.restore(runID: run.id)
+        #expect(out.count == 2)
+        guard case .failed(let p, let reason) = out[0] else { Issue.record("expected failed, got \(out[0])"); return }
+        #expect(p == bad.path(percentEncoded: false))
+        #expect(!reason.isEmpty)
+        #expect(out[1] == .restored(good.path(percentEncoded: false)))
+        let saved = try #require(try j.all().first)
+        #expect(!saved.entries[0].restored)
+        #expect(saved.entries[1].restored)
+        #expect(saved.restorable)
+    }
+
+    @Test func unreadableHistoryDirectoryThrows() throws {
+        let s = try TestSandbox()
+        let j = journal(s)
+        try j.save(RunRecord(id: UUID(), startedAt: Date(timeIntervalSince1970: 1_000), kind: .emptyTrash, entries: [], restorable: false))
+        let dir = s.root.appending(path: "history")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: dir.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) }
+        #expect(throws: RunJournalError.self) { try j.all() }
+    }
+
+    @Test func missingHistoryDirectoryIsEmpty() throws {
+        let s = try TestSandbox()
+        #expect(try journal(s).all().isEmpty)
+    }
+
+    @Test func saveFailureStopsAndCarriesOutcomes() throws {
+        let s = try TestSandbox()
+        let f1 = try s.file("home/Library/Caches/a.log")
+        let f2 = try s.file("home/Library/Caches/b.log")
+        let run = trashedRun(s, [f1, f2])
+        let j = journal(s)
+        try j.save(run)
+        let dir = s.root.appending(path: "history")
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) }
+        do {
+            _ = try j.restore(runID: run.id)
+            Issue.record("expected saveFailed")
+        } catch RunJournalError.saveFailed(let outcomes, _) {
+            #expect(outcomes == [.restored(f1.path(percentEncoded: false))])
+            #expect(FileManager.default.fileExists(atPath: f1.path))
+            #expect(!FileManager.default.fileExists(atPath: f2.path))
+        }
+    }
 }

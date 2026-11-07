@@ -2,6 +2,19 @@ import Foundation
 
 public enum RunJournalError: Error, Equatable, Sendable {
     case runNotFound(UUID)
+    /// The History directory exists but could not be listed.
+    case historyUnreadable(URL, underlying: Error)
+    /// Saving the journal failed mid-restore; `outcomes` are the moves already done (and not journaled past the failure).
+    case saveFailed(outcomes: [RestoreOutcome], underlying: Error)
+
+    public static func == (lhs: RunJournalError, rhs: RunJournalError) -> Bool {
+        switch (lhs, rhs) {
+        case (.runNotFound(let a), .runNotFound(let b)): a == b
+        case (.historyUnreadable(let a, _), .historyUnreadable(let b, _)): a == b
+        case (.saveFailed(let a, _), .saveFailed(let b, _)): a == b
+        default: false
+        }
+    }
 }
 
 /// Durable, one-file-per-run record of what a cleanup did, plus the undo (`restore`).
@@ -35,17 +48,24 @@ public struct RunJournal: Sendable {
         try data.write(to: fileURL(run.id), options: .atomic)
     }
 
-    private func jsonFiles() -> [URL] {
-        let files = (try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: nil)) ?? []
-        return files.filter { $0.pathExtension == "json" }
+    /// A missing directory means no runs yet; any other listing error is surfaced.
+    private func jsonFiles() throws -> [URL] {
+        do {
+            let files = try FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil)
+            return files.filter { $0.pathExtension == "json" }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return []
+        } catch {
+            throw RunJournalError.historyUnreadable(directory, underlying: error)
+        }
     }
 
     /// Every readable run, newest first. Files that fail to decode are listed by `unreadableRecords()`.
     public func all() throws -> [RunRecord] {
         let decoder = Self.makeDecoder()
         var runs: [RunRecord] = []
-        for url in jsonFiles() {
+        for url in try jsonFiles() {
             if let data = try? Data(contentsOf: url), let run = try? decoder.decode(RunRecord.self, from: data) {
                 runs.append(run)
             }
@@ -56,7 +76,7 @@ public struct RunJournal: Sendable {
     /// Journal files that could not be read or decoded (so the UI can say so instead of hiding them).
     public func unreadableRecords() -> [URL] {
         let decoder = Self.makeDecoder()
-        return jsonFiles().filter { url in
+        return ((try? jsonFiles()) ?? []).filter { url in
             guard let data = try? Data(contentsOf: url) else { return true }
             return (try? decoder.decode(RunRecord.self, from: data)) == nil
         }.sorted { $0.path < $1.path }
@@ -86,18 +106,29 @@ public struct RunJournal: Sendable {
                 results.append(.missingFromTrash(entry.originalPath))
                 continue
             }
+            let original = URL(fileURLWithPath: entry.originalPath)
             do {
-                let original = URL(fileURLWithPath: entry.originalPath)
                 try fm.createDirectory(at: original.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fm.moveItem(at: URL(fileURLWithPath: trashed), to: original)
-                run.entries[index].restored = true
-                results.append(.restored(entry.originalPath))
             } catch {
                 results.append(.failed(entry.originalPath, reason: error.localizedDescription))
+                continue
+            }
+            run.entries[index].restored = true
+            results.append(.restored(entry.originalPath))
+            // Journal after every move so the record always matches disk; stop if that fails.
+            run.restorable = Self.hasRestorableEntries(run)
+            do { try save(run) } catch {
+                throw RunJournalError.saveFailed(outcomes: results, underlying: error)
             }
         }
-        run.restorable = Self.hasRestorableEntries(run)
-        try save(run)
+        let restorable = Self.hasRestorableEntries(run)
+        if restorable != run.restorable {
+            run.restorable = restorable
+            do { try save(run) } catch {
+                throw RunJournalError.saveFailed(outcomes: results, underlying: error)
+            }
+        }
         return results
     }
 
