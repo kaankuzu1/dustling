@@ -81,42 +81,111 @@ import Testing
         #expect(items.first { $0.label == "com.sibling" }?.ownerAppName == nil)
     }
 
+    /// A real, parseable agent plist inside the sandbox.
+    private func agent(_ s: TestSandbox, _ label: String = "com.foo.agent") throws -> StartupItem {
+        try writePlist(s, "home/Library/LaunchAgents/\(label).plist", ["Label": label])
+        return item(.userAgent, label: label, plist: s.root.appending(path: "home/Library/LaunchAgents/\(label).plist"))
+    }
+
     @Test func userAgentToggleUsesLaunchctl() throws {
         let s = try TestSandbox()
         let runner = FakeCommandRunner()
         let sc = scanner(s, runner)
         let uid = s.environment.userID
-        let plist = URL(filePath: "/tmp/com.foo.agent.plist")
-        #expect(sc.setEnabled(item(.userAgent, plist: plist), false) == .skipped(reason: "disabled"))
+        let it = try agent(s)
+        let path = it.plistURL!.path(percentEncoded: false)
+        #expect(sc.setEnabled(it, false) == .skipped(reason: "disabled"))
         #expect(runner.calls.map(\.arguments) == [
             ["disable", "gui/\(uid)/com.foo.agent"], ["bootout", "gui/\(uid)/com.foo.agent"],
         ])
-        #expect(sc.setEnabled(item(.userAgent, plist: plist), true) == .skipped(reason: "enabled"))
+        #expect(sc.setEnabled(it, true) == .skipped(reason: "enabled"))
         #expect(runner.calls.dropFirst(2).map(\.arguments) == [
-            ["enable", "gui/\(uid)/com.foo.agent"], ["bootstrap", "gui/\(uid)", "/tmp/com.foo.agent.plist"],
+            ["enable", "gui/\(uid)/com.foo.agent"], ["bootstrap", "gui/\(uid)", path],
         ])
         #expect(runner.calls.allSatisfy { $0.executable == "/bin/launchctl" })
     }
 
-    @Test func notLoadedAndAlreadyLoadedCountAsSuccess() throws {
+    @Test func notLoadedBootoutCountsAsSuccess() throws {
         let s = try TestSandbox()
         let runner = FakeCommandRunner()
-        let uid = s.environment.userID
         runner.setResult(CommandResult(status: 3, stdout: "", stderr: "Boot-out failed: 3: No such process"),
-                         for: "/bin/launchctl", ["bootout", "gui/\(uid)/com.foo.agent"])
+                         for: "/bin/launchctl", ["bootout", "gui/\(s.environment.userID)/com.foo.agent"])
+        #expect(scanner(s, runner).setEnabled(try agent(s), false) == .skipped(reason: "disabled"))
+    }
+
+    @Test func alreadyBootstrappedCountsAsSuccess() throws {
+        let s = try TestSandbox()
+        let it = try agent(s)
+        let runner = FakeCommandRunner()
+        runner.setResult(CommandResult(status: 37, stdout: "", stderr: "Bootstrap failed: 37: Service already bootstrapped"),
+                         for: "/bin/launchctl",
+                         ["bootstrap", "gui/\(s.environment.userID)", it.plistURL!.path(percentEncoded: false)])
+        #expect(scanner(s, runner).setEnabled(it, true) == .skipped(reason: "enabled"))
+    }
+
+    @Test func bootstrapIOErrorIsAFailure() throws {
+        let s = try TestSandbox()
+        let it = try agent(s)
+        let runner = FakeCommandRunner()
         runner.setResult(CommandResult(status: 5, stdout: "", stderr: "Bootstrap failed: 5: Input/output error"),
-                         for: "/bin/launchctl", ["bootstrap", "gui/\(uid)", "/tmp/x.plist"])
+                         for: "/bin/launchctl",
+                         ["bootstrap", "gui/\(s.environment.userID)", it.plistURL!.path(percentEncoded: false)])
+        #expect(scanner(s, runner).setEnabled(it, true)
+                == .failed(reason: "launchctl bootstrap failed: Bootstrap failed: 5: Input/output error"))
+    }
+
+    @Test func unreadableItemIsNeverToggled() throws {
+        let s = try TestSandbox()
+        let runner = FakeCommandRunner()
         let sc = scanner(s, runner)
-        #expect(sc.setEnabled(item(.userAgent), false) == .skipped(reason: "disabled"))
-        #expect(sc.setEnabled(item(.userAgent), true) == .skipped(reason: "enabled"))
+        let bad = s.root.appending(path: "home/Library/LaunchAgents/broken.plist")
+        try FileManager.default.createDirectory(at: bad.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not a plist".utf8).write(to: bad)
+        try writePlist(s, "home/Library/LaunchAgents/nolabel.plist", ["Program": "/bin/true"])
+        let nolabel = s.root.appending(path: "home/Library/LaunchAgents/nolabel.plist")
+        let expected = DeletionOutcome.failed(reason: "can't read this startup item's settings")
+        for url in [bad, nolabel, s.root.appending(path: "missing.plist")] {
+            #expect(sc.setEnabled(item(.userAgent, label: "x", plist: url), false) == expected)
+            #expect(sc.setEnabled(item(.userAgent, label: "x", plist: url), true) == expected)
+        }
+        #expect(sc.setEnabled(item(.userAgent, label: "x", plist: nil), false) == expected)
+        #expect(runner.calls.isEmpty)
+    }
+
+    @Test func systemAgentEnablementComesFromGuiDomain() throws {
+        let s = try TestSandbox()
+        try writePlist(s, "Library/LaunchAgents/com.vendor.sysagent.plist", ["Label": "com.vendor.sysagent"])
+        try writePlist(s, "Library/LaunchAgents/com.vendor.other.plist", ["Label": "com.vendor.other"])
+        let uid = s.environment.userID
+        let runner = FakeCommandRunner()
+        runner.setResult(CommandResult(status: 0, stdout: "{\n\t\"com.vendor.sysagent\" => disabled\n}", stderr: ""),
+                         for: "/bin/launchctl", ["print-disabled", "gui/\(uid)"])
+        runner.setResult(CommandResult(status: 0, stdout: "{\n\t\"com.vendor.other\" => disabled\n}", stderr: ""),
+                         for: "/bin/launchctl", ["print-disabled", "system"])
+        let items = scanner(s, runner).scan()
+        #expect(items.first { $0.label == "com.vendor.sysagent" }?.isEnabled == false)
+        #expect(items.first { $0.label == "com.vendor.other" }?.isEnabled == true)
+    }
+
+    @Test func explicitEnableBeatsPlistDisabledKey() throws {
+        let s = try TestSandbox()
+        try writePlist(s, "home/Library/LaunchAgents/com.on.plist", ["Label": "com.on", "Disabled": true])
+        try writePlist(s, "home/Library/LaunchAgents/com.absent.plist", ["Label": "com.absent", "Disabled": true])
+        let runner = FakeCommandRunner()
+        runner.setResult(CommandResult(status: 0, stdout: "{\n\t\"com.on\" => enabled\n}", stderr: ""),
+                         for: "/bin/launchctl", ["print-disabled", "gui/\(s.environment.userID)"])
+        let items = scanner(s, runner).scan()
+        #expect(items.first { $0.label == "com.on" }?.isEnabled == true)
+        #expect(items.first { $0.label == "com.absent" }?.isEnabled == false)
     }
 
     @Test func failingLaunchctlIsReported() throws {
         let s = try TestSandbox()
         let runner = FakeCommandRunner()
+        _ = try agent(s)
         runner.setResult(CommandResult(status: 1, stdout: "", stderr: " boom \n"),
                          for: "/bin/launchctl", ["disable", "gui/\(s.environment.userID)/com.foo.agent"])
-        #expect(scanner(s, runner).setEnabled(item(.userAgent), false)
+        #expect(scanner(s, runner).setEnabled(try agent(s), false)
                 == .failed(reason: "launchctl disable failed: boom"))
     }
 

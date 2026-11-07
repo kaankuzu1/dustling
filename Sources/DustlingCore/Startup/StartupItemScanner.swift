@@ -22,17 +22,18 @@ public struct StartupItemScanner: Sendable {
 
     public func scanWithIssues() -> (items: [StartupItem], issues: [ScanIssue]) {
         var issues: [ScanIssue] = []
-        let userDisabled = disabledLabels(domain: "gui/\(environment.userID)", issues: &issues)
-        let systemDisabled = disabledLabels(domain: "system", issues: &issues)
+        let userOverrides = disabledLabels(domain: "gui/\(environment.userID)", issues: &issues)
+        let systemOverrides = disabledLabels(domain: "system", issues: &issues)
 
-        let sources: [(URL, StartupScope, Set<String>?)] = [
-            (environment.userLibrary.appending(path: "LaunchAgents"), .userAgent, userDisabled),
-            // System agents load in the user's GUI domain, so the per-user override database applies.
-            (environment.systemLibrary.appending(path: "LaunchAgents"), .systemAgent, userDisabled),
-            (environment.systemLibrary.appending(path: "LaunchDaemons"), .systemDaemon, systemDisabled),
+        let sources: [(URL, StartupScope, [String: Bool]?)] = [
+            (environment.userLibrary.appending(path: "LaunchAgents"), .userAgent, userOverrides),
+            // System agents load into the user's GUI domain, so their enablement lives in the
+            // `gui/<uid>` override database (research doc, ruling R22); daemons use `system`.
+            (environment.systemLibrary.appending(path: "LaunchAgents"), .systemAgent, userOverrides),
+            (environment.systemLibrary.appending(path: "LaunchDaemons"), .systemDaemon, systemOverrides),
         ]
         var items: [StartupItem] = []
-        for (dir, scope, disabled) in sources {
+        for (dir, scope, overrides) in sources {
             let plists: [URL]
             switch list(dir) {
             case .success(let urls): plists = urls
@@ -41,7 +42,7 @@ public struct StartupItemScanner: Sendable {
                 continue
             }
             for url in plists {
-                let (item, parsed) = makeItem(url, scope: scope, disabled: disabled)
+                let (item, parsed) = makeItem(url, scope: scope, overrides: overrides)
                 items.append(item)
                 if !parsed { issues.append(.unreadable(url)) }
             }
@@ -58,7 +59,10 @@ public struct StartupItemScanner: Sendable {
         case .loginItem:
             return .failed(reason: "login items can only be changed in System Settings > General > Login Items")
         case .userAgent:
-            return enabled ? enable(item) : disable(item)
+            guard let plist = item.plistURL, Self.hasLabel(plist) else {
+                return .failed(reason: "can't read this startup item's settings")
+            }
+            return enabled ? enable(item, plist: plist) : disable(item)
         }
     }
 
@@ -74,14 +78,11 @@ public struct StartupItemScanner: Sendable {
         return .skipped(reason: "disabled")
     }
 
-    private func enable(_ item: StartupItem) -> DeletionOutcome {
-        guard let plist = item.plistURL else {
-            return .failed(reason: "launchctl enable failed: no property list for \(item.label)")
-        }
+    private func enable(_ item: StartupItem, plist: URL) -> DeletionOutcome {
         let uid = environment.userID
         if let failure = run("enable", ["gui/\(uid)/\(item.label)"]) { return failure }
         if let failure = run("bootstrap", ["gui/\(uid)", plist.path(percentEncoded: false)], tolerating: { status, stderr in
-            status == 5 || stderr.localizedCaseInsensitiveContains("already")
+            stderr.localizedCaseInsensitiveContains("already")
         }) { return failure }
         return .skipped(reason: "enabled")
     }
@@ -101,10 +102,17 @@ public struct StartupItemScanner: Sendable {
         }
     }
 
+    private static func hasLabel(_ plist: URL) -> Bool {
+        guard let data = try? Data(contentsOf: plist),
+              let dict = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
+        else { return false }
+        return dict["Label"] is String
+    }
+
     // MARK: - Disabled state
 
     /// nil when the state could not be read (an issue is recorded); never silently "all enabled".
-    private func disabledLabels(domain: String, issues: inout [ScanIssue]) -> Set<String>? {
+    private func disabledLabels(domain: String, issues: inout [ScanIssue]) -> [String: Bool]? {
         let command = "launchctl print-disabled \(domain)"
         do {
             let result = try commands.run(Self.launchctl, ["print-disabled", domain])
@@ -113,25 +121,29 @@ public struct StartupItemScanner: Sendable {
                 issues.append(.commandFailed(command: command, reason: stderr))
                 return nil
             }
-            return Self.parseDisabled(result.stdout)
+            return Self.parseOverrides(result.stdout)
         } catch {
             issues.append(.commandFailed(command: command, reason: error.localizedDescription))
             return nil
         }
     }
 
-    /// Lines look like `"com.foo" => disabled` (or `=> true` on older macOS).
-    static func parseDisabled(_ output: String) -> Set<String> {
-        var disabled: Set<String> = []
+    /// Maps label -> isDisabled. Lines look like `"com.foo" => disabled` (or `=> true` on older macOS).
+    static func parseOverrides(_ output: String) -> [String: Bool] {
+        var overrides: [String: Bool] = [:]
         for raw in output.split(whereSeparator: \.isNewline) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             guard line.hasPrefix("\""), let closing = line.dropFirst().firstIndex(of: "\"") else { continue }
             let label = String(line[line.index(after: line.startIndex)..<closing])
             guard let arrow = line.range(of: "=>") else { continue }
             let value = line[arrow.upperBound...].trimmingCharacters(in: .whitespaces).lowercased()
-            if value == "disabled" || value == "true" { disabled.insert(label) }
+            switch value {
+            case "disabled", "true": overrides[label] = true
+            case "enabled", "false": overrides[label] = false
+            default: break
+            }
         }
-        return disabled
+        return overrides
     }
 
     // MARK: - Listing
@@ -161,7 +173,7 @@ public struct StartupItemScanner: Sendable {
         let issue: ScanIssue?
     }
 
-    private func makeItem(_ url: URL, scope: StartupScope, disabled: Set<String>?) -> (StartupItem, parsed: Bool) {
+    private func makeItem(_ url: URL, scope: StartupScope, overrides: [String: Bool]?) -> (StartupItem, parsed: Bool) {
         let fileName = url.lastPathComponent
         var label = fileName
         var program: String?
@@ -175,7 +187,8 @@ public struct StartupItemScanner: Sendable {
                 ?? (dict["ProgramArguments"] as? [String])?.first
             plistDisabled = (dict["Disabled"] as? Bool) ?? false
         }
-        let enabled = !plistDisabled && !(disabled?.contains(label) ?? false)
+        // An explicit launchctl override wins; the plist's `Disabled` key only applies when absent.
+        let enabled = !(overrides?[label] ?? plistDisabled)
         let item = StartupItem(
             label: label, scope: scope, plistURL: url, program: program,
             ownerAppName: program.flatMap(ownerName(forProgram:)),
