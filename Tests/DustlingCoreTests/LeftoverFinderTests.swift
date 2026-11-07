@@ -238,13 +238,26 @@ import Foundation
     }
 
     @Test func graphemeClusterSlashBypassIsRejected() throws {
-        try sandbox.file("home/Documents/x/keep.txt")
-        try sandbox.file("home/Documents/Mail/keep.txt")
-        try sandbox.file("home/Library/Caches/keep.txt")
-        for bad in ["../\u{301}x", "../\u{200D}Mail", "../\u{FE0F}Mail", "..\u{FE0F}/Mail"] {
+        // One ".." from Library/<dir> lands in Library, so plant the would-be targets there.
+        try sandbox.file("home/Library/\u{301}x/keep.txt")
+        try sandbox.file("home/Library/\u{200D}Mail/keep.txt")
+        try sandbox.file("home/Library/\u{FE0F}Mail/keep.txt")
+        try sandbox.directory("home/Library/Caches")
+        for bad in ["../\u{301}x", "../\u{200D}Mail", "../\u{FE0F}Mail"] {
+            #expect(!LeftoverFinder.isSafeComponent(bad), "\(bad.debugDescription)")
             let items = finder().leftovers(for: try app(bundleID: bad, name: "Safe"))
             #expect(items.isEmpty, "\(bad.debugDescription) -> \(items.map(\.url.path))")
         }
+    }
+
+    @Test func twoComponentBundleIDKeepsDirectMatchesOnly() throws {
+        try sandbox.file("home/Library/Caches/com.foo/c")
+        try writeLaunchPlist("home/Library/LaunchAgents/eq.plist", ["Label": "com.foo"])
+        try writeLaunchPlist("home/Library/LaunchAgents/pre.plist", ["Label": "com.foo.agent"])
+        let items = finder().leftovers(for: try app(bundleID: "com.foo", name: "Safe"))
+        #expect(find(items, "Caches/com.foo")?.preselected == true)
+        #expect(find(items, "LaunchAgents/eq.plist") != nil)
+        #expect(find(items, "LaunchAgents/pre.plist") == nil)
     }
 
     @Test func shortBundleIDsOnlyMatchByEquality() throws {
