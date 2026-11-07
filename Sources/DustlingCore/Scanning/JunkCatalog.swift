@@ -40,7 +40,8 @@ public enum JunkCatalog {
                 }),
             JunkCategory(
                 id: .userCaches, title: "App caches", selection: .preselected, requiresAdmin: false,
-                roots: [caches] + containerCaches(in: lib)),
+                roots: [caches],
+                expansions: [RootExpansion(parent: lib.appending(path: "Containers"), subpath: "Data/Library/Caches")]),
             JunkCategory(
                 id: .userLogs, title: "App logs", selection: .preselected, requiresAdmin: false,
                 roots: [lib.appending(path: "Logs")], itemFilter: { $0.lastPathComponent != "Dustling" }),
@@ -50,7 +51,8 @@ public enum JunkCatalog {
                 roots: [env.systemLibrary.appending(path: "Caches"), env.systemLibrary.appending(path: "Logs")]),
             JunkCategory(
                 id: .trash, title: "Trash", selection: .emptyTrashOnly, requiresAdmin: false,
-                roots: trashRoots(env)),
+                roots: [env.userTrash],
+                expansions: [RootExpansion(parent: env.volumesDirectory, subpath: ".Trashes/\(env.userID)")]),
             JunkCategory(
                 id: .oldInstallers, title: "Old installers", selection: .review, requiresAdmin: false,
                 roots: [downloads],
@@ -64,42 +66,20 @@ public enum JunkCatalog {
             JunkCategory(
                 id: .largeOldDownloads, title: "Large and old downloads", selection: .review,
                 requiresAdmin: false, roots: [downloads],
-                itemFilter: { isLargeOrOldDownload($0, now: now) }),
+                itemFilter: { !ignoredDownloadNames.contains($0.lastPathComponent) },
+                measuredFilter: { url, size in try isLargeOrOldDownload(url, size: size, now: now) }),
             JunkCategory(
                 id: .mailDownloads, title: "Mail downloads", selection: .review, requiresAdmin: false,
                 roots: [lib.appending(path: "Containers/com.apple.mail/Data/Library/Mail Downloads")]),
         ]
     }
 
-    private static func containerCaches(in library: URL) -> [URL] {
-        let containers = library.appending(path: "Containers")
-        let entries = (try? FileManager.default.contentsOfDirectory(
-            at: containers, includingPropertiesForKeys: nil)) ?? []
-        return entries
-            .map { $0.appending(path: "Data/Library/Caches") }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
-            .sorted { $0.path < $1.path }
-    }
-
-    private static func trashRoots(_ env: SystemEnvironment) -> [URL] {
-        let volumes = (try? FileManager.default.contentsOfDirectory(
-            at: env.volumesDirectory, includingPropertiesForKeys: nil)) ?? []
-        let perVolume = volumes
-            .sorted { $0.path < $1.path }
-            .map { $0.appending(path: ".Trashes/\(env.userID)") }
-        return [env.userTrash] + perVolume
-    }
-
-    /// Files use logical size (so sparse files qualify) and `contentAccessDate`; directories use their
-    /// allocated size.
-    private static func isLargeOrOldDownload(_ url: URL, now: Date) -> Bool {
-        if ignoredDownloadNames.contains(url.lastPathComponent) { return false }
-        let keys: Set<URLResourceKey> = [.fileSizeKey, .contentAccessDateKey, .isDirectoryKey]
-        guard let v = try? url.resourceValues(forKeys: keys) else { return false }
+    /// Files use logical size (so sparse files qualify, R3); directories use the allocated bytes already
+    /// measured (R8). Throws if the attributes cannot be read.
+    private static func isLargeOrOldDownload(_ url: URL, size: SizeResult, now: Date) throws -> Bool {
+        let v = try url.resourceValues(forKeys: [.fileSizeKey, .contentAccessDateKey, .isDirectoryKey])
         if let accessed = v.contentAccessDate, now.timeIntervalSince(accessed) > oldDownloadAge { return true }
-        if v.isDirectory == true {
-            return DirectorySizer().measure(url).bytes >= largeDownloadThreshold
-        }
+        if v.isDirectory == true { return size.bytes >= largeDownloadThreshold }
         return UInt64(v.fileSize ?? 0) >= largeDownloadThreshold
     }
 }

@@ -15,6 +15,17 @@ public enum Selection: Sendable {
     case emptyTrashOnly
 }
 
+/// Roots found by listing `parent` and appending `subpath` to each child (a glob such as
+/// `Containers/*/Data/Library/Caches`). Resolved by the scanner so listing failures surface as issues.
+public struct RootExpansion: Sendable {
+    public let parent: URL
+    public let subpath: String
+    public init(parent: URL, subpath: String) {
+        self.parent = parent
+        self.subpath = subpath
+    }
+}
+
 /// One cleanable category. The unit of deletion is each direct child of a root that passes `itemFilter`.
 public struct JunkCategory: Sendable {
     public let id: JunkCategoryID
@@ -22,18 +33,26 @@ public struct JunkCategory: Sendable {
     public let selection: Selection
     public let requiresAdmin: Bool
     public let roots: [URL]
+    public let expansions: [RootExpansion]
     public let itemFilter: @Sendable (URL) -> Bool
+    /// Decides inclusion once the item has been measured (so it is measured only once). Throwing means
+    /// the item's attributes could not be read: it is reported as `.unreadable` and left out.
+    public let measuredFilter: (@Sendable (URL, SizeResult) throws -> Bool)?
 
     public init(
         id: JunkCategoryID, title: String, selection: Selection, requiresAdmin: Bool,
-        roots: [URL], itemFilter: @escaping @Sendable (URL) -> Bool = { _ in true }
+        roots: [URL], expansions: [RootExpansion] = [],
+        itemFilter: @escaping @Sendable (URL) -> Bool = { _ in true },
+        measuredFilter: (@Sendable (URL, SizeResult) throws -> Bool)? = nil
     ) {
         self.id = id
         self.title = title
         self.selection = selection
         self.requiresAdmin = requiresAdmin
         self.roots = roots
+        self.expansions = expansions
         self.itemFilter = itemFilter
+        self.measuredFilter = measuredFilter
     }
 }
 

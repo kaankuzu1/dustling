@@ -129,4 +129,69 @@ import Testing
         task.cancel()
         await #expect(throws: CancellationError.self) { try await task.value }
     }
+
+    private func fdaPaths(_ scan: CategoryScan?) -> [String] {
+        (scan?.issues ?? []).compactMap { if case .missingFullDiskAccess(let u) = $0 { u.path } else { nil } }
+    }
+
+    @Test func protectedAncestorOfExpandedRootIsReported() async throws {
+        let sb = try TestSandbox()
+        let containers = try sb.directory("home/Library/Containers")
+        try sb.file("home/Library/Containers/com.x/Data/Library/Caches/c/f")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: containers.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: containers.path) }
+        let r = try await scan(sb)
+        #expect(fdaPaths(r[.userCaches]).contains { $0.hasSuffix("/home/Library/Containers") })
+        // Mail Downloads sits below the protected directory: denied, not "missing".
+        #expect(fdaPaths(r[.mailDownloads]).contains { $0.hasSuffix("Mail Downloads") })
+    }
+
+    @Test func nonexistentRootsProduceNoIssues() async throws {
+        let sb = try TestSandbox()
+        let r = try await scan(sb)
+        for (_, s) in r { #expect(s.issues.isEmpty) }
+    }
+
+    @Test func rootThatIsAFileIsUnreadableNotFullDiskAccess() async throws {
+        let sb = try TestSandbox()
+        let root = try sb.file("home/Library/Containers/com.apple.mail/Data/Library/Mail Downloads")
+        let r = try await scan(sb)
+        let issues = r[.mailDownloads]?.issues ?? []
+        #expect(issues.count == 1)
+        guard case .unreadable(let u)? = issues.first else { Issue.record("expected unreadable"); return }
+        #expect(u.path == root.path)
+        #expect(fdaPaths(r[.mailDownloads]).isEmpty)
+    }
+
+    @Test func oldDirectoryInDownloadsQualifiesViaMeasuredFilter() async throws {
+        let sb = try TestSandbox()
+        let dir = try sb.directory("home/Downloads/olddir")
+        try sb.file("home/Downloads/olddir/f", bytes: 10)
+        try sb.directory("home/Downloads/newdir")
+        try sb.file("home/Downloads/newdir/f", bytes: 10)
+        let past = Date().addingTimeInterval(-100 * 86_400)
+        var times = [timeval(tv_sec: Int(past.timeIntervalSince1970), tv_usec: 0)] 
+        times.append(times[0])
+        #expect(utimes(dir.path, &times) == 0)
+        let catalog = JunkCatalog.standard(sb.environment).filter { $0.id == .largeOldDownloads }
+        let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        let out = try await scanner.scan(catalog, onCategory: { _ in })
+        #expect(names(out.first) == ["olddir"])
+    }
+
+    @Test func attributeReadFailureIsReportedAsUnreadable() async throws {
+        let sb = try TestSandbox()
+        try sb.file("home/Downloads/a.txt")
+        struct Boom: Error {}
+        let cat = JunkCategory(
+            id: .largeOldDownloads, title: "t", selection: .review, requiresAdmin: false,
+            roots: [sb.environment.home.appending(path: "Downloads")],
+            measuredFilter: { _, _ in throw Boom() })
+        let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        let out = try await scanner.scan([cat], onCategory: { _ in })
+        #expect(out[0].items.isEmpty)
+        #expect(out[0].issues.count == 1)
+        guard case .unreadable(let u)? = out[0].issues.first else { Issue.record("expected unreadable"); return }
+        #expect(u.lastPathComponent == "a.txt")
+    }
 }
