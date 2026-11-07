@@ -194,4 +194,30 @@ struct TrashInspectorTests {
         #expect(record.entries.isEmpty)
         #expect(FileManager.default.fileExists(atPath: f.path))
     }
+
+    /// Uses the internal `inspect` seam to make `lstat` of a volume entry fail, which genuinely
+    /// exercises the `.denied` / `.other` volume branches (a real filesystem arrangement cannot:
+    /// listing the volumes directory fails first when its children are not statable).
+    @Test(arguments: [
+        (TrashInspector.Kind.denied, "no access, grant Full Disk Access"),
+        (TrashInspector.Kind.other("Input/output error"), "Input/output error"),
+    ])
+    func uninspectableVolumeIsReported(kind: TrashInspector.Kind, reason: String) throws {
+        let sandbox = try TestSandbox()
+        let ext = try sandbox.directory("Volumes/Ext")
+        try sandbox.directory("Volumes/Fine")
+        let inspector = TrashInspector(
+            environment: sandbox.environment,
+            journal: RunJournal(directory: sandbox.environment.historyDirectory),
+            logger: RunLogger(directory: sandbox.environment.logsDirectory),
+            sizer: DirectorySizer(),
+            inspect: { url in url.lastPathComponent == "Ext" ? kind : TrashInspector.lstatKind(url) })
+        let expected = norm(ext.appending(path: ".Trashes/\(uid(sandbox))").path)
+        #expect(inspector.size().unreadable.map { norm($0.path) } == [expected])
+        let record = inspector.emptyTrash()
+        #expect(record.entries.count == 1)
+        #expect(norm(record.entries[0].originalPath) == expected)
+        #expect(record.entries[0].bytes == 0)
+        #expect(record.entries[0].outcome == .failed(reason: reason))
+    }
 }

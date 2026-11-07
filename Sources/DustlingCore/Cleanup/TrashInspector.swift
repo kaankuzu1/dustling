@@ -7,10 +7,20 @@ public struct TrashInspector: Sendable {
     private let journal: RunJournal
     private let logger: RunLogger
     private let sizer: DirectorySizer
+    private let inspect: @Sendable (URL) -> Kind
 
     static let noAccessReason = "no access, grant Full Disk Access"
 
     public init(environment: SystemEnvironment, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer) {
+        self.init(environment: environment, journal: journal, logger: logger, sizer: sizer, inspect: Self.lstatKind)
+    }
+
+    /// Test seam: replaces the `lstat` classification so error branches can be exercised.
+    init(
+        environment: SystemEnvironment, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer,
+        inspect: @escaping @Sendable (URL) -> Kind
+    ) {
+        self.inspect = inspect
         self.environment = environment
         self.journal = journal
         self.logger = logger
@@ -122,13 +132,14 @@ public struct TrashInspector: Sendable {
         case .success(let entries):
             for volume in entries.sorted(by: { $0.path < $1.path }) {
                 // A symlinked volume (e.g. "Macintosh HD" -> /) is an alias, not a trash.
-                switch Self.lstatKind(volume) {
-                case .symlink, .missing: continue
-                case .denied, .other: continue   // not a volume we can inspect; its Trash is unreachable
-                case .directory, .nonDirectory: break
-                }
                 let trashes = volume.appending(path: ".Trashes", directoryHint: .isDirectory)
                 let trash = trashes.appending(path: "\(environment.userID)", directoryHint: .isDirectory)
+                switch inspect(volume) {
+                case .symlink, .missing: continue
+                case .denied: found.append(.failure(trash, .denied)); continue
+                case .other(let text): found.append(.failure(trash, .other(text))); continue
+                case .directory, .nonDirectory: break
+                }
                 check([trashes, trash], reporting: trash, into: &found)
             }
         }
@@ -148,7 +159,7 @@ public struct TrashInspector: Sendable {
     /// Every component must be a real directory, never a symlink. A missing one means no location.
     private func check(_ components: [URL], reporting location: URL, into found: inout [Discovered]) {
         for component in components {
-            switch Self.lstatKind(component) {
+            switch inspect(component) {
             case .missing: return
             case .symlink: found.append(.failure(location, .symlink)); return
             case .denied: found.append(.failure(location, .denied)); return
@@ -159,9 +170,9 @@ public struct TrashInspector: Sendable {
         found.append(.location(location))
     }
 
-    private enum Kind { case directory, nonDirectory, symlink, missing, denied, other(String) }
+    enum Kind { case directory, nonDirectory, symlink, missing, denied, other(String) }
 
-    private static func lstatKind(_ url: URL) -> Kind {
+    static func lstatKind(_ url: URL) -> Kind {
         var st = stat()
         if lstat(url.path, &st) != 0 {
             switch errno {
