@@ -121,4 +121,23 @@ struct ProtectedPathsTests {
             == .denied(reason: "another user's files"))
         #expect(p.verdict(for: URL(filePath: "/Users/ALICE/Library/Caches/x"), allowedRoots: [caches]) == .allowed)
     }
+
+    @Test func diacriticAndWidthVariantsAreNotOwnHomeOrInsideRoot() throws {
+        let sb = try TestSandbox()
+        var env = sb.environment
+        env.home = URL(filePath: "/Users/alice")
+        let p = ProtectedPaths(environment: env)
+        let other = PathVerdict.denied(reason: "another user's files")
+        #expect(p.verdict(for: URL(filePath: "/Users/alicé/Library/Caches/x"),
+                          allowedRoots: [URL(filePath: "/Users/alice/Library/Caches")]) == other)
+        #expect(p.verdict(for: URL(filePath: "/Users/alicé/Library/Caches/x"),
+                          allowedRoots: [URL(filePath: "/Users")]) == other)
+        #expect(p.verdict(for: URL(filePath: "/Users/ａlice/x"), allowedRoots: [URL(filePath: "/Users")]) == other)
+
+        let q = ProtectedPaths(environment: sb.environment)
+        let caches = try sb.directory("home/Library/Caches")
+        try sb.directory("home/Library/Cachés")
+        #expect(q.verdict(for: sb.root.appending(path: "home/Library/Cachés/x"), allowedRoots: [caches])
+            == .denied(reason: "outside the cleanup area"))
+    }
 }

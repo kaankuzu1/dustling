@@ -20,7 +20,7 @@ public struct ProtectedPaths: Sendable {
     private let usersRoot: [String]
 
     public init(environment: SystemEnvironment) {
-        home = Self.key(Self.resolve(environment.home))
+        home = Self.caseKey(Self.resolve(environment.home))
         usersRoot = Self.key(Self.resolve(URL(filePath: "/Users")))
         let entries = Self.systemDenied.map { URL(filePath: $0) }
             + Self.homeDenied.map { environment.home.appending(path: $0) }
@@ -36,14 +36,16 @@ public struct ProtectedPaths: Sendable {
     }
 
     public func verdict(for url: URL, allowedRoots: [URL]) -> PathVerdict {
-        let path = Self.key(Self.resolve(url))
+        let resolved = Self.resolve(url)
+        let path = Self.key(resolved)
+        let casePath = Self.caseKey(resolved)
         if denied.contains(where: { Self.isEqualOrInside(path, $0) }) {
             return .denied(reason: "protected location")
         }
-        if Self.isStrictlyInside(path, usersRoot), !Self.isEqualOrInside(path, home) {
+        if Self.isStrictlyInside(path, usersRoot), !Self.isEqualOrInside(casePath, home) {
             return .denied(reason: "another user's files")
         }
-        if allowedRoots.contains(where: { Self.isStrictlyInside(path, Self.key(Self.resolve($0))) }) {
+        if allowedRoots.contains(where: { Self.isStrictlyInside(casePath, Self.caseKey(Self.resolve($0))) }) {
             return .allowed
         }
         return .denied(reason: "outside the cleanup area")
@@ -51,10 +53,16 @@ public struct ProtectedPaths: Sendable {
 
     // MARK: - Path handling
 
-    /// Case- and normalization-folded components, so `documents` and `Documentſ` match `Documents`
-    /// on case-insensitive volumes. Over-denying is the safe direction.
+    /// Broad fold (case, diacritics, width) for deny-list matching and `/Users` detection only:
+    /// over-matching there denies more, which is the safe direction.
     private static func key(_ comps: [String]) -> [String] {
         comps.map { $0.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil) }
+    }
+
+    /// Case-only fold for "is this my own home" and "is this inside an allowed root": over-matching
+    /// there would under-deny. APFS ignores case but not diacritics or width.
+    private static func caseKey(_ comps: [String]) -> [String] {
+        comps.map { $0.folding(options: [.caseInsensitive], locale: nil) }
     }
 
     private static func isEqualOrInside(_ path: [String], _ base: [String]) -> Bool {
