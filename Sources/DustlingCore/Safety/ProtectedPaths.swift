@@ -20,28 +20,42 @@ public struct ProtectedPaths: Sendable {
     private let usersRoot: [String]
 
     public init(environment: SystemEnvironment) {
-        let resolvedHome = Self.resolve(environment.home)
-        home = resolvedHome
-        usersRoot = Self.resolve(URL(filePath: "/Users"))
-        let homeEntries = Self.homeDenied.map { resolvedHome + $0.split(separator: "/").map(String.init) }
-        denied = Self.systemDenied.map { Self.resolve(URL(filePath: $0)) } + homeEntries
+        home = Self.key(Self.resolve(environment.home))
+        usersRoot = Self.key(Self.resolve(URL(filePath: "/Users")))
+        let entries = Self.systemDenied.map { URL(filePath: $0) }
+            + Self.homeDenied.map { environment.home.appending(path: $0) }
+        var list: [[String]] = []
+        for entry in entries {
+            list.append(Self.key(Self.resolve(entry)))
+            // A symlinked entry stays protected where its files really live.
+            if let real = Self.realpathString(entry.path(percentEncoded: false)) {
+                list.append(Self.key(real.split(separator: "/").map(String.init)))
+            }
+        }
+        denied = list
     }
 
     public func verdict(for url: URL, allowedRoots: [URL]) -> PathVerdict {
-        let path = Self.resolve(url)
+        let path = Self.key(Self.resolve(url))
         if denied.contains(where: { Self.isEqualOrInside(path, $0) }) {
             return .denied(reason: "protected location")
         }
         if Self.isStrictlyInside(path, usersRoot), !Self.isEqualOrInside(path, home) {
             return .denied(reason: "another user's files")
         }
-        if allowedRoots.contains(where: { Self.isStrictlyInside(path, Self.resolve($0)) }) {
+        if allowedRoots.contains(where: { Self.isStrictlyInside(path, Self.key(Self.resolve($0))) }) {
             return .allowed
         }
         return .denied(reason: "outside the cleanup area")
     }
 
     // MARK: - Path handling
+
+    /// Case- and normalization-folded components, so `documents` and `Documentſ` match `Documents`
+    /// on case-insensitive volumes. Over-denying is the safe direction.
+    private static func key(_ comps: [String]) -> [String] {
+        comps.map { $0.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil) }
+    }
 
     private static func isEqualOrInside(_ path: [String], _ base: [String]) -> Bool {
         path.count >= base.count && Array(path.prefix(base.count)) == base

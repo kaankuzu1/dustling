@@ -70,4 +70,55 @@ struct ProtectedPathsTests {
         let url = URL(filePath: root.path + "/../../Documents/x")
         if case .allowed = p.verdict(for: url, allowedRoots: [root]) { Issue.record("escaped") }
     }
+
+    @Test func caseVariantsOfProtectedNamesAreDenied() throws {
+        let (sb, p) = try make()
+        let home = sb.environment.home
+        let denied = PathVerdict.denied(reason: "protected location")
+        #expect(p.verdict(for: home.appending(path: "documents"), allowedRoots: [home]) == denied)
+        #expect(p.verdict(for: home.appending(path: "Documentſ"), allowedRoots: [home]) == denied)
+        #expect(p.verdict(for: home.appending(path: "Library/mail"), allowedRoots: [home.appending(path: "Library")]) == denied)
+        #expect(p.verdict(for: URL(filePath: "/system"), allowedRoots: [URL(filePath: "/")]) == denied)
+        #expect(p.verdict(for: URL(filePath: "/USR"), allowedRoots: [URL(filePath: "/")]) == denied)
+        #expect(p.verdict(for: URL(filePath: "/private/var/DB"), allowedRoots: [URL(filePath: "/")]) == denied)
+    }
+
+    @Test func symlinkedHomeKeepsHomeEntriesProtected() throws {
+        let sb = try TestSandbox()
+        try sb.directory("realhome/Library")
+        let linkHome = sb.root.appending(path: "linkhome")
+        try FileManager.default.createSymbolicLink(
+            at: linkHome, withDestinationURL: sb.root.appending(path: "realhome"))
+        var env = sb.environment
+        env.home = linkHome
+        let p = ProtectedPaths(environment: env)
+        let roots = [linkHome.appending(path: "Library")]
+        let denied = PathVerdict.denied(reason: "protected location")
+        #expect(p.verdict(for: linkHome.appending(path: "Library/Mail"), allowedRoots: roots) == denied)
+        #expect(p.verdict(for: linkHome.appending(path: "Library/Keychains/x"), allowedRoots: roots) == denied)
+        #expect(p.verdict(for: linkHome.appending(path: "Library/Caches/x"), allowedRoots: roots) == .allowed)
+    }
+
+    @Test func symlinkedDeniedFolderIsProtectedAtItsRealLocation() throws {
+        let sb = try TestSandbox()
+        let elsewhere = try sb.directory("elsewhere")
+        try sb.file("elsewhere/f")
+        try FileManager.default.createSymbolicLink(
+            at: sb.environment.home.appending(path: "Documents"), withDestinationURL: elsewhere)
+        let p = ProtectedPaths(environment: sb.environment)
+        #expect(p.verdict(for: elsewhere.appending(path: "f"), allowedRoots: [sb.root])
+            == .denied(reason: "protected location"))
+    }
+
+    @Test func ownHomeVersusOtherUsersUnderUsers() throws {
+        let sb = try TestSandbox()
+        var env = sb.environment
+        env.home = URL(filePath: "/Users/alice")
+        let p = ProtectedPaths(environment: env)
+        let caches = URL(filePath: "/Users/alice/Library/Caches")
+        #expect(p.verdict(for: caches.appending(path: "x"), allowedRoots: [caches]) == .allowed)
+        #expect(p.verdict(for: URL(filePath: "/Users/aliceX/Library/Caches/x"), allowedRoots: [URL(filePath: "/Users")])
+            == .denied(reason: "another user's files"))
+        #expect(p.verdict(for: URL(filePath: "/Users/ALICE/Library/Caches/x"), allowedRoots: [caches]) == .allowed)
+    }
 }
