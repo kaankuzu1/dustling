@@ -60,7 +60,11 @@ public struct DirectorySizer: Sendable {
             }
             if values.isSymbolicLink == true { continue }
             guard values.isRegularFile == true else { continue }
-            result.bytes += UInt64(values.totalFileAllocatedSize ?? 0)
+            guard let size = values.totalFileAllocatedSize else {
+                unreadable.append(item)
+                continue
+            }
+            result.bytes += UInt64(size)
             result.fileCount += 1
         }
         result.unreadable = unreadable

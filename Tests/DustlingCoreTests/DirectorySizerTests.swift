@@ -63,4 +63,27 @@ struct DirectorySizerTests {
         #expect(r.fileCount == 0)
         #expect(r.unreadable == [missing])
     }
+
+    @Test func doesNotFollowMidTreeDirectorySymlink() throws {
+        let sb = try TestSandbox()
+        try sb.file("outside/big.bin", bytes: 1_000_000)
+        let outside = sb.root.appending(path: "outside", directoryHint: .isDirectory)
+        let dir = try sb.directory("measured")
+        try FileManager.default.createSymbolicLink(
+            at: dir.appending(path: "evil"), withDestinationURL: outside)
+        let r = DirectorySizer().measure(dir)
+        #expect(r.bytes < 4096)
+        #expect(r.fileCount == 0)
+    }
+
+    @Test func topLevelDirectorySymlinkMeasuresZero() throws {
+        let sb = try TestSandbox()
+        try sb.file("outside/big.bin", bytes: 1_000_000)
+        let outside = sb.root.appending(path: "outside", directoryHint: .isDirectory)
+        let link = sb.root.appending(path: "dirlink")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        let r = DirectorySizer().measure(link)
+        #expect(r.bytes == 0)
+        #expect(r.fileCount == 0)
+    }
 }
