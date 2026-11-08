@@ -362,6 +362,27 @@ extension JunkScanModelTests {
         #expect(FileManager.default.fileExists(atPath: a.path))
     }
 
+    @Test func screenshotFixtureNeverScansOrMovesAnything() async throws {
+        let rig = try ModelRig()
+        let file = rig.cachesDirectory.appending(path: "a.log")
+        try rig.file(file, bytes: 4096)
+        let model = makeModel(rig)
+        model.canTakeOutOfTrash = true
+        await scanned(model)
+        let scans = model.categories.isEmpty ? [] : [CategoryScan(
+            category: rig.categories(cachesFilter: { _ in true })[0],
+            items: [JunkItem(url: file, bytes: 4096, category: model.categories[0].id, inUseByBundleID: nil, ownerBundleID: nil)],
+            bytes: 4096, issues: [], stopped: false)]
+        model.showFixture(scans, phase: .ready)
+        #expect(model.isFixture)
+        await model.clean()
+        guard case .ready = model.state else { Issue.record("fixture cleaned"); return }
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        model.scan()
+        guard case .ready = model.state else { Issue.record("fixture scanned"); return }
+        await #expect(throws: JunkScanModelError.self) { try await model.putEverythingBack() }
+    }
+
     @Test func putBackIsBusyWorkAndBlocksScanAndClean() async throws {
         let rig = try ModelRig()
         try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)

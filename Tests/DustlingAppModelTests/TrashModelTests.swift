@@ -220,9 +220,23 @@ struct TrashModelTests {
         await model.refresh(fullDiskAccessGranted: false)
         #expect(model.externalVolumesSkipped)
     }
+
+    @Test func screenshotFixtureNeverEmptiesTheTrash() async throws {
+        let rig = try ModelRig()
+        let model = makeTrashModel(rig)
+        let item = TrashItem(url: URL(filePath: "/sample/Trash/a"), size: SizeResult(bytes: 10, fileCount: 1))
+        model.showFixture(items: [item], inTrashBytes: 0)
+        #expect(model.contents?.size.bytes == 10)
+        guard case .refused = await model.emptyTrash(confirmedBytes: 10) else {
+            Issue.record("fixture emptied"); return
+        }
+        await model.refresh()
+        #expect(model.items == [item])   // refresh never re-read the real Trash
+    }
 }
 
 private extension TrashModel {
     /// What the sheet would show and the user confirm.
     var shownBytes: UInt64 { contents?.size.bytes ?? 0 }
+
 }

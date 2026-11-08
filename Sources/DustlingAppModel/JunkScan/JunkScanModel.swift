@@ -263,6 +263,10 @@ public final class JunkScanModel {
     public var isReviewingFiles = false
     /// Applied at the next scan (the "Preselect safe categories" setting).
     public var preselectSafe: Bool
+    #if DEBUG
+    /// The DEBUG screenshot fixture is showing: nothing is scanned, cleaned or put back.
+    @ObservationIgnored public private(set) var isFixture = false
+    #endif
 
     @ObservationIgnored private let scanner: JunkScanner
     @ObservationIgnored private let runner: CleanupRunner
@@ -340,6 +344,9 @@ public final class JunkScanModel {
     // MARK: scan
 
     public func scan() {
+        #if DEBUG
+        guard !isFixture else { return }
+        #endif
         guard !isBusy else { return }
         generation += 1
         let mine = generation
@@ -568,6 +575,9 @@ public final class JunkScanModel {
     /// `closedApps`: apps the user let Dustling close first, named in the summary.
     public func clean(skipping: CleanupSkip? = nil, confirmedLimited: Bool = false, closedApps: [String] = []) async {
         let skipping = skipping ?? cleanupSkip
+        #if DEBUG
+        guard !isFixture else { return }
+        #endif
         guard case .ready = state, !isRestoring else { return }
         switch cleanupGate.kind {
         case .refused:
@@ -657,6 +667,9 @@ public final class JunkScanModel {
     /// Restores the items the run just made moved to the Trash, and only those: skipped and failed
     /// items were never moved.
     public func putEverythingBack() async throws -> [RestoreOutcome] {
+        #if DEBUG
+        guard !isFixture else { throw JunkScanModelError.noCleanupToUndo }
+        #endif
         guard case .done(let record) = state else { throw JunkScanModelError.noCleanupToUndo }
         guard !didPutBack else { throw JunkScanModelError.alreadyPutBack }
         guard !isRestoring else { throw JunkScanModelError.alreadyPuttingBack }
@@ -684,3 +697,56 @@ public final class JunkScanModel {
         }
     }
 }
+
+#if DEBUG
+extension JunkScanModel {
+    /// What the screenshot fixture shows.
+    public enum FixturePhase: Sendable {
+        /// Results with the default selection.
+        case ready
+        /// Scanning: the first `finished` categories are in, the counter shows `progress`.
+        case scanning(ScanProgress, finished: Int)
+        /// The summary of this run (its entries' paths are the fixture items' paths).
+        case done(RunRecord)
+    }
+
+    /// Screenshot fixture (DEBUG only): shows these scan results without reading the disk. The model
+    /// then refuses to scan, clean or put back anything.
+    public func showFixture(_ results: [CategoryScan], phase: FixturePhase) {
+        isFixture = true
+        generation += 1
+        order = results.map(\.category.id)
+        scans = [:]
+        categories = []
+        excludedItems = []
+        restoreOutcomes = nil
+        message = nil
+        categoryProgress = [:]
+        categoryOutcomes = [:]
+        switch phase {
+        case .ready:
+            for scan in results { scans[scan.category.id] = scan }
+            rebuildTiles()
+            lastScanFinishedAt = .now
+            state = .ready
+        case .scanning(let progress, let finished):
+            for scan in results.prefix(finished) { scans[scan.category.id] = scan }
+            rebuildTiles()
+            state = .scanning(progress)
+        case .done(let record):
+            for scan in results { scans[scan.category.id] = scan }
+            rebuildTiles()
+            lastScanFinishedAt = .now
+            var categoryOf: [String: JunkCategoryID] = [:]
+            for scan in results {
+                for item in scan.items { categoryOf[item.url.path(percentEncoded: false)] = scan.category.id }
+            }
+            categoryOutcomes = CategoryOutcome.split(record, categoryOf: categoryOf)
+            for tile in categories where tile.isSelected {
+                categoryProgress[tile.id] = CategoryProgress(done: tile.itemCount, total: tile.itemCount)
+            }
+            state = .done(record)
+        }
+    }
+}
+#endif

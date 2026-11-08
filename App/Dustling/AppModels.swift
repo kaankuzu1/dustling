@@ -72,8 +72,20 @@ final class AppModels {
 
     init(environment: SystemEnvironment = .current, commands: CommandRunning = ProcessCommandRunner()) {
         let journal = RunJournal(directory: environment.historyDirectory)
+        var probe: @Sendable () -> FullDiskAccessStatus = { FullDiskAccessProbe(environment: environment).status() }
+        var storageRead: (@Sendable () throws -> (info: StorageInfo, problems: [String]))?
+        var placesCheck: (@Sendable (Bool) -> [Place])?
+        #if DEBUG
+        if HomeFixture.state != nil {
+            // Screenshots: sample access, disk and places, never the real ones.
+            let limited = HomeFixture.isLimited
+            probe = { limited ? .denied : .granted }
+            storageRead = { (HomeFixture.storage, []) }
+            placesCheck = { _ in HomeFixture.places(limited: limited) }
+        }
+        #endif
         let health = HealthModel(
-            probe: { FullDiskAccessProbe(environment: environment).status() },
+            probe: probe,
             clock: ContinuousClock(),
             lastRunSummary: {
                 #if DEBUG
@@ -82,9 +94,9 @@ final class AppModels {
                 return AppModels.latestRun(in: journal)
             })
         self.health = health
-        let storage = StorageModel(commands: commands)
+        let storage = storageRead.map { StorageModel(read: $0) } ?? StorageModel(commands: commands)
         self.storage = storage
-        places = PlacesModel(environment: environment)
+        places = placesCheck.map { PlacesModel(check: $0) } ?? PlacesModel(environment: environment)
         volumeName = Self.readVolumeName()
         self.environment = environment
 
@@ -202,8 +214,58 @@ final class AppModels {
         applyUninstallerFixtureFromLaunchArguments()
         applyStartupHistoryFixtureFromLaunchArguments()
         applyRepairFixtureFromLaunchArguments()
+        applyHomeFixtureFromLaunchArguments()
         #endif
     }
+
+    #if DEBUG
+    /// `-DustlingHomeFixture <state>` (see `HomeFixture`): Home and the Junk scan with sample numbers.
+    private func applyHomeFixtureFromLaunchArguments() {
+        guard HomeFixture.state != nil else { return }
+        // In memory only: the saved "access was on" flag is never written by the fixture.
+        accessMemory.useSample(wasGranted: !HomeFixture.isLimited)
+        Self.sampleLastRun = RunRecord(startedAt: .now.addingTimeInterval(-86_400), kind: .junkClean, entries: [], restorable: false)
+        health.refreshLastRun()
+        // The other fixtures fill the tool cards; Home stays in front.
+        uninstallerCounted = uninstallerFixture
+        selection = ["emptytrash", "reviewfiles", "scanning", "done"].contains(HomeFixture.state) ? .junkScan : .home
+    }
+
+    /// The fixture's scan: the sample results instead of reading the disk.
+    private func showHomeFixtureScan() {
+        guard let state = HomeFixture.state else { return }
+        let choice = settings.scanChoice
+        lastScanChoice = choice
+        let catalog = JunkCatalog.standard(environment).filter { choice.scans($0.id, selection: $0.selection) }
+        lastScanScope = HomeScanScope.make(places: places.places)
+        let readable = HomeMosaic.scannable(catalog, places: places.places)
+        let scans = HomeFixture.scans(catalog: readable, home: environment.home)
+        var trashItems = HomeFixture.trashItems(home: environment.home)
+        switch state {
+        case "scanning":
+            junk.showFixture(scans, phase: .scanning(
+                HomeFixture.scanningProgress(home: environment.home, total: scans.count), finished: 3))
+        case "done":
+            let record = HomeFixture.cleanup(of: scans)
+            junk.showFixture(scans, phase: .done(record))
+            let moved = record.entries.reduce(UInt64(0)) {
+                if case .movedToTrash = $1.outcome { $0 + $1.bytes } else { $0 }
+            }
+            trashItems.append(TrashItem(
+                url: environment.home.appending(path: ".Trash/Dustling cleanup"),
+                size: SizeResult(bytes: moved, fileCount: record.entries.count)))
+            trash.showFixture(items: trashItems, inTrashBytes: moved)
+            return
+        default:
+            junk.showFixture(scans, phase: .ready)
+        }
+        if HomeFixture.isLimited {
+            trash.showFixture(items: [], inTrashBytes: 0, unreadableAt: environment.home.appending(path: ".Trash"))
+        } else {
+            trash.showFixture(items: trashItems, inTrashBytes: 0)
+        }
+    }
+    #endif
 
     // MARK: Home
 
@@ -220,6 +282,10 @@ final class AppModels {
         scanJunk()
         refreshTrash()
         Task {
+            #if DEBUG
+            // The Home fixture's "access" is a sample: never read the real startup items with it.
+            if HomeFixture.state != nil && !startup.isFixture { return }
+            #endif
             await startup.load(unjudged: unjudgedProgramFolders)
             startupLoaded = true
         }
@@ -231,6 +297,10 @@ final class AppModels {
     /// which program folders may be looked at.
     func reloadStartup() {
         Task {
+            #if DEBUG
+            // The Home fixture's "access" is a sample: never read the real startup items with it.
+            if HomeFixture.state != nil && !startup.isFixture { return }
+            #endif
             await startup.load(unjudged: unjudgedProgramFolders)
             startupLoaded = true
         }
@@ -260,6 +330,9 @@ final class AppModels {
 
     /// Starts a junk scan of the places that read as open right now.
     func scanJunk() {
+        #if DEBUG
+        if HomeFixture.state != nil { showHomeFixtureScan(); return }
+        #endif
         guard !junk.isBusy else { return }
         // Access was on and a real read is denied now: pause instead of a quietly smaller result.
         if accessMemory.isLost(health.fullDiskAccess) {
@@ -287,6 +360,9 @@ final class AppModels {
 
     /// Re-reads the Trash; other volumes' Trash folders only with Full Disk Access.
     func refreshTrash() {
+        #if DEBUG
+        if HomeFixture.state != nil { return }
+        #endif
         let granted = health.fullDiskAccess == .granted
         Task { await trash.refresh(fullDiskAccessGranted: granted) }
     }
@@ -418,6 +494,10 @@ final class AppModels {
 
     /// Loads the apps once Full Disk Access is on; never without it (see `uninstallerLoaded`).
     func loadUninstallerIfAllowed(force: Bool = false) {
+        #if DEBUG
+        // The Home fixture's "access" is a sample: never list the real apps with it.
+        if HomeFixture.state != nil && !uninstallerFixture { return }
+        #endif
         guard health.fullDiskAccess == .granted, force || !uninstallerLoaded else { return }
         // Access is on now, even if refreshPlaces hasn't caught up yet.
         uninstaller.canReadAppData = true

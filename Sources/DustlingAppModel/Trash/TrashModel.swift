@@ -85,6 +85,9 @@ public final class TrashModel {
     /// Re-reads the Trash with the access the last `refresh(fullDiskAccessGranted:)` reported
     /// (none until then: only `~/.Trash`).
     public func refresh() async {
+        #if DEBUG
+        guard !isFixture else { return }
+        #endif
         generation += 1
         let mine = generation
         let access = lastAccess
@@ -110,6 +113,9 @@ public final class TrashModel {
     /// not the size last read, and when the Trash was re-read just before deleting and is no longer
     /// what was confirmed (unreadable, or a different size).
     public func emptyTrash(confirmedBytes confirmed: UInt64) async -> EmptyTrashResult {
+        #if DEBUG
+        guard !isFixture else { return .refused(reason: "This is a screenshot sample, so nothing was deleted.") }
+        #endif
         guard !isEmptying else { return .refused(reason: "The Trash is already being emptied") }
         guard canEmpty, let shown = contents?.size.bytes else {
             return .refused(reason: disabledReason ?? "The Trash can't be emptied")
@@ -132,6 +138,26 @@ public final class TrashModel {
         onRunCompleted()
         return .emptied(record)
     }
+
+    #if DEBUG
+    /// The DEBUG screenshot fixture is showing: the Trash is never read or emptied.
+    @ObservationIgnored public private(set) var isFixture = false
+
+    /// Screenshot fixture (DEBUG only): shows these items as the Trash, read in full, without
+    /// looking at the disk. Refresh and Empty Trash do nothing from then on.
+    /// `unreadableAt`: the Trash reads as locked there instead (as without Full Disk Access).
+    public func showFixture(items: [TrashItem], inTrashBytes: UInt64, unreadableAt: URL? = nil) {
+        isFixture = true
+        generation += 1
+        let bytes = items.reduce(UInt64(0)) { $0 + $1.size.bytes }
+        let files = items.reduce(0) { $0 + $1.size.fileCount }
+        contents = (SizeResult(bytes: bytes, fileCount: files), unreadableAt.map { [.missingFullDiskAccess($0)] } ?? [])
+        self.items = items
+        externalVolumesSkipped = unreadableAt != nil
+        inTrashBytesSinceLastEmpty = inTrashBytes
+        historyProblem = nil
+    }
+    #endif
 
     private struct Snapshot: Sendable {
         let sized: (size: SizeResult, issues: [ScanIssue])

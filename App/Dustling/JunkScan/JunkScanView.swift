@@ -45,6 +45,9 @@ struct JunkScanView: View {
         // Every cleanup re-checks which apps run right now, so an app opened since stays protected.
         .onAppear { models.junk.runningBundleIDs = { OpenApps.allBundleIDs() } }
         .sheet(isPresented: $confirmingEmptyTrash) { EmptyTrashSheet() }
+        #if DEBUG
+        .task { if HomeFixture.state == "emptytrash" { confirmingEmptyTrash = true } }
+        #endif
     }
 
     private func scanAgain() {
@@ -285,6 +288,9 @@ private struct JunkActionBar: View {
                 Text(gate.note ?? "")
             }
             .sheet(isPresented: $reviewingFiles) { ReviewFilesSheet() }
+            #if DEBUG
+            .task { if HomeFixture.state == "reviewfiles" { reviewingFiles = true } }
+            #endif
             .sheet(item: $closingApps) { run in CloseAppsSheet(run: run) }
         case .moving(let done, let total, let bytes):
             ActionBar(
