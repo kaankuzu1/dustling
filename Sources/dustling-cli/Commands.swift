@@ -392,8 +392,17 @@ enum Commands {
             print("Cancelled.")
             return 0
         }
-        let outcome = scanner.setEnabled(item, enable)
+        let recorder = StartupChangeRecorder(
+            scanner: scanner, journal: journal, logger: RunLogger(directory: env.logsDirectory))
+        let record = recorder.setEnabled(item, enable)
+        guard let outcome = record.entries.first?.outcome else { return 2 }
         print("\(item.label): \(outcome.label)")
+        // The change itself is done; say so if it could not be written to History or the log.
+        for extra in record.entries.dropFirst() {
+            if case .failed(let reason) = extra.outcome {
+                Format.printWarning("Couldn't write to \(extra.originalPath == "<history>" ? "History" : "the log"): \(reason)")
+            }
+        }
         return Format.isProblem(outcome) ? 2 : 0
     }
 
