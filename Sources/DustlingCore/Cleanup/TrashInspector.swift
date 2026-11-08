@@ -1,5 +1,29 @@
 import Foundation
 
+/// One top-level item in a Trash location.
+public struct TrashItem: Equatable, Sendable {
+    public let url: URL
+    public let size: SizeResult
+
+    public init(url: URL, size: SizeResult) {
+        self.url = url
+        self.size = size
+    }
+}
+
+/// What the Trash holds right now, as far as Dustling can see.
+public struct TrashContents: Sendable {
+    public var items: [TrashItem] = []
+    public var size = SizeResult()
+    public var issues: [ScanIssue] = []
+
+    public init(items: [TrashItem] = [], size: SizeResult = SizeResult(), issues: [ScanIssue] = []) {
+        self.items = items
+        self.size = size
+        self.issues = issues
+    }
+}
+
 /// Sizes the Trash and empties it. Emptying is the one permanent delete in Dustling; callers must
 /// confirm with the user first. Every child is reported as `.deleted` or `.failed`.
 public struct TrashInspector: Sendable {
@@ -39,28 +63,48 @@ public struct TrashInspector: Sendable {
         discover().compactMap { if case .location(let url) = $0 { url } else { nil } }
     }
 
+    /// Total size of the Trash. Locations or items that couldn't be read are in `unreadable`; use
+    /// `sizeWithIssues()` to tell missing Full Disk Access from other failures.
     public func size() -> SizeResult {
-        var total = SizeResult()
+        contents().size
+    }
+
+    /// Like `size()`, plus why each unreadable location or item couldn't be read: EPERM/EACCES become
+    /// `.missingFullDiskAccess`, anything else `.unreadable`.
+    public func sizeWithIssues() -> (size: SizeResult, issues: [ScanIssue]) {
+        let found = contents()
+        return (found.size, found.issues)
+    }
+
+    /// The top-level items in every Trash location, measured, plus the problems met on the way.
+    public func contents() -> TrashContents {
+        var found = TrashContents()
+        func fail(_ url: URL, _ failure: Failure) {
+            found.size.unreadable.append(url)
+            found.issues.append(Self.issue(url, failure))
+        }
         for item in discover() {
             switch item {
-            case .failure(let url, _):
-                total.unreadable.append(url)
+            case .failure(let url, let failure):
+                fail(url, failure)
             case .location(let location):
-                if verified(location) != nil { total.unreadable.append(location); continue }
+                if let failure = verified(location) { fail(location, failure); continue }
                 switch Self.list(location) {
-                case .failure:
-                    total.unreadable.append(location)
+                case .failure(let failure):
+                    fail(location, failure)
                 case .success(let children):
-                    for child in children {
+                    for child in children.sorted(by: { $0.path < $1.path }) {
                         let r = sizer.measure(child)
-                        total.bytes += r.bytes
-                        total.fileCount += r.fileCount
-                        total.unreadable += r.unreadable
+                        found.items.append(TrashItem(url: child, size: r))
+                        found.size.bytes += r.bytes
+                        found.size.fileCount += r.fileCount
+                        found.size.unreadable += r.unreadable
+                        found.issues += r.unreadable.map(Self.classifyUnreadable)
                     }
                 }
             }
         }
-        return total
+        return found
     }
 
     /// Permanently deletes everything in the Trash. Journal/log failures are appended to the
@@ -203,6 +247,32 @@ public struct TrashInspector: Sendable {
             if posix == nil, error.code == NSFileReadNoPermissionError { return .failure(.denied) }
             return .failure(.other(error.localizedDescription))
         }
+    }
+
+    private static func issue(_ url: URL, _ failure: Failure) -> ScanIssue {
+        switch failure {
+        case .denied: .missingFullDiskAccess(url)
+        case .symlink, .other: .unreadable(url)
+        }
+    }
+
+    /// The sizer reports unreadable paths without a reason; ask the file system again for the errno.
+    private static func classifyUnreadable(_ url: URL) -> ScanIssue {
+        let path = url.path(percentEncoded: false)
+        func denied(_ code: Int32) -> Bool { code == EPERM || code == EACCES }
+        var st = stat()
+        if lstat(path, &st) != 0 {
+            return denied(errno) ? .missingFullDiskAccess(url) : .unreadable(url)
+        }
+        if (st.st_mode & S_IFMT) == S_IFDIR {
+            guard let dir = opendir(path) else { return denied(errno) ? .missingFullDiskAccess(url) : .unreadable(url) }
+            closedir(dir)
+        } else if (st.st_mode & S_IFMT) == S_IFREG {
+            let fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+            guard fd >= 0 else { return denied(errno) ? .missingFullDiskAccess(url) : .unreadable(url) }
+            close(fd)
+        }
+        return .unreadable(url)
     }
 
     private static func failureEntry(_ url: URL, _ failure: Failure) -> JournalEntry {

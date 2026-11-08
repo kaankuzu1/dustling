@@ -220,4 +220,93 @@ struct TrashInspectorTests {
         #expect(record.entries[0].bytes == 0)
         #expect(record.entries[0].outcome == .failed(reason: reason))
     }
+    // MARK: - Size issues and contents (Important #5, Important #1)
+
+    @Test func deniedLocationIsAFullDiskAccessIssue() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.file("home/.Trash/a.bin")
+        let trash = sandbox.environment.userTrash
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: trash.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: trash.path) }
+        let (inspector, _) = makeInspector(sandbox)
+        let result = inspector.sizeWithIssues()
+        #expect(result.issues == [.missingFullDiskAccess(trash)])
+        #expect(result.size.bytes == 0)
+        #expect(result.size == inspector.size())
+    }
+
+    @Test func symlinkedLocationIsAnUnreadableIssue() throws {
+        let sandbox = try TestSandbox()
+        let outside = try sandbox.file("outside/precious.txt")
+        try link(sandbox.environment.userTrash, to: outside.deletingLastPathComponent())
+        let (inspector, _) = makeInspector(sandbox)
+        let issues = inspector.sizeWithIssues().issues
+        #expect(issues.count == 1)
+        guard case .unreadable(let url)? = issues.first else { Issue.record("expected unreadable"); return }
+        #expect(norm(url.path) == norm(sandbox.environment.userTrash.path))
+    }
+
+    @Test(arguments: [
+        (TrashInspector.Kind.denied, true),
+        (TrashInspector.Kind.other("Input/output error"), false),
+    ])
+    func uninspectableVolumeIssueKind(kind: TrashInspector.Kind, isAccess: Bool) throws {
+        let sandbox = try TestSandbox()
+        try sandbox.directory("Volumes/Ext")
+        let inspector = TrashInspector(
+            environment: sandbox.environment,
+            journal: RunJournal(directory: sandbox.environment.historyDirectory),
+            logger: RunLogger(directory: sandbox.environment.logsDirectory),
+            sizer: DirectorySizer(),
+            inspect: { url in url.lastPathComponent == "Ext" ? kind : TrashInspector.lstatKind(url) })
+        let issues = inspector.sizeWithIssues().issues
+        #expect(issues.count == 1)
+        switch issues.first {
+        case .missingFullDiskAccess?: #expect(isAccess)
+        case .unreadable?: #expect(!isAccess)
+        default: Issue.record("unexpected \(issues)")
+        }
+    }
+
+    @Test func unreadableItemInsideTheTrashIsReported() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.file("home/.Trash/ok.bin", bytes: 4096)
+        let locked = try sandbox.directory("home/.Trash/locked")
+        try sandbox.file("home/.Trash/locked/inner.bin")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+        let (inspector, _) = makeInspector(sandbox)
+        let contents = inspector.contents()
+        #expect(contents.issues.map { if case .missingFullDiskAccess(let u) = $0 { norm(u.path) } else { nil } }
+            == [norm(locked.path)])
+        #expect(contents.items.map(\.url.lastPathComponent).sorted() == ["locked", "ok.bin"])
+        #expect(contents.size.bytes > 0)
+    }
+
+    @Test func contentsListsTopLevelItemsWithSizes() throws {
+        let sandbox = try TestSandbox()
+        let a = try sandbox.file("home/.Trash/a.bin", bytes: 4096)
+        try sandbox.file("home/.Trash/dir/b.bin", bytes: 8192)
+        try sandbox.file("home/.Trash/dir/c.bin", bytes: 8192)
+        let ext = try sandbox.file("Volumes/Ext/.Trashes/\(uid(sandbox))/e.bin", bytes: 4096)
+        let (inspector, _) = makeInspector(sandbox)
+        let contents = inspector.contents()
+        #expect(contents.issues.isEmpty)
+        #expect(contents.items.map(\.url.lastPathComponent).sorted() == ["a.bin", "dir", "e.bin"])
+        let dir = try #require(contents.items.first { $0.url.lastPathComponent == "dir" })
+        #expect(dir.size.fileCount == 2)
+        #expect(contents.items.first { $0.url.lastPathComponent == "a.bin" }?.size.bytes == DirectorySizer().measure(a).bytes)
+        #expect(contents.size.bytes == contents.items.reduce(0) { $0 + $1.size.bytes })
+        #expect(contents.size.fileCount == 4)
+        #expect(contents.items.contains { norm($0.url.path) == norm(ext.path) })
+    }
+
+    @Test func emptyTrashHasNoItemsAndNoIssues() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.directory("home/.Trash")
+        let (inspector, _) = makeInspector(sandbox)
+        let contents = inspector.contents()
+        #expect(contents.items.isEmpty && contents.issues.isEmpty && contents.size.bytes == 0)
+    }
 }
+
