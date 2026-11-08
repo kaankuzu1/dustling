@@ -63,6 +63,7 @@ struct AppListRow: View {
         .onTapGesture(perform: onSelect)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(row.app.displayName)
+        .accessibilityValue(progressStatus ?? "")
         .accessibilityAddTraits(isCurrent ? [.isSelected, .isButton] : .isButton)
         .accessibilityAction(named: "Show details", onSelect)
     }
@@ -79,21 +80,27 @@ struct AppListRow: View {
     static let minHeight: CGFloat = 54
 
     @ViewBuilder private var leading: some View {
+        // While removing, the row's value (`progressStatus`) says where the app is, so these marks
+        // aren't read a second time.
         switch progress {
         case .finished(removed: true):
             CheckMark()
+                .accessibilityHidden(true)
         case .finished(removed: false):
             PixelIconView(.warn, color: Palette.warning)
-                .accessibilityLabel("Left alone")
+                .accessibilityHidden(true)
         case .quitting:
             BusyIndicator(label: "Quitting…")
+                .accessibilityHidden(true)
         case .removing:
             BusyIndicator(label: "Moving…")
+                .accessibilityHidden(true)
         case .waiting:
             Toggle(isOn: .constant(true)) { EmptyView() }
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .disabled(true)
+                .accessibilityHidden(true)
         case .stopped:
             // Stop left it alone: nothing of it moves any more.
             Toggle(isOn: .constant(false)) { EmptyView() }
@@ -101,13 +108,26 @@ struct AppListRow: View {
                 .labelsHidden()
                 .disabled(true)
                 .help("Left alone")
-                .accessibilityLabel("Left alone")
+                .accessibilityHidden(true)
         case nil:
             Toggle(isOn: Binding(get: { isSelected }, set: { value in onToggle(value) })) { EmptyView() }
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .disabled(isLocked)
                 .accessibilityLabel("Remove \(row.app.displayName)")
+        }
+    }
+
+    /// What VoiceOver says about the app during and after an uninstall: the marks above only show it.
+    private var progressStatus: String? {
+        switch progress {
+        case .finished(removed: true): return "Moved to the Trash"
+        case .finished(removed: false): return "Left alone"
+        case .quitting: return "Quitting"
+        case .removing: return "Moving to the Trash"
+        case .waiting: return "Waiting"
+        case .stopped: return "Stopped, left alone"
+        case nil: return nil
         }
     }
 }

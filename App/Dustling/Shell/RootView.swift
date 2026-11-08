@@ -9,9 +9,11 @@ struct RootView: View {
         @Bindable var models = models
         NavigationSplitView {
             Sidebar(selection: $models.selection)
-                .navigationSplitViewColumnWidth(DustlingTheme.Metrics.sidebarWidth)
                 .toolbar(removing: .sidebarToggle)
                 .ignoresSafeArea()
+                // Outermost, or the split view never sees it: on a first launch the sidebar then came up
+                // 144 pt wide (cutting off "Startup items"), and the divider can't be dragged to fix it.
+                .navigationSplitViewColumnWidth(DustlingTheme.Metrics.sidebarWidth)
         } detail: {
             DestinationView(destination: models.selection)
                 .frame(minWidth: DustlingTheme.Metrics.contentMinWidth)

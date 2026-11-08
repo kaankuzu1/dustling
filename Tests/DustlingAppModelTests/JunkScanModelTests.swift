@@ -192,6 +192,30 @@ struct JunkScanModelTests {
         #expect(model.message == "Nothing is selected to move to the Trash.")
     }
 
+    /// Move to Trash is off when a clean would only say "Nothing is selected".
+    @Test func hasItemsToMoveFollowsTheSelectionAndReviewFiles() async throws {
+        let rig = try ModelRig()
+        try rig.file(rig.cachesDirectory.appending(path: "com.a.app/blob"), bytes: 4096)
+        let model = makeModel(rig, preselectSafe: false)
+        await scanned(model)
+        #expect(!model.hasItemsToMove)
+        model.toggle(.userCaches)
+        #expect(model.hasItemsToMove)
+        let all = Set(model.review(excluding: []).sections.flatMap(\.rows).map(\.url))
+        #expect(!all.isEmpty)
+        model.setExclusions(all)
+        #expect(!model.hasItemsToMove)
+        model.setExclusions([])
+        #expect(model.hasItemsToMove)
+    }
+
+    @Test func emptyScanHasNothingToMove() async throws {
+        let rig = try ModelRig()
+        let model = makeModel(rig)
+        await scanned(model)
+        #expect(!model.hasItemsToMove)
+    }
+
     @Test func adminCategoriesStartUncheckedAndCantBeToggled() async throws {
         let rig = try ModelRig()
         let sys = rig.root.appending(path: "Library/Caches", directoryHint: .isDirectory)

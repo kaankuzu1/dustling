@@ -305,6 +305,15 @@ public final class JunkScanModel {
         selectedBytesByCategory.values.reduce(0, +)
     }
 
+    /// True when a clean would have something to move or record: a selected, fully scanned category
+    /// with an item that wasn't left out in Review files (the same test `clean` makes).
+    public var hasItemsToMove: Bool {
+        categories.contains { tile in
+            guard tile.isSelected, !tile.stopped, let scan = scans[tile.id] else { return false }
+            return scan.items.contains { !excludedItems.contains($0.url) }
+        }
+    }
+
     /// `selectedBytes` per selected category, so a caller can leave out places it can't read now.
     public var selectedBytesByCategory: [JunkCategoryID: UInt64] {
         var result: [JunkCategoryID: UInt64] = [:]

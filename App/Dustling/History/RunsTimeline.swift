@@ -161,7 +161,7 @@ struct RunRowView: View {
                 case .restore:
                     Button(action: onRestore) {
                         HStack(spacing: 5) {
-                            PixelIconView(.undo, color: Palette.ink)
+                            PixelIconView(.undo, tint: .foreground)
                             Text("Restore")
                         }
                     }

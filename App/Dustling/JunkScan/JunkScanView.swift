@@ -19,7 +19,7 @@ struct JunkScanView: View {
                 ScreenToolbar(title: "Junk scan", subtitle: subtitle(now: context.date)) {
                     Button(action: scanAgain) {
                         HStack(spacing: 6) {
-                            PixelIconView(.refresh, color: Palette.ink)
+                            PixelIconView(.refresh, tint: .foreground)
                             Text("Scan again")
                         }
                     }
@@ -272,12 +272,14 @@ private struct JunkActionBar: View {
                     .help("Lists every file that would move, so you can leave some out")
                 Button(action: moveToTrash) {
                     HStack(spacing: 6) {
-                        PixelIconView(.trash, color: Palette.onAccent)
+                        PixelIconView(.trash, tint: .foreground)
                         Text("Move to Trash")
                     }
                 }
                 .dustlingPrimary()
-                .disabled(gate.kind == .refused)
+                // With nothing selected (or every file left out), it would only say so.
+                .disabled(gate.kind == .refused || !junk.hasItemsToMove)
+                .help(junk.hasItemsToMove ? "Moves the selected files to the Trash" : "Nothing is selected to move")
             }
             .dismissedOnQuit($confirmingLimitedClean)
             .alert(
@@ -314,7 +316,7 @@ private struct JunkActionBar: View {
             ) {
                 Button(action: { models.scanJunk(); models.refreshTrash() }) {
                     HStack(spacing: 6) {
-                        PixelIconView(.refresh, color: Palette.ink)
+                        PixelIconView(.refresh, tint: .foreground)
                         Text("Scan again")
                     }
                 }

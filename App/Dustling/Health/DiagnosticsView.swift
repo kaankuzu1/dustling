@@ -21,7 +21,7 @@ struct DiagnosticsView: View {
                     }
                     Button(action: checkAgain) {
                         HStack(spacing: 6) {
-                            PixelIconView(.refresh, color: Palette.ink)
+                            PixelIconView(.refresh, tint: .foreground)
                             Text("Check again")
                         }
                     }
