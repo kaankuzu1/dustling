@@ -27,8 +27,14 @@ targets:
       - path: Dustling
         excludes:
           - "Resources/Fonts/**"
+          - "Resources/AppIcon.icon/**"
       - path: Dustling/Resources/Fonts
         type: folder
+        buildPhase: resources
+      # The Icon Composer icon (default and dark appearances). One file reference, compiled by actool
+      # into Assets.car and AppIcon.icns; the AppIcon.appiconset stays as the fallback for older Xcode.
+      - path: Dustling/Resources/AppIcon.icon
+        type: file
         buildPhase: resources
     dependencies:
       - package: DustlingPackage
