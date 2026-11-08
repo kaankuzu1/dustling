@@ -162,4 +162,18 @@ struct CleanupRunnerTests {
             [root.appending(path: "gone")], kind: .junkClean, allowedRoots: [root]) { _, _ in }
         #expect(!record.restorable)
     }
+    @Test func trashedIdentityIsCapturedAfterTheMove() async throws {
+        let sandbox = try TestSandbox()
+        let root = try sandbox.directory("home/Library/Caches")
+        let file = try sandbox.file("home/Library/Caches/a.log")
+        let gone = root.appending(path: "gone")
+        let record = await makeRunner(sandbox).run([file, gone], kind: .junkClean, allowedRoots: [root]) { _, _ in }
+        guard case .movedToTrash(let trashed) = record.entries[0].outcome else { Issue.record("not trashed"); return }
+        let identity = try #require(record.entries[0].trashedIdentity)
+        #expect(identity == TrashedIdentity.of(path: trashed))
+        #expect(record.entries[1].trashedIdentity == nil)
+        let saved = try #require(try RunJournal(directory: sandbox.environment.historyDirectory).all().first)
+        #expect(saved.entries[0].trashedIdentity == identity)
+    }
 }
+

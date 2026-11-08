@@ -38,7 +38,12 @@ public struct CleanupRunner: Sendable {
     func attempt(_ url: URL, allowedRoots: [URL]) -> JournalEntry {
         let bytes = sizer.measure(url).bytes
         let outcome = mover.moveToTrash(url, allowedRoots: allowedRoots)
-        return JournalEntry(originalPath: url.path(percentEncoded: false), bytes: bytes, outcome: outcome)
+        var entry = JournalEntry(originalPath: url.path(percentEncoded: false), bytes: bytes, outcome: outcome)
+        // Who landed in the Trash, so a later restore can tell it from another item with the same name.
+        if case .movedToTrash(let trashed) = outcome {
+            entry.trashedIdentity = TrashedIdentity.of(path: trashed)
+        }
+        return entry
     }
 
     /// Journals and logs a finished run (one record per run).

@@ -6,12 +6,15 @@ public enum RunJournalError: Error, Equatable, Sendable {
     case historyUnreadable(URL, underlying: Error)
     /// Saving the journal failed mid-restore; `outcomes` are the moves already done (and not journaled past the failure).
     case saveFailed(outcomes: [RestoreOutcome], underlying: Error)
+    /// Nothing in the run can be put back: every item was restored already or is no longer in the Trash.
+    case notRestorable(UUID)
 
     public static func == (lhs: RunJournalError, rhs: RunJournalError) -> Bool {
         switch (lhs, rhs) {
         case (.runNotFound(let a), .runNotFound(let b)): a == b
         case (.historyUnreadable(let a, _), .historyUnreadable(let b, _)): a == b
         case (.saveFailed(let a, _), .saveFailed(let b, _)): a == b
+        case (.notRestorable(let a), .notRestorable(let b)): a == b
         default: false
         }
     }
@@ -87,22 +90,81 @@ public struct RunJournal: Sendable {
         return lstat(path, &st) == 0
     }
 
-    /// Moves trashed entries back. Never overwrites: an occupied original path is a `.conflict`.
+    /// What is at an entry's trashed path now.
+    private enum TrashedState { case present, missing, replaced }
+
+    private static func trashedState(_ entry: JournalEntry, trashed: String) -> TrashedState {
+        guard let now = TrashedIdentity.of(path: trashed) else { return .missing }
+        guard let recorded = entry.trashedIdentity else { return .present }   // older record: no identity
+        return recorded.isSameItem(as: now) ? .present : .replaced
+    }
+
+    /// True when the entry's own item is still in the Trash and can be put back.
+    public static func isRestorable(_ entry: JournalEntry) -> Bool {
+        guard !entry.restored, !entry.gone, case .movedToTrash(let trashed) = entry.outcome else { return false }
+        return trashedState(entry, trashed: trashed) == .present
+    }
+
+    private static func hasRestorableEntries(_ run: RunRecord) -> Bool {
+        run.entries.contains { isRestorable($0) }
+    }
+
+    /// Marks entries whose trashed path now holds a different item as gone for good, and updates
+    /// `restorable`. Returns true when the run changed.
+    private static func refresh(_ run: inout RunRecord) -> Bool {
+        var changed = false
+        for index in run.entries.indices {
+            let entry = run.entries[index]
+            guard !entry.restored, !entry.gone, case .movedToTrash(let trashed) = entry.outcome else { continue }
+            if trashedState(entry, trashed: trashed) == .replaced {
+                run.entries[index].gone = true
+                changed = true
+            }
+        }
+        let restorable = hasRestorableEntries(run)
+        if restorable != run.restorable {
+            run.restorable = restorable
+            changed = true
+        }
+        return changed
+    }
+
+    /// Moves trashed entries back. Never overwrites: an occupied original path is a `.conflict`. Only
+    /// the item that was trashed is ever moved: if something else now sits at its Trash path, the
+    /// entry is `.missingFromTrash` and permanently gone. Throws `.notRestorable` when nothing in the
+    /// run can be put back.
     public func restore(runID: UUID, paths: Set<String>? = nil) throws -> [RestoreOutcome] {
         guard var run = try all().first(where: { $0.id == runID }) else {
             throw RunJournalError.runNotFound(runID)
         }
+        if Self.refresh(&run) {
+            do { try save(run) } catch { throw RunJournalError.saveFailed(outcomes: [], underlying: error) }
+        }
+        guard run.restorable else { throw RunJournalError.notRestorable(runID) }
+
         let fm = FileManager.default
         var results: [RestoreOutcome] = []
+        var unsaved = false
         for index in run.entries.indices {
             let entry = run.entries[index]
             guard !entry.restored, case .movedToTrash(let trashed) = entry.outcome else { continue }
             if let paths, !paths.contains(entry.originalPath) { continue }
+            if entry.gone {
+                results.append(.missingFromTrash(entry.originalPath))
+                continue
+            }
+            let state = Self.trashedState(entry, trashed: trashed)
+            if state == .replaced {
+                run.entries[index].gone = true
+                unsaved = true
+                results.append(.missingFromTrash(entry.originalPath))
+                continue
+            }
             if Self.exists(entry.originalPath) {
                 results.append(.conflict(entry.originalPath))
                 continue
             }
-            if !Self.exists(trashed) {
+            if state == .missing {
                 results.append(.missingFromTrash(entry.originalPath))
                 continue
             }
@@ -121,9 +183,10 @@ public struct RunJournal: Sendable {
             do { try save(run) } catch {
                 throw RunJournalError.saveFailed(outcomes: results, underlying: error)
             }
+            unsaved = false
         }
         let restorable = Self.hasRestorableEntries(run)
-        if restorable != run.restorable {
+        if restorable != run.restorable || unsaved {
             run.restorable = restorable
             do { try save(run) } catch {
                 throw RunJournalError.saveFailed(outcomes: results, underlying: error)
@@ -132,21 +195,11 @@ public struct RunJournal: Sendable {
         return results
     }
 
-    private static func hasRestorableEntries(_ run: RunRecord) -> Bool {
-        run.entries.contains { entry in
-            if !entry.restored, case .movedToTrash(let trashed) = entry.outcome { return exists(trashed) }
-            return false
-        }
-    }
-
-    /// Clears `restorable` on runs whose trashed items are all gone (Trash emptied) or restored.
+    /// Clears `restorable` on runs whose trashed items are all gone (Trash emptied, or the name reused
+    /// by another item) or restored.
     public func refreshRestorability() throws {
-        for var run in try all() {
-            let now = Self.hasRestorableEntries(run)
-            if now != run.restorable {
-                run.restorable = now
-                try save(run)
-            }
+        for var run in try all() where Self.refresh(&run) {
+            try save(run)
         }
     }
 }
