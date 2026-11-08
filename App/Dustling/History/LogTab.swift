@@ -18,8 +18,10 @@ struct LogTab: View {
 
     private typealias Palette = DustlingTheme.Palette
 
-    /// Log lines the skeleton shows: enough to fill the panel at the window's largest sizes.
-    private static let placeholderLines = 24
+    /// A log line: 11.5 pt Geist Mono with 3 pt above and below. The skeleton counts lines by it.
+    private static let lineHeight: CGFloat = 21
+    /// The log panel's height, for how many skeleton lines fill it.
+    @State private var panelHeight: CGFloat = 0
     /// What the skeleton's title and filter stand in for.
     private static let placeholderRecord = RunRecord(startedAt: .now, kind: .junkClean, entries: [], restorable: false)
 
@@ -27,7 +29,8 @@ struct LogTab: View {
         let isPlaceholder = run == nil
         let record = run?.record ?? Self.placeholderRecord
         let rows = isPlaceholder
-            ? (0..<Self.placeholderLines).map { HistoryScreen.LogRow.placeholder($0) }
+            ? (0..<SkeletonMetrics.rowCount(height: panelHeight - 16, rowHeight: Self.lineHeight))
+                .map { HistoryScreen.LogRow.placeholder($0) }
             : HistoryScreen.logRows(record, context).filter { filter.includes($0) }
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
@@ -76,6 +79,7 @@ struct LogTab: View {
                 .textSelection(.enabled)
             }
             .scrollDisabled(isPlaceholder)
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { panelHeight = $0 }
             .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))
             .skeletonSurfaceIsPanel()
             HStack(spacing: 8) {

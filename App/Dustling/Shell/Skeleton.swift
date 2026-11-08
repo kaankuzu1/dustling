@@ -1,4 +1,6 @@
+import AppKit
 import DustlingAppModel
+import Observation
 import SwiftUI
 
 // Loading skeletons (DESIGN-mosaic §8): `panel`-coloured blocks in the shape of the rows that will
@@ -25,6 +27,14 @@ extension View {
             .accessibilityHidden(active)
     }
 
+    /// Like `skeleton(_:index:)`, and while active VoiceOver reads `accessibilityLabel` for the whole
+    /// subtree (its placeholder content stays hidden), such as "Browser caches: scanning".
+    func skeleton(_ active: Bool, index: Int = 0, accessibilityLabel: String) -> some View {
+        transformEnvironment(\.skeletonIndex) { if active { $0 = index } }
+            .allowsHitTesting(!active)
+            .modifier(SkeletonAccessibility(active: active, label: accessibilityLabel))
+    }
+
     /// Marks a `panel`-filled container, so skeleton blocks inside it stay visible.
     func skeletonSurfaceIsPanel() -> some View {
         environment(\.skeletonOnPanel, true)
@@ -48,16 +58,25 @@ enum SkeletonMetrics {
     static let textRadius: CGFloat = 4
     /// A text block covers this share of its line's height: the glyphs, not the leading.
     static let textHeightRatio: CGFloat = 0.62
-    /// Fewest and most placeholder rows a list shows.
-    static let minRows = 3
-    static let maxRows = 24
-
-    /// How many placeholder rows, `rowHeight` tall with `spacing` between them, fit in `height`
-    /// (the list's visible height less its padding), so the skeleton fills the list without scrolling.
+    /// How many placeholder rows fill `height` (see `SkeletonMath.rowCount`).
     static func rowCount(height: CGFloat, rowHeight: CGFloat, spacing: CGFloat = 0) -> Int {
-        guard height > 0, rowHeight > 0 else { return minRows }
-        let rows = Int(((height + spacing) / (rowHeight + spacing)).rounded(.down))
-        return min(maxRows, max(minRows, rows))
+        SkeletonMath.rowCount(height: Double(height), rowHeight: Double(rowHeight), spacing: Double(spacing))
+    }
+}
+
+/// One element with `label` whose children are hidden, while `active`.
+private struct SkeletonAccessibility: ViewModifier {
+    let active: Bool
+    let label: String
+
+    func body(content: Content) -> some View {
+        if active {
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label)
+        } else {
+            content
+        }
     }
 }
 
@@ -98,7 +117,8 @@ private struct SkeletonTextModifier: ViewModifier {
 }
 
 /// One placeholder block. It fills the space it is given unless `width` or `height` is set. It pulses
-/// in opacity only; under Reduce Motion or while the window isn't key it stays still.
+/// in opacity only, on the shared `SkeletonClock`; under Reduce Motion or while the window isn't key
+/// it stays still.
 struct SkeletonBlock: View {
     var width: CGFloat?
     var height: CGFloat?
@@ -110,32 +130,93 @@ struct SkeletonBlock: View {
     @Environment(\.controlActiveState) private var controlActiveState
     @Environment(\.skeletonOnPanel) private var onPanel
 
-    var body: some View {
-        Group {
-            if !reduceMotion && controlActiveState == .key {
-                TimelineView(.periodic(from: .now, by: 1.0 / 30)) { context in
-                    block.opacity(Self.opacity(at: context.date, index: index))
-                }
-            } else {
-                block
-            }
-        }
-        .accessibilityHidden(true)
-    }
+    private var pulses: Bool { !reduceMotion && controlActiveState == .key }
 
-    private var block: some View {
+    var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             // On a `panel` surface a `panel` block would vanish: one step darker, `line`.
             .fill(onPanel ? DustlingTheme.Palette.line : DustlingTheme.Palette.panel)
             .frame(width: width, height: height)
+            // Reading the clock only while pulsing: a still block never redraws.
+            .opacity(pulses ? opacity(at: SkeletonClock.shared.now) : 1)
+            .onAppear { SkeletonClock.shared.subscribe() }
+            .onDisappear { SkeletonClock.shared.unsubscribe() }
+            .accessibilityHidden(true)
     }
 
-    /// 1 → 0.45 → 1 per cycle, like the mockup's `w-pulse`. One clock for every block, so blocks
-    /// created at different moments still pulse together, each row 0.12 s after the one above.
-    static func opacity(at date: Date, index: Int) -> Double {
-        let period = DustlingTheme.Motion.skeletonPulse
-        let elapsed = date.timeIntervalSinceReferenceDate - Double(index) * DustlingTheme.Motion.skeletonStagger
-        let phase = elapsed.truncatingRemainder(dividingBy: period) / period
-        return 1 - 0.55 * (1 - cos(phase * 2 * .pi)) / 2
+    private func opacity(at time: TimeInterval) -> Double {
+        SkeletonMath.pulseOpacity(
+            at: time, index: index, period: DustlingTheme.Motion.skeletonPulse,
+            stagger: DustlingTheme.Motion.skeletonStagger)
+    }
+}
+
+/// The one clock every skeleton block pulses on: a single 30 Hz timer for the whole app instead of a
+/// timeline per block. It runs only while a skeleton is on screen, Dustling is active, its key window
+/// is visible (not covered or minimised) and the displays are awake.
+@MainActor @Observable
+final class SkeletonClock {
+    static let shared = SkeletonClock()
+
+    /// Seconds since the reference date, updated each tick.
+    private(set) var now = Date.timeIntervalSinceReferenceDate
+
+    @ObservationIgnored private var subscribers = 0
+    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var screensAsleep = false
+    @ObservationIgnored private var observers: [(NotificationCenter, NSObjectProtocol)] = []
+
+    private init() {
+        let workspace = NSWorkspace.shared.notificationCenter
+        let app = NotificationCenter.default
+        observe(workspace, NSWorkspace.screensDidSleepNotification) { $0.screensAsleep = true }
+        observe(workspace, NSWorkspace.screensDidWakeNotification) { $0.screensAsleep = false }
+        for name in [
+            NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
+            NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+        ] {
+            observe(app, name) { _ in }
+        }
+    }
+
+    func subscribe() {
+        subscribers += 1
+        update()
+    }
+
+    func unsubscribe() {
+        subscribers = max(0, subscribers - 1)
+        update()
+    }
+
+    private func observe(_ center: NotificationCenter, _ name: Notification.Name, _ change: @escaping @MainActor (SkeletonClock) -> Void) {
+        let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                change(self)
+                self.update()
+            }
+        }
+        observers.append((center, token))
+    }
+
+    private var shouldRun: Bool {
+        guard subscribers > 0, !screensAsleep, NSApp.isActive, let window = NSApp.keyWindow else { return false }
+        return window.occlusionState.contains(.visible)
+    }
+
+    private func update() {
+        if shouldRun {
+            guard timer == nil else { return }
+            let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.now = Date.timeIntervalSinceReferenceDate }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
+        } else {
+            timer?.invalidate()
+            timer = nil
+        }
     }
 }

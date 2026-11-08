@@ -51,7 +51,10 @@ struct RunsTimeline: View {
             .padding(.vertical, Self.verticalPadding)
         }
         .scrollDisabled(isPlaceholder)
-        .arrowKeyList(runIDs, current: selectedRunID, proxy: proxy, select: onSelect)
+        // Placeholder runs can't be focused or stepped through.
+        .arrowKeyList(
+            isPlaceholder ? [] : runIDs, current: selectedRunID, proxy: proxy, isEnabled: !isPlaceholder,
+            select: onSelect)
         }
     }
 

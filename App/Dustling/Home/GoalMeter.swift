@@ -100,9 +100,6 @@ struct GoalMeterView: View {
 struct UpdateCheckControl: View {
     @Environment(AppModels.self) private var models
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// The loading skeleton: the bar and legend as blocks, no marker.
-    @Environment(\.skeletonIndex) private var skeletonIndex
-    private var isSkeleton: Bool { skeletonIndex != nil }
 
     private typealias Palette = DustlingTheme.Palette
 

@@ -17,6 +17,8 @@ struct AllItemsTable: View {
     var body: some View {
         @Bindable var history = models.history
         let items = history.filteredItems
+        // Still reading: the table's own rows with placeholder items, and nothing to search yet.
+        let isLoading = history.isLoading && history.runs.isEmpty
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 HStack(spacing: 6) {
@@ -39,14 +41,16 @@ struct AllItemsTable: View {
                 .labelsHidden()
                 .fixedSize()
                 Spacer()
-                Text("\(items.count.formatted()) \(items.count == 1 ? "item" : "items")")
+                Text(isLoading ? "000 items" : "\(items.count.formatted()) \(items.count == 1 ? "item" : "items")")
                     .font(DustlingTheme.Typography.caption)
                     .foregroundStyle(Palette.muted)
                     .monospacedDigit()
+                    .skeletonText()
+                    .skeleton(isLoading)
             }
+            .disabled(isLoading)
             header
-            if history.isLoading && history.runs.isEmpty {
-                // Still reading: the table's own rows with placeholder items, in placeholder mode.
+            if isLoading {
                 let rows = SkeletonMetrics.rowCount(height: tableHeight, rowHeight: ItemRow.height)
                 ScrollView {
                     LazyVStack(spacing: 0) {

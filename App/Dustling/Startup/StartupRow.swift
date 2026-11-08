@@ -23,6 +23,10 @@ struct StartupRowView: View {
     static let minHeight: CGFloat = 42
     static let kindWidth: CGFloat = 130
     static let ownerWidth: CGFloat = 170
+    /// The skeleton's stand-in for the small switch: the switch's drawn track, measured on a 2x
+    /// screenshot (the control's own frame is wider, for its focus ring, and ran into the icon).
+    static let switchSkeleton = CGSize(width: 42, height: 19)
+    @Environment(\.skeletonIndex) private var skeletonIndex
 
     /// The row's loading skeleton: this row with a placeholder item, drawn in placeholder mode.
     static func placeholder(_ index: Int) -> some View {
@@ -34,7 +38,6 @@ struct StartupRowView: View {
     var body: some View {
         HStack(spacing: 10) {
             leading
-                .skeletonBlock(cornerRadius: 8)
                 .frame(width: 44, alignment: .leading)
             StartupIcon(row: row)
             VStack(alignment: .leading, spacing: 1) {
@@ -93,7 +96,12 @@ struct StartupRowView: View {
     }
 
     @ViewBuilder private var leading: some View {
-        if isBusy {
+        if let skeletonIndex {
+            // The small switch's capsule, leading in its column like the switch.
+            SkeletonBlock(
+                width: Self.switchSkeleton.width, height: Self.switchSkeleton.height,
+                cornerRadius: Self.switchSkeleton.height / 2, index: skeletonIndex)
+        } else if isBusy {
             BusyIndicator(label: "Changing…")
         } else if row.showsSystemSettingsLink {
             Button {

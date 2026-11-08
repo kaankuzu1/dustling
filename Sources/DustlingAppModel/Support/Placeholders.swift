@@ -13,6 +13,11 @@ public enum Placeholder {
         // Words of five, so a line that has to wrap or truncate does so like real text.
         return String((0..<count).map { $0 % 6 == 5 ? " " : "x" })
     }
+
+    /// The same id for the same placeholder row every time, so redraws keep the row's identity.
+    public static func id(_ index: Int) -> UUID {
+        UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", max(0, index)))!
+    }
 }
 
 extension StartupRow {
@@ -34,7 +39,7 @@ extension HistoryScreen.RunLine {
     /// A run of made-up text, for the loading skeleton.
     public static func placeholder(_ index: Int) -> HistoryScreen.RunLine {
         HistoryScreen.RunLine(
-            id: UUID(), tool: .junkScan, title: Placeholder.text(index, base: 18, spread: 14),
+            id: Placeholder.id(index), tool: .junkScan, title: Placeholder.text(index, base: 18, spread: 14),
             when: Placeholder.text(index, base: 12, spread: 4, step: 3),
             caption: Placeholder.text(index, base: 22, spread: 16, step: 11), chip: nil, size: "00.00 GB",
             action: nil, dimmed: false)
@@ -55,7 +60,7 @@ extension HistoryItem {
     public static func placeholder(_ index: Int) -> HistoryItem {
         let path = "/" + Placeholder.text(index, base: 36, spread: 30, step: 13).replacingOccurrences(of: " ", with: "/")
         return HistoryItem(
-            runID: UUID(), runTitle: "Junk scan", runDate: .distantPast, runKind: .junkClean, path: path,
+            runID: Placeholder.id(index), runTitle: "Junk scan", runDate: .distantPast, runKind: .junkClean, path: path,
             bytes: 1_000_000_000, status: "Moved to the Trash", restorable: false,
             entry: JournalEntry(originalPath: path, bytes: 1_000_000_000, outcome: .movedToTrash(trashedPath: path)))
     }

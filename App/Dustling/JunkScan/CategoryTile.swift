@@ -151,11 +151,11 @@ struct CategoryTile: View {
     /// The stagger follows the tile's place in the catalog.
     private var skeleton: some View {
         layout
-            .skeleton(true, index: JunkCategoryID.allCases.firstIndex(of: tile.id) ?? 0)
             .background(Palette.ground, in: shape)
             .overlay { shape.strokeBorder(Palette.line, lineWidth: 1) }
-            .accessibilityElement()
-            .accessibilityLabel("\(tile.title): scanning")
+            .skeleton(
+                true, index: JunkCategoryID.allCases.firstIndex(of: tile.id) ?? 0,
+                accessibilityLabel: "\(tile.title): scanning")
     }
 }
 

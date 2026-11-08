@@ -256,9 +256,7 @@ extension StepHeadline {
     /// caption, in placeholder mode.
     static var placeholder: some View {
         StepHeadline(title: "Dustling can see 00 of 00 places", caption: Placeholder.text(0, base: 30, spread: 0))
-            .skeleton(true)
-            .accessibilityElement()
-            .accessibilityLabel("Checking which places Dustling can see")
+            .skeleton(true, accessibilityLabel: "Checking which places Dustling can see")
     }
 }
 

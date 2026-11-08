@@ -26,3 +26,11 @@ struct PlaceholderTests {
         }
     }
 }
+
+extension PlaceholderTests {
+    @Test func idsStayTheSamePerIndex() {
+        #expect(HistoryScreen.RunLine.placeholder(3).id == HistoryScreen.RunLine.placeholder(3).id)
+        #expect(HistoryScreen.RunLine.placeholder(3).id != HistoryScreen.RunLine.placeholder(4).id)
+        #expect(HistoryItem.placeholder(2).id == HistoryItem.placeholder(2).id)
+    }
+}

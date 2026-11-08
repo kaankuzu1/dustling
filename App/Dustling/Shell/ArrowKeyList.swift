@@ -9,16 +9,18 @@ struct ArrowKeyList<ID: Hashable>: ViewModifier {
     let current: ID?
     let proxy: ScrollViewProxy
     let select: (ID) -> Void
+    /// Off for a list that only shows placeholders: it takes no focus and no keys.
+    var isEnabled = true
 
     func body(content: Content) -> some View {
         content
-            .focusable()
+            .focusable(isEnabled)
             .onKeyPress(.downArrow) { move(1) }
             .onKeyPress(.upArrow) { move(-1) }
     }
 
     private func move(_ offset: Int) -> KeyPress.Result {
-        guard let next = ListNavigation.step(ids, from: current, by: offset) else { return .ignored }
+        guard isEnabled, let next = ListNavigation.step(ids, from: current, by: offset) else { return .ignored }
         select(next)
         proxy.scrollTo(next)
         return .handled
@@ -27,8 +29,8 @@ struct ArrowKeyList<ID: Hashable>: ViewModifier {
 
 extension View {
     func arrowKeyList<ID: Hashable>(
-        _ ids: [ID], current: ID?, proxy: ScrollViewProxy, select: @escaping (ID) -> Void
+        _ ids: [ID], current: ID?, proxy: ScrollViewProxy, isEnabled: Bool = true, select: @escaping (ID) -> Void
     ) -> some View {
-        modifier(ArrowKeyList(ids: ids, current: current, proxy: proxy, select: select))
+        modifier(ArrowKeyList(ids: ids, current: current, proxy: proxy, select: select, isEnabled: isEnabled))
     }
 }
