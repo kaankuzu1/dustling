@@ -4,12 +4,9 @@ import Testing
 
 @MainActor
 struct OnboardingStateTests {
-    /// A throwaway defaults domain per test, removed afterwards.
+    /// A throwaway defaults domain per test, removed when the tests finish.
     private func withDefaults(_ body: (UserDefaults) -> Void) {
-        let name = "dustling-onboarding-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        body(defaults)
-        defaults.removePersistentDomain(forName: name)
+        body(ScratchDefaults.make("dustling-onboarding"))
     }
 
     @Test func onlyCompletedStepsAreDone() {
