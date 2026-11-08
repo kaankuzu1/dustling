@@ -194,26 +194,21 @@ struct UninstallerScreenTests {
         #expect(quiet.apps.map(\.items) == ["1 item"])
     }
 
-    /// Fifty checked data items or running apps must not stretch the sheet past the window: the
-    /// first few are named, then how many more.
-    @Test func confirmTextKeepsLongListsShort() {
+    /// The confirm sheet's middle scrolls, so every checked data item is named; running apps are
+    /// still counted past three to keep the note short.
+    @Test func confirmTextNamesEveryDataItemAndCountsManyRunningApps() {
         let names = (1...50).map { "App \($0)" }
         let text = ConfirmText.make(confirm(
             perApp: names.map { per($0, items: 1, data: 1, bytes: gb) },
             data: names.map { dataWarning($0) }, running: names))
         #expect(text.dataHeading == "50 items may contain your data:")
-        #expect(text.dataLines.count == ConfirmText.maxDataLines + 1)
-        #expect(text.dataLines[ConfirmText.maxDataLines]
-            == "And 47 more. They are included because you checked them.")
+        #expect(text.dataLines.count == 50)
+        #expect(text.dataLines.last?.hasSuffix("They are included because you checked them.") == true)
         #expect(text.notes.first == "App 1, App 2, App 3 and 47 other apps are running. Dustling will quit them first.")
         #expect(text.button == "Quit 50 apps and move to Trash")
 
-        let four = ConfirmText.make(confirm(
-            perApp: [per("A", items: 1, bytes: gb)], data: ["A", "B", "C", "D"].map { dataWarning($0) },
-            running: ["A", "B", "C", "D"]))
-        #expect(four.dataLines.last == "And 1 more. They are included because you checked them.")
+        let four = ConfirmText.make(confirm(perApp: [per("A", items: 1, bytes: gb)], running: ["A", "B", "C", "D"]))
         #expect(four.notes.first == "A, B, C and 1 other app are running. Dustling will quit them first.")
-        // Three or fewer are all named, as before.
         let three = ConfirmText.make(confirm(perApp: [per("A", items: 1, bytes: gb)], running: ["A", "B", "C"]))
         #expect(three.notes.first == "A, B and C are running. Dustling will quit them first.")
     }

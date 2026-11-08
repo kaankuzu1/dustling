@@ -17,7 +17,9 @@ struct EmptyTrashSheet: View {
     var body: some View {
         let trash = models.trash
         let shown = trash.canEmpty ? trash.contents?.size.bytes : nil
-        VStack(alignment: .leading, spacing: 14) {
+        let layout = SheetLayout.emptyTrash
+        VStack(alignment: .leading, spacing: CGFloat(layout.spacing)) {
+            // Pinned: the title and the buttons. Everything between scrolls (`SheetMiddle`).
             HStack(spacing: 12) {
                 Image(systemName: "trash")
                     .font(.system(size: 22))
@@ -28,6 +30,8 @@ struct EmptyTrashSheet: View {
                     .foregroundStyle(Palette.ink)
                     .accessibilityAddTraits(.isHeader)
             }
+            .frame(maxHeight: CGFloat(layout.headerHeight))
+            SheetMiddle(layout: layout, spacing: 14) {
             if let shown {
                 Text(Bytes.format(shown))
                     .font(DustlingTheme.Typography.figure)
@@ -48,6 +52,7 @@ struct EmptyTrashSheet: View {
                     .foregroundStyle(Palette.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            }
             HStack(spacing: 8) {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
@@ -57,8 +62,10 @@ struct EmptyTrashSheet: View {
                     .tint(Palette.danger)
                     .disabled(shown == nil || trash.isEmptying)
             }
+            .frame(height: CGFloat(SheetLayout.buttonRowHeight))
         }
-        .padding(20)
+        .padding(.vertical, CGFloat(layout.verticalPadding))
+        .padding(.horizontal, 20)
         .frame(width: 560)
         .background(Palette.ground)
         // Show what is in the Trash now, not what it held when the screen last looked.
@@ -87,8 +94,8 @@ private struct ItemList: View {
 
     var body: some View {
         if !listing.rows.isEmpty {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+            // The sheet's middle scrolls; the list itself doesn't.
+            VStack(alignment: .leading, spacing: 0) {
                     ForEach(listing.rows) { row in
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 1) {
@@ -117,9 +124,7 @@ private struct ItemList: View {
                             .padding(.vertical, 6)
                             .padding(.horizontal, 10)
                     }
-                }
             }
-            .frame(maxHeight: 220)
             .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius, style: .continuous))
         }
     }

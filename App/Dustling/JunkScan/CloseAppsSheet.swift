@@ -47,29 +47,22 @@ struct CloseAppsSheet: View {
 
     var body: some View {
         let gate = models.junk.cleanupGate
-        VStack(alignment: .leading, spacing: 14) {
+        let layout = SheetLayout.closeApps
+        VStack(alignment: .leading, spacing: CGFloat(layout.spacing)) {
+            // Pinned: the title and the buttons. Everything between scrolls (`SheetMiddle`).
             Text(CloseApps.title(run.holders))
                 .font(.custom(DustlingTheme.Typography.sansFamily, size: 15).weight(.semibold))
                 .foregroundStyle(Palette.ink)
+                .lineLimit(2)
                 .accessibilityAddTraits(.isHeader)
-            // Held to a few rows: past that it scrolls, so the buttons stay in the window.
-            let list = CloseApps.list(holders: run.holders.count)
-            VStack(alignment: .leading, spacing: 4) {
-                ScrollView(.vertical) {
-                    VStack(spacing: 0) {
-                        ForEach(run.holders) { holder in
-                            AppRow(holder: holder, status: status(holder))
-                        }
-                    }
-                }
-                .scrollDisabled(!list.scrolls)
-                .scrollIndicators(list.scrolls ? .visible : .hidden)
-                .frame(height: list.height)
-                .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))
-                if let more = list.moreLine(one: "app", many: "apps") {
-                    MoreLine(text: more)
+                .frame(maxHeight: CGFloat(layout.headerHeight), alignment: .leading)
+            SheetMiddle(layout: layout, spacing: 14) {
+            VStack(spacing: 0) {
+                ForEach(run.holders) { holder in
+                    AppRow(holder: holder, status: status(holder))
                 }
             }
+            .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))
             Text(CloseApps.note)
                 .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
                 .foregroundStyle(Palette.ink2)
@@ -87,6 +80,7 @@ struct CloseAppsSheet: View {
                     .foregroundStyle(Palette.warning)
                     .monospacedDigit()
                     .fixedSize(horizontal: false, vertical: true)
+            }
             }
             HStack(spacing: 8) {
                 Text(changedTo == nil ? "\(Bytes.format(promised)) will move" : "\(Bytes.format(changedTo ?? 0)) will move")
@@ -109,8 +103,10 @@ struct CloseAppsSheet: View {
                         .disabled(run.isRunning || run.isFinished)
                 }
             }
+            .frame(height: CGFloat(SheetLayout.buttonRowHeight))
         }
-        .padding(20)
+        .padding(.vertical, CGFloat(layout.verticalPadding))
+        .padding(.horizontal, 20)
         .frame(width: 560)
         .background(Palette.ground)
         .interactiveDismissDisabled(run.isRunning)
@@ -177,7 +173,7 @@ private struct AppRow: View {
             statusView
         }
         .padding(DustlingTheme.Metrics.rowPadding)
-        .frame(height: CloseApps.rowHeight)
+        .frame(minHeight: DustlingTheme.Metrics.rowMinHeight)
         .accessibilityElement(children: .combine)
     }
 
@@ -204,22 +200,5 @@ private struct AppRow: View {
                 .font(DustlingTheme.Typography.caption)
                 .foregroundStyle(Palette.warning)
         }
-    }
-}
-
-/// "and 15 more apps" under a sheet's list that scrolls.
-struct MoreLine: View {
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .semibold))
-                .accessibilityHidden(true)
-            Text(text)
-        }
-        .font(DustlingTheme.Typography.caption)
-        .foregroundStyle(DustlingTheme.Palette.muted)
-        .padding(.leading, 10)
     }
 }

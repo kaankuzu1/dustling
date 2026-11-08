@@ -42,14 +42,6 @@ public enum CloseApps {
     /// How long to wait for each app, as for uninstalling.
     public static let timeout: Duration = .seconds(10)
 
-    /// One row per open app (32 pt icon in a 48 pt row); five show before the list scrolls.
-    public static let rowHeight: Double = 48
-    public static let visibleRows = 5
-
-    public static func list(holders: Int) -> SheetList {
-        SheetList(rows: holders, rowHeight: rowHeight, spacing: 0, maxVisible: visibleRows)
-    }
-
     public static func title(_ holders: [OpenAppHolder]) -> String {
         holders.count == 1
             ? "Close \(holders[0].name) to include its files?"
