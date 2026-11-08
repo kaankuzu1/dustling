@@ -142,6 +142,7 @@ for entry in $STATES; do
       echo ok
     else
       echo PROBLEMS
+      [[ -f $dir/report.txt ]] || { mkdir -p "$dir"; echo "No report: Dustling quit before the check finished. See ~/Library/Logs/DiagnosticReports." > "$dir/report.txt"; }
       failed+=("$name-$look")
     fi
   done
