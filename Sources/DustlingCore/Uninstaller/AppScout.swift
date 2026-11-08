@@ -9,12 +9,14 @@ public struct AppScout: Sendable {
     private let environment: SystemEnvironment
     private let sizer: DirectorySizer
     private let measuresSizes: Bool
+    /// The folders to skip as folded path components, both as given and with their parent's links
+    /// resolved (so `/var/…` and `/private/var/…` both match).
     private let skipping: [[String]]
 
     /// `measuresSizes: false` lists the apps without measuring them (`bytes` is 0), for callers that
     /// only need names and locations, such as the owners of startup items. Apps linked into
-    /// `skipping` (folders that ask for consent without Full Disk Access) are left out without
-    /// looking at their target.
+    /// `skipping` (folders that ask for consent without Full Disk Access) are left out, and nothing
+    /// inside those folders is ever looked at: links are resolved by hand, one component at a time.
     public init(
         environment: SystemEnvironment, sizer: DirectorySizer = DirectorySizer(), measuresSizes: Bool = true,
         skipping: [URL] = []
@@ -22,22 +24,84 @@ public struct AppScout: Sendable {
         self.environment = environment
         self.sizer = sizer
         self.measuresSizes = measuresSizes
-        self.skipping = skipping.map { $0.standardizedFileURL.pathComponents }
+        var forms: [[String]] = []
+        for folder in skipping {
+            let path = folder.standardizedFileURL.path(percentEncoded: false)
+            forms.append(Self.folded(path))
+            // The folder's parent may go through links; only the parent is looked at, never the folder.
+            let parent = (path as NSString).deletingLastPathComponent
+            if let real = Self.resolveLinks(parent, skipping: [], isLink: Self.isLink, readLink: Self.readLink) {
+                let form = Self.folded(real) + [Self.fold((path as NSString).lastPathComponent)]
+                if !forms.contains(form) { forms.append(form) }
+            }
+        }
+        self.skipping = forms
     }
 
-    /// True when `url` is in a folder to skip. Only the path is compared; nothing is opened.
-    private func isSkipped(_ url: URL) -> Bool {
-        let parts = url.standardizedFileURL.pathComponents
-        return skipping.contains { parts.count >= $0.count && Array(parts.prefix($0.count)) == $0 }
+    // MARK: - Links, resolved without opening skipped folders
+
+    static let maxLinkHops = 32
+
+    private static func fold(_ component: String) -> String {
+        component.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
     }
 
-    /// Where a link points, read from the link itself (no access to the target), made absolute.
-    private static func linkDestination(_ link: URL) -> URL? {
-        guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: link.path(percentEncoded: false))
-        else { return nil }
-        return target.hasPrefix("/")
-            ? URL(filePath: target)
-            : link.deletingLastPathComponent().appending(path: target)
+    private static func folded(_ path: String) -> [String] {
+        path.split(separator: "/").map { fold(String($0)) }
+    }
+
+    private static func isInside(_ components: [String], _ skipping: [[String]]) -> Bool {
+        let parts = components.map(fold)
+        return skipping.contains { !$0.isEmpty && parts.count >= $0.count && Array(parts.prefix($0.count)) == $0 }
+    }
+
+    private static func isLink(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFLNK
+    }
+
+    private static func readLink(_ path: String) -> String? {
+        try? FileManager.default.destinationOfSymbolicLink(atPath: path)
+    }
+
+    /// Resolves every link in the absolute `path`, one component at a time. Each prefix is checked
+    /// against `skipping` before `isLink` or `readLink` sees it, and a link's target is spliced in
+    /// (relative to the folder holding it) before going on. `..` applies to the resolved folder.
+    /// Nil when the path leads into a skipped folder, a link can't be read, or it takes more than
+    /// `maxHops` links (a loop).
+    static func resolveLinks(
+        _ path: String, skipping: [[String]], isLink: (String) -> Bool, readLink: (String) -> String?,
+        maxHops: Int = maxLinkHops
+    ) -> String? {
+        var resolved: [String] = []
+        var remaining = path.split(separator: "/").map(String.init)
+        var hops = 0
+        while !remaining.isEmpty {
+            let component = remaining.removeFirst()
+            if component == "." || component.isEmpty { continue }
+            if component == ".." {
+                if !resolved.isEmpty { resolved.removeLast() }
+                continue
+            }
+            let candidate = resolved + [component]
+            if isInside(candidate, skipping) { return nil }
+            let candidatePath = "/" + candidate.joined(separator: "/")
+            guard isLink(candidatePath) else {
+                resolved = candidate
+                continue
+            }
+            hops += 1
+            guard hops <= maxHops, let target = readLink(candidatePath) else { return nil }
+            if target.hasPrefix("/") { resolved = [] }
+            remaining = target.split(separator: "/").map(String.init) + remaining
+        }
+        return "/" + resolved.joined(separator: "/")
+    }
+
+    /// The real path of `url` without looking inside skipped folders, or nil when it leads into one.
+    private func realPath(_ url: URL) -> String? {
+        Self.resolveLinks(
+            url.path(percentEncoded: false), skipping: skipping, isLink: Self.isLink, readLink: Self.readLink)
     }
 
     /// Installed apps sorted by display name (case-insensitive).
@@ -51,6 +115,10 @@ public struct AppScout: Sendable {
         var unreadable: [URL] = []
         var seen = Set<String>()
         for root in environment.applicationDirectories {
+            if !skipping.isEmpty {
+                // The folder itself may be a link into a skipped folder.
+                guard let real = realPath(root), !Self.isInsideSystemApplications(path: real) else { continue }
+            }
             if Self.isInsideSystemApplications(root) { continue }
             search(root, depth: 1, apps: &found, unreadable: &unreadable, seen: &seen)
         }
@@ -80,22 +148,23 @@ public struct AppScout: Sendable {
             let values = try? entry.resourceValues(forKeys: Set(keys))
             let isLink = values?.isSymbolicLink ?? false
             let isApp = entry.pathExtension.lowercased() == "app"
-            if isSkipped(entry) { continue }
-            if isLink, !skipping.isEmpty {
-                // Checked before anything follows the link, which could open the target.
-                guard let first = Self.linkDestination(entry), !isSkipped(first) else { continue }
+            // With folders to skip, links are resolved by hand and nothing under them is touched.
+            var real: URL?
+            if !skipping.isEmpty {
+                guard let path = realPath(entry) else { continue }
+                real = URL(filePath: path, directoryHint: .isDirectory)
             }
             if isApp {
-                let resolved = entry.resolvingSymlinksInPath()
-                if isSkipped(resolved) { continue }
-                if Self.isInsideSystemApplications(resolved) || (isLink && resolved.path.hasPrefix("/System/")) {
+                let resolved = real ?? entry.resolvingSymlinksInPath()
+                if Self.isInsideSystemApplications(path: resolved.path(percentEncoded: false))
+                    || (isLink && resolved.path.hasPrefix("/System/")) {
                     continue
                 }
                 var isDir: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDir), isDir.boolValue
+                guard FileManager.default.fileExists(atPath: (real ?? entry).path, isDirectory: &isDir), isDir.boolValue
                 else { continue }
                 guard seen.insert(entry.path).inserted else { continue }
-                apps.append(makeApp(entry, linkTarget: isLink ? resolved : nil))
+                apps.append(makeApp(entry, linkTarget: isLink ? resolved : nil, metadataFrom: real))
             } else if !isLink, values?.isDirectory == true, depth < Self.maxDepth {
                 search(entry, depth: depth + 1, apps: &apps, unreadable: &unreadable, seen: &seen)
             }
@@ -116,30 +185,37 @@ public struct AppScout: Sendable {
     }
 
     private static func isInsideSystemApplications(_ url: URL) -> Bool {
-        let path = url.resolvingSymlinksInPath().path
-        return path == "/System/Applications" || path.hasPrefix("/System/Applications/")
+        isInsideSystemApplications(path: url.resolvingSymlinksInPath().path)
+    }
+
+    /// For a path whose links are already resolved.
+    private static func isInsideSystemApplications(path: String) -> Bool {
+        path == "/System/Applications" || path.hasPrefix("/System/Applications/")
     }
 
     // MARK: - Metadata
 
     /// `linkTarget` is set when the `.app` entry is a symbolic link; metadata and size then come from
     /// the target (the link itself occupies next to nothing).
-    private func makeApp(_ url: URL, linkTarget: URL?) -> InstalledApp {
-        let info = NSDictionary(contentsOf: url.appending(path: "Contents/Info.plist")) as? [String: Any] ?? [:]
+    /// `metadataFrom`: the hand-resolved real path to read Info.plist, the signature and the size
+    /// from, so the kernel never follows the links again.
+    private func makeApp(_ url: URL, linkTarget: URL?, metadataFrom real: URL? = nil) -> InstalledApp {
+        let source = real ?? url
+        let info = NSDictionary(contentsOf: source.appending(path: "Contents/Info.plist")) as? [String: Any] ?? [:]
         func string(_ key: String) -> String? {
             guard let value = info[key] as? String, !value.isEmpty else { return nil }
             return value
         }
         let fileName = url.deletingPathExtension().lastPathComponent
         let executable = string("CFBundleExecutable")
-        let lastUsed = try? url.resourceValues(forKeys: [.contentAccessDateKey]).contentAccessDate
+        let lastUsed = try? source.resourceValues(forKeys: [.contentAccessDateKey]).contentAccessDate
         return InstalledApp(
             url: url,
             displayName: string("CFBundleDisplayName") ?? string("CFBundleName") ?? fileName,
             bundleID: string("CFBundleIdentifier"),
-            teamID: teamIdentifier(of: url),
+            teamID: teamIdentifier(of: source),
             executableName: executable,
-            steamAppID: executable.flatMap { steamAppID(in: url.appending(path: "Contents/MacOS/\($0)")) },
+            steamAppID: executable.flatMap { steamAppID(in: source.appending(path: "Contents/MacOS/\($0)")) },
             bytes: measuresSizes ? sizer.measure(linkTarget ?? url).bytes : 0,
             lastUsed: lastUsed,
             linkTarget: linkTarget

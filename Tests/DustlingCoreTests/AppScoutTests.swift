@@ -98,10 +98,82 @@ import Testing
             atPath: dir.appending(path: "Relative.app").path(percentEncoded: false),
             withDestinationPath: "../home/Documents/Tools/Private.app")
         try fm.createSymbolicLink(at: dir.appending(path: "Real.app"), withDestinationURL: real)
+        // A chain through a folder outside: Chain.app -> elsewhere/Hop.app -> Documents.
+        let hop = sandbox.root.appending(path: "elsewhere/Hop.app")
+        try fm.createSymbolicLink(at: hop, withDestinationURL: hidden)
+        try fm.createSymbolicLink(at: dir.appending(path: "Chain.app"), withDestinationURL: hop)
+        // A folder that is a link into Documents.
+        try fm.createSymbolicLink(at: dir.appending(path: "Shared"), withDestinationURL: documents.appending(path: "Tools"))
         let apps = AppScout(environment: sandbox.environment, measuresSizes: false, skipping: [documents]).discover()
         #expect(apps.map(\.displayName) == ["Real"])
-        // Without the folder to skip, all three are listed.
-        #expect(AppScout(environment: sandbox.environment, measuresSizes: false).discover().count == 3)
+        // Without the folder to skip, the links into it are listed.
+        #expect(AppScout(environment: sandbox.environment, measuresSizes: false).discover().count == 4)
+    }
+
+    // MARK: resolving links without opening skipped folders
+
+    /// A fake file system of links that records every path looked at.
+    private final class FakeLinks: @unchecked Sendable {
+        let links: [String: String]
+        private(set) var looked: [String] = []
+        init(_ links: [String: String]) { self.links = links }
+        func isLink(_ path: String) -> Bool { looked.append(path); return links[path] != nil }
+        func readLink(_ path: String) -> String? { looked.append(path); return links[path] }
+    }
+
+    private static let documents = ["users", "k", "documents"]
+
+    private func resolve(_ path: String, _ fake: FakeLinks) -> String? {
+        AppScout.resolveLinks(path, skipping: [Self.documents], isLink: fake.isLink, readLink: fake.readLink)
+    }
+
+    private func neverLookedInside(_ fake: FakeLinks) -> Bool {
+        !fake.looked.contains { $0.lowercased().hasPrefix("/users/k/documents") }
+    }
+
+    @Test func absoluteLinkIntoASkippedFolderIsNeverOpened() {
+        let fake = FakeLinks(["/Applications/A.app": "/Users/k/Documents/C.app"])
+        #expect(resolve("/Applications/A.app", fake) == nil)
+        #expect(neverLookedInside(fake))
+        #expect(fake.looked.contains("/Applications/A.app"))
+    }
+
+    @Test func relativeLinkWithDotDotIsResolvedBeforeChecking() {
+        let fake = FakeLinks(["/Applications/R.app": "../Users/k/Documents/X.app"])
+        #expect(resolve("/Applications/R.app", fake) == nil)
+        #expect(neverLookedInside(fake))
+    }
+
+    @Test func twoHopChainIsCheckedAtEveryHop() {
+        let fake = FakeLinks([
+            "/Applications/A.app": "/Users/Shared/B.app",
+            "/Users/Shared/B.app": "/Users/k/Documents/C.app",
+        ])
+        #expect(resolve("/Applications/A.app", fake) == nil)
+        #expect(neverLookedInside(fake))
+        #expect(fake.looked.contains("/Users/Shared/B.app"))
+    }
+
+    @Test func linkThroughASymlinkedFolderIsCaught() {
+        let fake = FakeLinks(["/Applications/Shared": "/Users/k/documents"])
+        #expect(resolve("/Applications/Shared/D.app", fake) == nil)
+        #expect(neverLookedInside(fake))
+    }
+
+    @Test func loopsStopAfterTheHopLimit() {
+        let fake = FakeLinks(["/Applications/L1.app": "L2.app", "/Applications/L2.app": "L1.app"])
+        #expect(resolve("/Applications/L1.app", fake) == nil)
+        #expect(fake.looked.count <= 2 * (AppScout.maxLinkHops + 2))
+    }
+
+    @Test func linksOutsideSkippedFoldersResolve() {
+        let fake = FakeLinks([
+            "/Applications/A.app": "/Users/Shared/Apps/../B.app",
+            "/Users/Shared/B.app": "Real/B.app",
+        ])
+        #expect(resolve("/Applications/A.app", fake) == "/Users/Shared/Real/B.app")
+        #expect(resolve("/Applications/Plain.app", FakeLinks([:])) == "/Applications/Plain.app")
+        #expect(neverLookedInside(fake))
     }
 
     @Test func doesNotFollowSymlinkedDirectories() throws {
