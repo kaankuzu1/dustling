@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-09
+
+A polish release: a proper install window, a Quit that always works, and fixes from a full pass over every screen.
+
 ### Changed
 
 - The disk image now opens a proper install window: drag Dustling onto Applications, with a hint for updating an older copy and for the first open. The disk shows Dustling's icon.
@@ -47,5 +51,6 @@ The first release of Dustling: a free, open-source Mac cleaner that moves things
 - Because of that, macOS may drop Full Disk Access when you update to a new version. Dustling tells you when this happens; turn it on again in System Settings.
 - There is no admin helper yet. Items that need administrator rights (some system caches, launch daemons) are reported as "needs admin" and left alone.
 
-[Unreleased]: https://github.com/kaankuzu1/dustling/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kaankuzu1/dustling/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/kaankuzu1/dustling/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kaankuzu1/dustling/releases/tag/v0.1.0
