@@ -71,6 +71,33 @@ public struct JunkTile: Identifiable, Equatable, Sendable {
     public let cells: MiniMosaic
     /// Review tiles are outlined (the mockup's `.tile2.off`).
     public var isOutlined: Bool { !isSelected && status != .cleaned }
+
+    /// What VoiceOver reads after the tile's name: its size (or that it isn't known), then its state,
+    /// e.g. "4.2 GB, selected" or "size unknown, locked". The note is read as the hint.
+    public var accessibilityValue: String {
+        let size: String
+        if let bytes {
+            size = Bytes.format(bytes) + (isLowerBound ? " or more" : "")
+        } else {
+            size = "size unknown"
+        }
+        let selection = isSelected ? "selected" : "not selected"
+        let state: String
+        switch status {
+        case .pending: return "scanning"
+        case .scanned: state = selection
+        case .stopped: state = "scan stopped, \(selection)"
+        case .locked: state = "locked"
+        case .unreadable: state = "can't be read"
+        case .notScannedYet: state = "not scanned yet"
+        case .needsHelper: state = "needs the cleanup helper"
+        case .queued: state = "waiting to move"
+        case .moving: state = "moving to the Trash"
+        case .moved: state = "done"
+        case .cleaned: state = "moved to the Trash"
+        }
+        return "\(size), \(state)"
+    }
 }
 
 /// The logic behind the Junk scan screen (SCREENS-final §3), kept out of the views so it can be tested.

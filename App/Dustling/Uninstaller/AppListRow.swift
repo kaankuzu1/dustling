@@ -57,7 +57,9 @@ struct AppListRow: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .accessibilityElement(children: .contain)
+        .accessibilityLabel(row.app.displayName)
         .accessibilityAddTraits(isCurrent ? [.isSelected, .isButton] : .isButton)
+        .accessibilityAction(named: "Show details", onSelect)
     }
 
     @ViewBuilder private var leading: some View {

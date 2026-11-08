@@ -142,7 +142,7 @@ struct UninstallerView: View {
     private func appList(_ shown: [AppRow]) -> some View {
         let model = models.uninstaller
         let progress = model.progress
-        return ScrollView {
+        return ScrollViewReader { proxy in ScrollView {
             LazyVStack(spacing: 0) {
                 if model.apps.isEmpty && model.isLoading {
                     ForEach(0..<6, id: \.self) { SkeletonRow(index: $0) }
@@ -175,6 +175,8 @@ struct UninstallerView: View {
                 }
             }
             .padding(8)
+        }
+        .arrowKeyList(shown.map(\.id), current: currentID(shown), proxy: proxy) { current = $0 }
         }
     }
 

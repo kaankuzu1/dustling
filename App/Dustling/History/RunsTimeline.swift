@@ -15,7 +15,7 @@ struct RunsTimeline: View {
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
-        ScrollView {
+        ScrollViewReader { proxy in ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
                 ForEach(entries) { entry in
                     switch entry {
@@ -24,6 +24,7 @@ struct RunsTimeline: View {
                             line: line, isSelected: line.id == selectedRunID, isRestoring: isRestoring,
                             onSelect: { onSelect(line.id) }, onShowLog: { onShowLog(line.id) },
                             onRestore: { onRestore(line.id) }, onShowInTrash: onShowInTrash)
+                        .id(line.id)
                     case .trashEmptied(let text):
                         TrashEmptiedLine(text: text)
                     }
@@ -32,6 +33,12 @@ struct RunsTimeline: View {
             .padding(.horizontal, DustlingTheme.Metrics.gutter)
             .padding(.vertical, 14)
         }
+        .arrowKeyList(runIDs, current: selectedRunID, proxy: proxy, select: onSelect)
+        }
+    }
+
+    private var runIDs: [UUID] {
+        entries.compactMap { if case .run(let line) = $0 { line.id } else { nil } }
     }
 }
 
@@ -80,6 +87,7 @@ private struct RunGroup: View {
                 .onTapGesture(count: 2, perform: onShowLog)
                 .onTapGesture(perform: onSelect)
                 .contextMenu { Button("Show log", action: onShowLog) }
+                .accessibilityAction(named: "Select", onSelect)
                 .accessibilityAction(named: "Show log", onShowLog)
                 .padding(.leading, 18)
                 .overlay(alignment: .leading) {

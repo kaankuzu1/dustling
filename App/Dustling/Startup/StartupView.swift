@@ -198,6 +198,7 @@ private struct LoginItemsRow: View {
             }
             .buttonStyle(.plain)
             .help("Opens Login Items in System Settings")
+            .accessibilityLabel("Open Login Items in System Settings")
         }
         .padding(.horizontal, 10)
         .frame(minHeight: 42)

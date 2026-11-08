@@ -321,3 +321,29 @@ struct TrashListingTests {
         #expect(listing.moreLine == nil)
     }
 }
+
+struct JunkTileAccessibilityTests {
+    private func tile(_ status: JunkTile.Status, bytes: UInt64?, lower: Bool = false, selected: Bool) -> JunkTile {
+        JunkTile(
+            id: .userCaches, title: "App caches", section: .safe, status: status, bytes: bytes,
+            isLowerBound: lower, isSelected: selected, canToggle: status == .scanned, note: "note",
+            cells: MiniMosaic(count: 1, kind: .selected))
+    }
+
+    @Test func tilesReadSizeAndSelection() {
+        #expect(tile(.scanned, bytes: 4_200_000_000, selected: true).accessibilityValue == "4.2 GB, selected")
+        #expect(tile(.scanned, bytes: 1_000_000, selected: false).accessibilityValue == "1 MB, not selected")
+        #expect(tile(.stopped, bytes: 1_000_000, lower: true, selected: true).accessibilityValue
+            == "1 MB or more, scan stopped, selected")
+    }
+
+    @Test func tilesWithoutASizeNeverReadZero() {
+        let locked = tile(.locked, bytes: nil, selected: false).accessibilityValue
+        #expect(locked == "size unknown, locked")
+        #expect(!locked.contains("0"))
+        #expect(tile(.needsHelper, bytes: 2_000_000, selected: false).accessibilityValue
+            == "2 MB, needs the cleanup helper")
+        #expect(tile(.pending, bytes: nil, selected: false).accessibilityValue == "scanning")
+    }
+}
+

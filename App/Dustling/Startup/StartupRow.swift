@@ -84,6 +84,7 @@ struct StartupRowView: View {
             }
             .buttonStyle(.plain)
             .help("Opens Login Items in System Settings")
+            .accessibilityLabel("Open Login Items in System Settings")
         } else {
             Toggle(row.name, isOn: Binding(get: { row.item.isEnabled }, set: { _ in onToggle() }))
                 .toggleStyle(.switch)
@@ -119,6 +120,7 @@ private struct BadgeChip: View {
             }
             .buttonStyle(.plain)
             .help(badge.help)
+            .accessibilityLabel("\(badge.text). Open Login Items in System Settings")
         case .helper:
             Chip(text: badge.text, kind: .admin).help(badge.help)
         }

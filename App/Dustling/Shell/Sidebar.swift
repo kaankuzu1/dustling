@@ -106,6 +106,9 @@ struct AppIconTile: View {
 /// navigation work, drawn with the mockup's rows instead of the system highlight.
 private struct DestinationList: View {
     @Binding var selection: Destination
+    /// The rows draw their own selection, so the table's focus ring is gone too: while the list has
+    /// keyboard focus, the selected row gets the system focus ring instead.
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         List(selection: Binding<Destination?>(
@@ -116,6 +119,7 @@ private struct DestinationList: View {
                 SidebarRow(
                     title: destination.title,
                     isSelected: selection == destination,
+                    showsFocusRing: isFocused && selection == destination,
                     icon: { destination.icon(color: DustlingTheme.Palette.sidebarIcon) })
                     .tag(destination)
                     .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
@@ -130,6 +134,7 @@ private struct DestinationList: View {
         // The plain list still insets rows by 6 pt per side; the mockup's rows span the column.
         .padding(.horizontal, -6)
         .environment(\.defaultMinListRowHeight, 34)
+        .focused($isFocused)
         .accessibilityLabel("Sections")
     }
 }
@@ -158,9 +163,12 @@ struct SidebarRow<Icon: View>: View {
     let title: String
     var badge: String?
     var isSelected = false
+    /// The keyboard focus ring around the row (the selected row while the list has focus).
+    var showsFocusRing = false
     @ViewBuilder var icon: () -> Icon
 
     @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
@@ -187,8 +195,14 @@ struct SidebarRow<Icon: View>: View {
             RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius, style: .continuous)
                 .fill(Palette.sidebarSelection.opacity(isSelected ? 1 : isHovered ? 0.55 : 0))
         }
+        .overlay {
+            if showsFocusRing {
+                RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius, style: .continuous)
+                    .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 2.5)
+            }
+        }
         .onHover { isHovered = $0 }
-        .animation(DustlingTheme.Motion.hover, value: isHovered)
+        .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.hover, reduceMotion: reduceMotion), value: isHovered)
         .accessibilityElement(children: .combine)
     }
 }

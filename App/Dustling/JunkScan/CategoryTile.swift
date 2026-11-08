@@ -51,7 +51,16 @@ struct CategoryTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(tile.isOutlined ? Palette.ground : Palette.panel, in: shape)
         .overlay { if tile.isOutlined { shape.strokeBorder(Palette.line, lineWidth: 1) } }
-        .accessibilityElement(children: .contain)
+        // One element: the name, then the size and state ("4.2 GB, selected"), the note as the hint.
+        // A tile that can be ticked is a toggle whose default action ticks it.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(tile.title)
+        .accessibilityValue(tile.accessibilityValue)
+        .accessibilityHint(tile.note)
+        .accessibilityAddTraits(tile.status == .scanned && tile.canToggle ? .isToggle : [])
+        .accessibilityAction {
+            if tile.status == .scanned && tile.canToggle { models.junk.toggle(tile.id) }
+        }
     }
 
     // MARK: Leading control
