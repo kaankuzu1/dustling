@@ -27,7 +27,7 @@ public enum RepairCase: Equatable, Sendable {
                 fix: "Repair helper")
         case .fullDiskAccessLost:
             // The design says "this build changed it". Dustling can't tell a rebuild from the user
-            // switching it off, so the cause is given as a possibility (design question for Kaan).
+            // switching it off, so the cause is given as a possibility (a design question).
             return Copy(
                 title: "Full Disk Access was turned off",
                 why: "macOS ties the permission to the app's signature, so a new build can turn it off. Dustling noticed by trying a real read, so nothing was scanned with missing folders.",
@@ -245,8 +245,10 @@ public final class LastRunRetry {
     public private(set) var isRetrying = false
     /// What happened, in plain words, after the last retry.
     public private(set) var message: String?
+    #if DEBUG
     /// DEBUG screenshot fixtures show sample runs; retrying them would write to the real history.
     public var refusesSampleData = false
+    #endif
 
     @ObservationIgnored private let catalog: () -> [JunkCategory]
     @ObservationIgnored private let running: () -> Set<String>
@@ -283,10 +285,12 @@ public final class LastRunRetry {
     /// `confirmedLimited`: the user confirmed the limited-mode note (no Put back without access).
     public func retry(_ record: RunRecord, confirmedLimited: Bool = false) async {
         guard !isRetrying else { return }
+        #if DEBUG
         if refusesSampleData {
             message = "These are sample items, so nothing was retried."
             return
         }
+        #endif
         if isBusy() {
             message = "Wait until the current scan or cleanup finishes, then retry."
             return

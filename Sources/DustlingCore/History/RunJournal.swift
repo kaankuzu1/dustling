@@ -87,6 +87,25 @@ public struct RunJournal: Sendable {
         return runs.sorted { $0.startedAt > $1.startedAt }
     }
 
+    /// The run that started last, reading as few files as possible: files newest-written first, and
+    /// it stops at the first file last written before the best run so far started (a run is saved
+    /// after it starts, so nothing older can have started later). Unreadable files are skipped.
+    public func newest() throws -> RunRecord? {
+        let decoder = Self.makeDecoder()
+        let dated = try jsonFiles().map { url -> (URL, Date) in
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            return (url, date ?? .distantFuture)
+        }.sorted { $0.1 > $1.1 }
+        var best: RunRecord?
+        for (url, written) in dated {
+            if let best, written < best.startedAt { break }
+            guard let data = try? Data(contentsOf: url), let run = try? decoder.decode(RunRecord.self, from: data)
+            else { continue }
+            if best.map({ run.startedAt > $0.startedAt }) ?? true { best = run }
+        }
+        return best
+    }
+
     /// Journal files that could not be read or decoded (so the UI can say so instead of hiding them).
     public func unreadableRecords() -> [URL] {
         let decoder = Self.makeDecoder()

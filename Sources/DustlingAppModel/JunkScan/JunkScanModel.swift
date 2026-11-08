@@ -502,8 +502,10 @@ public final class JunkScanModel {
 
     /// After "Quit apps and clean": asks the apps to quit, re-checks only those apps, and cleans when
     /// exactly the offered amount can move. Otherwise it says what changed and waits for the user.
+    /// `skipping`: places that can't be read now, as for `clean(skipping:)`; nil uses `cleanupSkip`.
     public func quitAndCleanFlow(
-        _ run: CloseAppsRun, quitter: AppQuitter, timeout: Duration = CloseApps.timeout, promised: UInt64
+        _ run: CloseAppsRun, quitter: AppQuitter, timeout: Duration = CloseApps.timeout, promised: UInt64,
+        skipping: CleanupSkip? = nil
     ) async -> CloseApps.FlowResult {
         #if DEBUG
         guard !isFixture else {
@@ -524,7 +526,7 @@ public final class JunkScanModel {
             return .askAgain(
                 now: now, line: CloseApps.changedLine(promised: promised, now: now, someStillOpen: stillOpen) ?? "")
         }
-        await clean(confirmedLimited: true, closedApps: run.closedNames)
+        await clean(skipping: skipping, confirmedLimited: true, closedApps: run.closedNames)
         return .cleaned
     }
 
@@ -576,8 +578,9 @@ public final class JunkScanModel {
 
     // MARK: clean
 
-    /// Moves the selected categories to the Trash. The allowed roots are the category folders the
-    /// scan really resolved (the same rule as `dustling-cli clean`), never the items' own parents.
+    /// Moves the selected categories to the Trash. The allowed roots are the folders the scan listed
+    /// the items in: each item's parent, which is the category root the scan resolved (the scanner
+    /// only lists a root's direct children). The protected paths still apply to every move.
     ///
     /// `skipping`: places that can't be read now; their items are recorded as skipped. With the gate
     /// at `confirmFirst`, nothing happens unless the user confirmed (`confirmedLimited`).

@@ -27,7 +27,7 @@ struct HistoryScreenTests {
     ) -> RunRow {
         let record = RunRecord(startedAt: date, kind: kind, entries: entries, restorable: restorable)
         return RunRow(
-            record: record, title: "", chip: nil, restorable: restorable,
+            record: record, title: "", chip: nil, restorable: restorable, inProgress: false,
             itemCount: entries.filter { !$0.originalPath.hasPrefix("<") }.count, bytes: record.bytesMovedToTrash)
     }
 

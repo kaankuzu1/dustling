@@ -74,6 +74,9 @@ struct HomeView: View {
         if let sentence = models.places.unreadableSentence {
             Banner(title: sentence, message: LimitedModeBanner.honesty, leading: .icon(.warn))
         }
+        if let problem = models.settings.loadProblem {
+            Banner(title: "Scan settings were reset", message: problem, leading: .icon(.warn))
+        }
     }
 
     // MARK: Subtitle

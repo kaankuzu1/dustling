@@ -588,11 +588,11 @@ public final class UninstallerModel {
         if running.isRunning(app) {
             // Never quit an app the user didn't see as running when they confirmed.
             guard confirmedRunning else {
-                return recordStillRunning(app, leftovers: leftovers, reason: Self.openedAfterConfirmReason)
+                return await recordStillRunning(app, leftovers: leftovers, reason: Self.openedAfterConfirmReason)
             }
             progress?.quitting(app.url)
             _ = await Self.quitWithTimeout(app, quit: quit, timeout: quitTimeout)
-            if running.isRunning(app) { return recordStillRunning(app, leftovers: leftovers) }
+            if running.isRunning(app) { return await recordStillRunning(app, leftovers: leftovers) }
         }
         // The one rule: only what it calls "needs Full Disk Access" is held back here; helper-only
         // items go to the core, which records them as needing admin.
@@ -617,7 +617,7 @@ public final class UninstallerModel {
             }
         } catch {
             // The app opened between the check and the move.
-            return recordStillRunning(app, leftovers: leftovers, error: error)
+            return await recordStillRunning(app, leftovers: leftovers, error: error)
         }
     }
 
@@ -662,7 +662,7 @@ public final class UninstallerModel {
 
     private func recordStillRunning(
         _ app: InstalledApp, leftovers: [Leftover], error: Error? = nil, reason skipReason: String = UninstallerModel.stillRunningReason
-    ) -> RunRecord {
+    ) async -> RunRecord {
         let outcome: DeletionOutcome
         if let error, !(error is UninstallError) {
             outcome = .failed(reason: "could not uninstall: \(error.localizedDescription)")
@@ -675,16 +675,22 @@ public final class UninstallerModel {
                 originalPath: leftover.url.path(percentEncoded: false), bytes: leftover.bytes,
                 outcome: .skipped(reason: "kept because the app itself was not removed")))
         }
-        var record = RunRecord(
+        let record = RunRecord(
             startedAt: Date(), kind: .uninstall(appName: app.displayName), entries: entries, restorable: false)
-        do { try journal.save(record) } catch {
-            record.entries.append(JournalEntry(originalPath: "<history>", bytes: 0, outcome: .failed(reason: error.localizedDescription)))
+        // Journal and log writes block: off the main actor.
+        let journal = self.journal
+        let logger = self.logger
+        return await Blocking.run { () -> RunRecord in
+            var record = record
+            do { try journal.save(record) } catch {
+                record.entries.append(JournalEntry(originalPath: "<history>", bytes: 0, outcome: .failed(reason: error.localizedDescription)))
+            }
+            do { try logger.write(record) } catch {
+                record.entries.append(JournalEntry(originalPath: "<log>", bytes: 0, outcome: .failed(reason: error.localizedDescription)))
+                try? journal.save(record)
+            }
+            return record
         }
-        do { try logger.write(record) } catch {
-            record.entries.append(JournalEntry(originalPath: "<log>", bytes: 0, outcome: .failed(reason: error.localizedDescription)))
-            try? journal.save(record)
-        }
-        return record
     }
 
     /// Waits for `quit` but never longer than `timeout`, even if the quitter ignores cancellation.

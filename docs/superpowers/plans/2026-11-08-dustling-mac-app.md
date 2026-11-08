@@ -16,12 +16,7 @@ The privileged helper is Plan 2. Here, every helper-dependent control renders an
 - XcodeGen 2.44 (already installed at `/opt/homebrew/bin/xcodegen`) and Xcode 26.3.
 - Swift Testing, plus the existing `DustlingCore`.
 
-**Spec:** `docs/superpowers/specs/2026-11-07-dustling-design.md`. Approved design inputs, which are binding:
-- `~/Desktop/mac-cleaner-design/handoff/SCREENS-final.md` (Kaan approved 2026-11-07)
-- `~/Desktop/mac-cleaner-design/handoff/DESIGN-mosaic.md`
-- `~/Desktop/mac-cleaner-design/handoff/DustlingTheme.swift`
-- The exact markup per frame: the `MIX` object in `~/Desktop/mac-cleaner-design/screens.html`
-- Live reference: https://claude.ai/artifact/3XDHiKLBdHWafP7vpbzn8t
+**Spec:** `docs/superpowers/specs/2026-11-07-dustling-design.md`. Approved design inputs, which are binding: the approved design handoff (the final screen list, the Mosaic design system, its `DustlingTheme.swift` tokens, and the per-frame markup of the approved "Your mix" frames).
 - Logo kit: project files `design/logo/final/` (the icon colours are final)
 
 ## Global Constraints

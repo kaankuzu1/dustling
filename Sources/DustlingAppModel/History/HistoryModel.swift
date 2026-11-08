@@ -8,6 +8,9 @@ public struct RunRow: Identifiable, Equatable, Sendable {
     /// "Can be restored", "Trash emptied", or nil when the run moved nothing to the Trash.
     public let chip: String?
     public let restorable: Bool
+    /// The run is still marked in progress: "Still running" while Dustling is working, otherwise
+    /// "Interrupted" (it never finished). Such a run is never put back.
+    public let inProgress: Bool
     public let itemCount: Int
     public let bytes: UInt64
     public var id: UUID { record.id }
@@ -47,14 +50,24 @@ public enum HistoryModelError: Error, Equatable, LocalizedError, Sendable {
     case trashWasEmptied
     /// Without Full Disk Access macOS won't let Dustling take anything out of the Trash.
     case cantTakeOutOfTrash
+    /// The run is still marked in progress (running now, or interrupted before it finished).
+    case runInProgress
+    /// A cleanup, uninstall, startup change or retry is running.
+    case busy
+    #if DEBUG
     /// The DEBUG screenshot fixture is showing; nothing is restored.
     case fixture
+    #endif
 
     public var errorDescription: String? {
         switch self {
         case .trashWasEmptied: "The Trash was emptied after this run, so its items can't be put back."
         case .cantTakeOutOfTrash: "Dustling can't take things out of the Trash without Full Disk Access."
+        case .runInProgress: "This run hasn't finished, so its items can't be put back yet."
+        case .busy: "Wait until the current cleanup or change finishes, then put back."
+        #if DEBUG
         case .fixture: "This is a screenshot sample, so nothing was put back."
+        #endif
         }
     }
 }
@@ -88,6 +101,9 @@ public final class HistoryModel {
     public let home: URL?
     @ObservationIgnored private let onRunCompleted: @MainActor () -> Void
     @ObservationIgnored private var generation = 0
+    /// True while another tool is working (a cleanup, uninstall, startup change or retry): Put back
+    /// waits, and runs still marked in progress read "Still running" instead of "Interrupted".
+    @ObservationIgnored public var isOtherWorkBusy: @MainActor () -> Bool = { false }
     #if DEBUG
     @ObservationIgnored public private(set) var isFixture = false
     #endif
@@ -147,7 +163,7 @@ public final class HistoryModel {
         let sorted = records.sorted { $0.startedAt > $1.startedAt }
         let lastEmpty = sorted.first { $0.kind == .emptyTrash }?.startedAt
         lastEmptyTrash = lastEmpty
-        runs = sorted.map { Self.row($0, lastEmpty: lastEmpty) }
+        runs = sorted.map { Self.row($0, lastEmpty: lastEmpty, busy: isOtherWorkBusy()) }
         let restorableRuns = Set(runs.filter(\.restorable).map(\.id))
         allItems = sorted.flatMap { run in
             run.entries.filter { !$0.originalPath.hasPrefix("<") }.map { entry in
@@ -159,13 +175,18 @@ public final class HistoryModel {
         }
     }
 
-    private static func row(_ run: RunRecord, lastEmpty: Date?) -> RunRow {
+    private static func row(_ run: RunRecord, lastEmpty: Date?, busy: Bool) -> RunRow {
         let movedSomething = run.entries.contains { if case .movedToTrash = $0.outcome { true } else { false } }
         let emptiedSince = lastEmpty.map { run.startedAt < $0 } ?? false
-        let restorable = run.restorable && !emptiedSince
-        let chip: String? = restorable ? "Can be restored" : (movedSomething && emptiedSince ? "Trash emptied" : nil)
+        let restorable = run.restorable && !emptiedSince && !run.inProgress
+        let chip: String?
+        if run.inProgress {
+            chip = busy ? "Still running" : "Interrupted"
+        } else {
+            chip = restorable ? "Can be restored" : (movedSomething && emptiedSince ? "Trash emptied" : nil)
+        }
         return RunRow(
-            record: run, title: title(run.kind), chip: chip, restorable: restorable,
+            record: run, title: title(run.kind), chip: chip, restorable: restorable, inProgress: run.inProgress,
             itemCount: run.entries.filter { !$0.originalPath.hasPrefix("<") }.count, bytes: run.bytesMovedToTrash)
     }
 
@@ -240,10 +261,15 @@ public final class HistoryModel {
     /// older than the last Empty Trash, and the journal's own errors (`notRestorable`, `saveFailed`,
     /// ...) otherwise. Refreshes afterwards and calls `onRunCompleted` whenever a restore was attempted.
     public func restore(runID: UUID, paths: Set<String>? = nil) async throws -> [RestoreOutcome] {
+        #if DEBUG
         if fixtureOn { throw HistoryModelError.fixture }
+        #endif
         guard canTakeOutOfTrash else { throw HistoryModelError.cantTakeOutOfTrash }
         guard !isRestoring else { return [] }
-        if !runs.contains(where: { $0.id == runID }) { await refresh() }
+        guard !isOtherWorkBusy() else { throw HistoryModelError.busy }
+        // Always from the journal as it is now: a run's in-progress flag may have changed.
+        await refresh()
+        if runs.first(where: { $0.id == runID })?.inProgress == true { throw HistoryModelError.runInProgress }
         if let run = runs.first(where: { $0.id == runID }), let emptied = lastEmptyTrash,
            run.record.startedAt < emptied {
             throw HistoryModelError.trashWasEmptied
@@ -267,9 +293,14 @@ public final class HistoryModel {
     /// any more turns into a failed outcome for each of its items, so every item is accounted for.
     @discardableResult
     public func restore(items: [HistoryItem]) async throws -> [RestoreOutcome] {
+        #if DEBUG
         if fixtureOn { throw HistoryModelError.fixture }
+        #endif
         guard canTakeOutOfTrash else { throw HistoryModelError.cantTakeOutOfTrash }
         guard !isRestoring, !items.isEmpty else { return [] }
+        guard !isOtherWorkBusy() else { throw HistoryModelError.busy }
+        await refresh()
+        let live = Set(runs.filter(\.inProgress).map(\.id))
         isRestoring = true
         restoringCount = items.count
         let byRun = Dictionary(grouping: items, by: \.runID)
@@ -278,6 +309,11 @@ public final class HistoryModel {
         var outcomes: [RestoreOutcome] = []
         for (runID, chosen) in byRun.sorted(by: { $0.value[0].runDate > $1.value[0].runDate }) {
             let paths = Set(chosen.map(\.path))
+            if live.contains(runID) {
+                let reason = HistoryModelError.runInProgress.localizedDescription
+                outcomes += paths.sorted().map { .failed($0, reason: reason) }
+                continue
+            }
             if let emptied, chosen[0].runDate < emptied {
                 let reason = HistoryModelError.trashWasEmptied.localizedDescription
                 outcomes += paths.sorted().map { .failed($0, reason: reason) }

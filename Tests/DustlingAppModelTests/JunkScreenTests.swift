@@ -213,15 +213,15 @@ struct JunkScreenTilesTests {
 
 struct JunkScreenTextTests {
     @Test func pathsUnderHomeAreShortened() {
-        let home = URL(filePath: "/Users/kaan", directoryHint: .isDirectory)
-        #expect(JunkScreen.displayPath(URL(filePath: "/Users/kaan/Library/Caches/x"), home: home) == "~/Library/Caches/x")
+        let home = URL(filePath: "/Users/k", directoryHint: .isDirectory)
+        #expect(JunkScreen.displayPath(URL(filePath: "/Users/k/Library/Caches/x"), home: home) == "~/Library/Caches/x")
         #expect(JunkScreen.displayPath(URL(filePath: "/Library/Caches/x"), home: home) == "/Library/Caches/x")
     }
 
     @Test func scanLineNamesThePathAndPlacesDone() {
-        let home = URL(filePath: "/Users/kaan", directoryHint: .isDirectory)
+        let home = URL(filePath: "/Users/k", directoryHint: .isDirectory)
         let progress = ScanProgress(
-            currentPath: URL(filePath: "/Users/kaan/Library/Caches/com.spotify.client"), bytesFound: 0,
+            currentPath: URL(filePath: "/Users/k/Library/Caches/com.spotify.client"), bytesFound: 0,
             categoriesDone: 5, categoriesTotal: 9)
         #expect(JunkScreen.scanLine(progress, home: home) == "Checking ~/Library/Caches/com.spotify.client. 5 of 9 places done")
         let one = ScanProgress(currentPath: home, bytesFound: 0, categoriesDone: 0, categoriesTotal: 1)

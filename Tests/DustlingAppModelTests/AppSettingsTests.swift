@@ -40,6 +40,25 @@ struct AppSettingsTests {
         home: URL(filePath: "/Users/tester"), applicationDirectories: [], systemLibrary: URL(filePath: "/Library"),
         volumesDirectory: URL(filePath: "/Volumes"), userID: 501)
 
+    @Test func commandLineReadsTheAppsSavedScanOptions() throws {
+        let defaults = fresh()
+        // Nothing saved: the caller's fallback.
+        #expect(AppSettings.savedScanOptions(in: defaults) == ScanOptions())
+        #expect(AppSettings.savedScanOptions(in: nil) == ScanOptions())
+        // What the app saved, exclusions included.
+        let app = make(defaults)
+        #expect(app.addExclusion(URL(filePath: "/Users/tester/Projects/keep")) == nil)
+        let saved = AppSettings.savedScanOptions(in: defaults)
+        #expect(saved.exclusions == app.scanOptions.exclusions)
+        #expect(!saved.exclusions.isEmpty)
+        // A field missing from what was saved takes its default; the rest still loads.
+        defaults.set(Data(#"{"exclusions":["~/keep"]}"#.utf8), forKey: AppSettings.scanOptionsKey)
+        #expect(AppSettings.savedScanOptions(in: defaults) == ScanOptions(exclusions: ["~/keep"]))
+        // Unreadable: the fallback.
+        defaults.set(Data("nope".utf8), forKey: AppSettings.scanOptionsKey)
+        #expect(AppSettings.savedScanOptions(in: defaults) == ScanOptions())
+    }
+
     private func make(_ defaults: UserDefaults, login: FakeLoginItems = FakeLoginItems()) -> AppSettings {
         AppSettings(defaults: defaults, environment: environment, loginItems: login)
     }

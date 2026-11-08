@@ -61,7 +61,10 @@ public final class HealthModel {
 
     @ObservationIgnored private let probe: @Sendable () -> FullDiskAccessStatus
     @ObservationIgnored private let clock: any Clock<Duration>
-    @ObservationIgnored private let lastRunSummary: @MainActor () -> RunRecord?
+    /// Reads the newest run. Blocking (it reads the history), so it runs off the main actor.
+    @ObservationIgnored private let lastRunSummary: @Sendable () -> RunRecord?
+    /// Bumped before every last-run read, so a slow older read never overwrites a newer one.
+    @ObservationIgnored private var lastRunGeneration = 0
     @ObservationIgnored private var pollingTask: Task<Void, Never>?
     @ObservationIgnored private var activeTask: Task<Void, Never>?
     /// Bumped before every probe. A probe's result is published only if no newer probe started
@@ -71,7 +74,7 @@ public final class HealthModel {
     public init(
         probe: @escaping @Sendable () -> FullDiskAccessStatus,
         clock: some Clock<Duration>,
-        lastRunSummary: @escaping @MainActor () -> RunRecord? = { nil }
+        lastRunSummary: @escaping @Sendable () -> RunRecord? = { nil }
     ) {
         self.probe = probe
         self.clock = clock
@@ -138,15 +141,25 @@ public final class HealthModel {
         fullDiskAccess = status
         hasPublishedStatus = true
         lastProbeAt = Date()
-        refreshLastRun()
+        await reloadLastRun()
         return true
     }
 
-    /// Re-reads the last run without probing. Call this when a cleanup, restore or uninstall
-    /// completes so the last-run light does not wait for the next probe.
+    /// Re-reads the last run without probing, in the background. Call this when a cleanup, restore
+    /// or uninstall completes so the last-run light does not wait for the next probe.
     public func refreshLastRun() {
-        lastRun = lastRunSummary()
-        lastRunProblem = lastRun.flatMap(LastRunReview.summary(of:)).map { "The last cleanup left problems: " + $0 }
+        Task { await reloadLastRun() }
+    }
+
+    /// Re-reads the last run off the main actor and publishes it, unless a newer read started meanwhile.
+    public func reloadLastRun() async {
+        lastRunGeneration += 1
+        let mine = lastRunGeneration
+        let read = lastRunSummary
+        let run = await Blocking.run { read() }
+        guard mine == lastRunGeneration else { return }
+        lastRun = run
+        lastRunProblem = run.flatMap(LastRunReview.summary(of:)).map { "The last cleanup left problems: " + $0 }
     }
 
     /// Probes now, then every `interval` until `stopPolling()`. Used while onboarding is open so the

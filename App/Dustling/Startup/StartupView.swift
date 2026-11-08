@@ -68,8 +68,8 @@ struct StartupView: View {
         }
         #endif
         .sheet(item: $removing) { row in
-            RemoveStartupItemSheet(row: row, canTakeOutOfTrash: startup.canTakeOutOfTrash) {
-                Task { await startup.remove(row.item) }
+            RemoveStartupItemSheet(row: row, canTakeOutOfTrash: startup.canTakeOutOfTrash) { confirmedLimited in
+                Task { await startup.remove(row.item, confirmedLimited: confirmedLimited) }
             }
         }
     }

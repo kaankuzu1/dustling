@@ -47,7 +47,7 @@ public struct ExclusionRow: Identifiable, Equatable, Sendable {
 /// exclusions protect folders right away, without a relaunch.
 @MainActor @Observable
 public final class AppSettings {
-    public static let scanOptionsKey = "scanOptions"
+    public nonisolated static let scanOptionsKey = "scanOptions"
     public static let appearanceKey = "appearance"
     public static let preselectSafeKey = "preselectSafeCategories"
     public static let showReviewItemsKey = "showReviewItems"
@@ -55,6 +55,17 @@ public final class AppSettings {
 
     /// A fresh install skips items changed in the last 7 days, as the approved Settings show.
     public static let defaultScanOptions = ScanOptions(skipChangedWithinDays: 7)
+    /// The app's bundle ID, which is also its defaults domain (the command-line tool reads the
+    /// app's exclusions from it).
+    public nonisolated static let appDefaultsDomain = "app.dustling.Dustling"
+
+    /// The scan settings saved by the app in `defaults`, or `fallback` when none are saved or they
+    /// can't be read. The command-line tool uses this so it honours the app's exclusions.
+    public nonisolated static func savedScanOptions(in defaults: UserDefaults?, fallback: ScanOptions = ScanOptions()) -> ScanOptions {
+        guard let data = defaults?.data(forKey: scanOptionsKey),
+              let saved = try? JSONDecoder().decode(ScanOptions.self, from: data) else { return fallback }
+        return saved
+    }
     /// The choices for "Skip files changed in the last". nil is Off.
     public static let skipDayChoices: [Int?] = [nil, 1, 3, 7, 14, 30]
     /// The locked chips under Exclusions (SCREENS-final §7, P05).

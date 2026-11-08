@@ -47,6 +47,37 @@ struct HistoryModelTests {
         }
     }
 
+    @Test func aRunStillInProgressIsNeverPutBack() async throws {
+        let rig = try ModelRig()
+        try FileManager.default.createDirectory(at: rig.root.appending(path: "orig"), withIntermediateDirectories: true)
+        let original = rig.root.appending(path: "orig/live.txt").path
+        var run = try trashedRun(rig, name: "live.txt", original: original, ago: 60)
+        run.inProgress = true
+        try rig.journal.save(run)
+        let model = HistoryModel(journal: rig.journal)
+        await model.refresh()
+        let row = try #require(model.runs.first)
+        #expect(!row.restorable)
+        #expect(row.chip == "Interrupted")
+        await #expect(throws: HistoryModelError.runInProgress) { _ = try await model.restore(runID: run.id) }
+        let item = try #require(model.allItems.first)
+        let outcomes = try await model.restore(items: [item])
+        #expect(outcomes == [.failed(original, reason: HistoryModelError.runInProgress.localizedDescription)])
+        #expect(!FileManager.default.fileExists(atPath: original))
+
+        model.isOtherWorkBusy = { true }
+        await model.refresh()
+        #expect(model.runs.first?.chip == "Still running")
+
+        // Once recovery marks it finished, it can be put back.
+        #expect(try CleanupRunner.recoverInterrupted(journal: rig.journal) == [run.id])
+        #expect(try rig.journal.all().first?.inProgress == false)
+        await #expect(throws: HistoryModelError.busy) { _ = try await model.restore(runID: run.id) }
+        model.isOtherWorkBusy = { false }
+        _ = try await model.restore(runID: run.id)
+        #expect(FileManager.default.fileExists(atPath: original))
+    }
+
     @Test func searchFiltersAllItems() async throws {
         let rig = try ModelRig()
         _ = try trashedRun(rig, name: "alpha.txt", original: "/orig/Alpha Notes.txt", ago: 100)

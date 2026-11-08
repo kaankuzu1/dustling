@@ -4,7 +4,7 @@ The SwiftUI app. It is built on the `DustlingCore` and `DustlingAppModel` librar
 
 ## Build
 
-Requirements: macOS 14 or newer to run it, Xcode 26 or newer to build it (the app icon is an Icon Composer file), and XcodeGen (`brew install xcodegen`).
+Requirements: macOS 14 or newer to run it, Xcode 26 or later to build it (the app icon is an Icon Composer file), and XcodeGen (`brew install xcodegen`).
 
 ```bash
 cd App

@@ -204,15 +204,15 @@ struct HealthModelTests {
 
     @Test func refreshLastRunUpdatesWithoutProbing() async {
         let script = ProbeScript { _ in .granted }
-        nonisolated(unsafe) var run: RunRecord?
-        let model = HealthModel(probe: { script.probe() }, clock: ManualClock(), lastRunSummary: { run })
+        let run = RunBox()
+        let model = HealthModel(probe: { script.probe() }, clock: ManualClock(), lastRunSummary: { run.value })
         await model.refresh()
         #expect(model.lastRunProblem == nil)
-        run = RunRecord(
+        run.value = RunRecord(
             startedAt: Date(), kind: .junkClean,
             entries: [JournalEntry(originalPath: "/x", bytes: 1, outcome: .failed(reason: "no"))], restorable: false)
         model.refreshLastRun()
-        #expect(model.lastRunProblem != nil)
+        #expect(await eventually { model.lastRunProblem != nil })
         #expect(model.lights.first { $0.kind == .lastRun }?.state == .warning)
         #expect(script.callCount == 1)
     }
@@ -290,5 +290,15 @@ struct StorageModelTests {
         #expect(model.purgeableBytes == 0)
         #expect(model.problems.count == 1)
         #expect(model.problems[0].hasPrefix("Storage numbers unavailable"))
+    }
+}
+
+/// The last run a test hands the model, changed while the model reads it off the main actor.
+private final class RunBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var run: RunRecord?
+    var value: RunRecord? {
+        get { lock.withLock { run } }
+        set { lock.withLock { run = newValue } }
     }
 }

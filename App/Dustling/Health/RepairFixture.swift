@@ -12,7 +12,8 @@ import Foundation
 ///   it, so the real history is never written.
 extension AppModels {
     /// The sample last run the health model reads instead of the history (`results` only).
-    static var sampleLastRun: RunRecord?
+    /// Set once at launch, before anything reads it (read off the main actor by the health model).
+    nonisolated(unsafe) static var sampleLastRun: RunRecord?
 
     func applyRepairFixtureFromLaunchArguments() {
         guard let state = UserDefaults.standard.string(forKey: "DustlingRepairFixture") else { return }

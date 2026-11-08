@@ -7,7 +7,7 @@ struct WelcomeStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // 96 pt (6 pt per pixel): the integer scale Kaan chose for the mockups' 72 pt Mote.
+            // 96 pt (6 pt per pixel): the integer scale the design chose for the mockups' 72 pt Mote.
             MoteView(.idle, pixel: 6)
             StepHeadline(
                 title: "Let Dustling look in your Library",

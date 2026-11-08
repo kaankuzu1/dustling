@@ -127,7 +127,7 @@ struct CloseAppsSheet: View {
         guard !isFixture else { return }
         Task {
             // Quits, re-checks only these apps, and cleans if exactly the offered amount can move.
-            switch await models.junk.quitAndCleanFlow(run, quitter: WorkspaceAppQuitter(), promised: promised) {
+            switch await models.junk.quitAndCleanFlow(run, quitter: WorkspaceAppQuitter(), promised: promised, skipping: models.cleanupSkip) {
             case .cleaned:
                 dismiss()
             case .askAgain(let now, let line):

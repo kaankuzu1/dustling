@@ -76,7 +76,7 @@ extension AppModels {
         }
     }
 
-    private func showHistoryFixture(_ state: String) {
+    func showHistoryFixture(_ state: String) {
         selection = .history
         let home = homePath
         let trash = home + "/.Trash/"

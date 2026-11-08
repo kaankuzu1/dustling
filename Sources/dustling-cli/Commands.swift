@@ -1,3 +1,4 @@
+import DustlingAppModel
 import DustlingCore
 import AppKit
 import Foundation
@@ -8,7 +9,9 @@ enum Commands {
     private static let commands = ProcessCommandRunner()
 
     /// The CLI has no settings yet: defaults. Catalog, cleaning and uninstalling all derive from this one value.
-    private static let options = ScanOptions()
+    /// The app's scan settings (exclusions, skip-recent, external Trash) when the app has saved
+    /// them, so the CLI never touches what the app was told to leave alone; plain defaults otherwise.
+    private static let options = AppSettings.savedScanOptions(in: UserDefaults(suiteName: AppSettings.appDefaultsDomain))
 
     private static var journal: RunJournal { RunJournal(directory: env.historyDirectory) }
 

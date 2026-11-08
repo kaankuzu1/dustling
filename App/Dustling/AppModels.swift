@@ -54,6 +54,8 @@ final class AppModels {
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
     @ObservationIgnored private let environment: SystemEnvironment
     @ObservationIgnored private let logger: RunLogger
+    /// The run history; interrupted runs are finished off at launch (`start()`).
+    @ObservationIgnored private let journal: RunJournal
     /// The junk categories by name and kind, in catalog order, for the Junk scan screen's tiles.
     @ObservationIgnored let junkCatalog: [JunkScreen.Entry]
     /// The categories the next junk scan may open (see `scanJunk()`).
@@ -102,6 +104,7 @@ final class AppModels {
 
         let logger = RunLogger(directory: environment.logsDirectory)
         self.logger = logger
+        self.journal = journal
         junkCatalog = JunkCatalog.standard(environment).map {
             JunkScreen.Entry(id: $0.id, title: $0.title, selection: $0.selection)
         }
@@ -193,6 +196,13 @@ final class AppModels {
             })
         updateCheck = UpdateSizeCheck(commands: commands)
         owner.models = self
+        // Put back waits while another tool works, and a run still marked in progress reads
+        // "Still running" then (otherwise "Interrupted").
+        history.isOtherWorkBusy = { [weak self] in
+            guard let self else { return false }
+            return self.junk.isBusy || self.uninstaller.isUninstalling || self.startup.busyItemID != nil
+                || self.retry.isRetrying
+        }
         trash.includeExternalVolumes = options.includeExternalTrash
         settings.onScanOptionsChanged = { [weak self] options in
             guard let self else { return }
@@ -226,7 +236,9 @@ final class AppModels {
         accessMemory.useSample(wasGranted: !HomeFixture.isLimited)
         Self.sampleLastRun = RunRecord(startedAt: .now.addingTimeInterval(-86_400), kind: .junkClean, entries: [], restorable: false)
         health.refreshLastRun()
-        // The other fixtures fill the tool cards; Home stays in front.
+        // The other fixtures fill the tool cards; Home stays in front. History shows its sample runs
+        // too, never the real history.
+        if !history.isFixture { showHistoryFixture("runs") }
         uninstallerCounted = uninstallerFixture
         selection = ["emptytrash", "reviewfiles", "scanning", "done"].contains(HomeFixture.state) ? .junkScan : .home
     }
@@ -536,6 +548,21 @@ final class AppModels {
             await refreshPlaces()
         }
         Task { await storage.refresh() }
+        // A run left "in progress" by a crash or a force quit is finished off once, before anything
+        // new can run, so History shows it as it ended and it can be put back.
+        let journal = self.journal
+        Task {
+            let recovered = await Task.detached(priority: .utility) { () -> [UUID] in
+                do { return try CleanupRunner.recoverInterrupted(journal: journal) } catch {
+                    NSLog("Dustling: couldn't finish interrupted runs in the history: \(error)")
+                    return []
+                }
+            }.value
+            if !recovered.isEmpty {
+                health.refreshLastRun()
+                await history.refresh()
+            }
+        }
     }
 
     /// What a places check depends on. Views key `.task(id:)` on it, so places are checked after the
@@ -591,9 +618,9 @@ final class AppModels {
 
     /// The newest run in the history journal, for the last-run health light. An unreadable journal
     /// is logged; the light then has no run to report on.
-    private static func latestRun(in journal: RunJournal) -> RunRecord? {
+    nonisolated private static func latestRun(in journal: RunJournal) -> RunRecord? {
         do {
-            return try journal.all().max { $0.startedAt < $1.startedAt }
+            return try journal.newest()
         } catch {
             NSLog("Dustling: couldn't read the run history for the health lights: \(error)")
             return nil

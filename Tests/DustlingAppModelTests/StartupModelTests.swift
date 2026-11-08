@@ -243,6 +243,25 @@ struct StartupModelScreenTests {
         #expect(!model.canRemove(daemon.item))
     }
 
+    @Test func removeWithoutTrashAccessNeedsTheConfirmation() async throws {
+        let rig = try ModelRig()
+        let commands = FakeCommands()
+        let tool = try rig.file(rig.root.appending(path: "bin/tool"), bytes: 1).path(percentEncoded: false)
+        let plist = try rig.writeLaunchPlist(agents(rig), label: "com.x.agent", program: tool)
+        let model = makeModel(rig, commands: commands)
+        model.canTakeOutOfTrash = false
+        await model.load()
+        let item = try #require(model.items.first)
+
+        #expect(await model.remove(item) == nil)
+        #expect(FileManager.default.fileExists(atPath: plist.path))
+        #expect(!commands.calls.contains { $0.contains("bootout") })
+
+        let record = try #require(await model.remove(item, confirmedLimited: true))
+        #expect(record.kind == .startupChange)
+        #expect(!FileManager.default.fileExists(atPath: plist.path))
+    }
+
     @Test func removeUnloadsTheAgentMovesItToTheTrashAndRecordsIt() async throws {
         let rig = try ModelRig()
         let commands = FakeCommands()
@@ -278,6 +297,7 @@ struct StartupModelScreenTests {
         let tool = try rig.file(rig.root.appending(path: "bin/tool"), bytes: 1).path(percentEncoded: false)
         let plist = try rig.writeLaunchPlist(agents(rig), label: "com.x.agent", program: tool)
         let model = makeModel(rig, failing: ["com.x.agent.plist"])
+        model.canTakeOutOfTrash = true
         await model.load()
         let item = try #require(model.items.first)
         let record = try #require(await model.remove(item))
@@ -350,7 +370,7 @@ struct StartupModelScreenTests {
         #expect(model.items == [fake])
         #expect(await model.toggle(fake) == nil)
         #expect(await model.remove(fake) == nil)
-        #expect(commands.calls.isEmpty)
+        #expect(!commands.calls.contains { $0.contains("bootout") })
         #expect(try rig.journal.all().isEmpty)
     }
     #endif

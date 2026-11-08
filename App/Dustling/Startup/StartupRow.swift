@@ -162,7 +162,8 @@ struct RemoveStartupItemSheet: View {
     @Environment(AppModels.self) private var models
     let row: StartupRow
     let canTakeOutOfTrash: Bool
-    let onConfirm: () -> Void
+    /// Called with true when the sheet showed the limited-mode note (the user confirmed it).
+    let onConfirm: (_ confirmedLimited: Bool) -> Void
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -207,7 +208,7 @@ struct RemoveStartupItemSheet: View {
                     .keyboardShortcut(.cancelAction)
                 Button(text.button) {
                     dismiss()
-                    onConfirm()
+                    onConfirm(text.limitedNote != nil)
                 }
                 .dustlingPrimary()
                 .keyboardShortcut(.defaultAction)

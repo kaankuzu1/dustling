@@ -78,7 +78,7 @@ Every screen, in light and dark, is in [`docs/screenshots`](docs/screenshots). T
 
 ## Getting started
 
-**Requirements:** macOS 14 Sonoma or newer, and Xcode 16 or newer (Swift 6) for the engine and the command-line tool. The Mac app needs Xcode 26 (see [Build the app](#build-the-app)).
+**Requirements:** macOS 14 Sonoma or newer, and Xcode 26 or later (Swift 6). See [Build the app](#build-the-app) for the Mac app.
 
 ```bash
 git clone https://github.com/kaankuzu1/dustling.git
@@ -112,7 +112,7 @@ Something went missing? `swift run dustling-cli history` shows every run, and `r
 
 The Mac app lives in `App/`. You need:
 
-- Xcode 26 or newer. The app icon is an Icon Composer file, and the project is only tested with Xcode 26.
+- Xcode 26 or later. The app icon is an Icon Composer file, which older Xcode versions can't build.
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`.
 
 ```bash
@@ -135,6 +135,8 @@ The generated project and `build/` are not checked in; change `App/project.yml` 
 ## Command line
 
 `dustling-cli` is a front end for the core engine. Run it with `swift run dustling-cli <command>`.
+
+It uses the Mac app's scan settings when the app has saved them (the `app.dustling.Dustling` defaults): folders excluded in the app's Settings are never scanned or moved by the CLI either. Without saved settings it uses the defaults.
 
 | Command | What it does |
 | --- | --- |

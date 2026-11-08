@@ -86,9 +86,15 @@ public enum HistoryScreen {
 
     public enum Chip: Equatable, Sendable {
         case canBeRestored, trashEmptied, putBack, notInTrash, movedToTrash, turnedOff, turnedOn, failed
+        /// The run is still marked in progress while Dustling is working on it.
+        case stillRunning
+        /// The run is marked in progress but nothing is working on it: it never finished.
+        case interrupted
 
         public var text: String {
             switch self {
+            case .stillRunning: "Still running"
+            case .interrupted: "Interrupted"
             case .canBeRestored: "Can be restored"
             case .trashEmptied: "Trash emptied"
             case .putBack: "Put back"
@@ -103,7 +109,7 @@ public enum HistoryScreen {
         public var tone: Tone {
             switch self {
             case .canBeRestored, .putBack: .success
-            case .failed: .warning
+            case .failed, .interrupted: .warning
             default: .neutral
             }
         }
@@ -176,7 +182,10 @@ public enum HistoryScreen {
         var chip: Chip?
         var action: RunAction?
         var dimmed = false
-        if record.kind == .emptyTrash {
+        if row.inProgress {
+            // Never offered for Put back until it is finished (recovered at the next launch).
+            chip = row.chip == "Still running" ? .stillRunning : .interrupted
+        } else if record.kind == .emptyTrash {
             chip = nil
         } else if !moved.isEmpty {
             if c.isBeforeLastEmpty(record.startedAt) {

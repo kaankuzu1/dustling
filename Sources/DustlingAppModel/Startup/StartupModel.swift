@@ -96,14 +96,15 @@ public struct StartupRemover: Sendable {
     /// nil when the item doesn't qualify (nothing is touched or recorded).
     public func remove(_ item: StartupItem) async -> Removal? {
         guard canRemove(item), let plist = item.plistURL else { return nil }
-        var extra: [JournalEntry] = []
-        var stopped = false
-        // Unload first, but only what the guard lets the runner move.
-        if runner.protectedPaths.verdict(for: plist, allowedRoots: [agentsDirectory]) == .allowed {
+        // Unload first, but only what the guard lets the runner move. Both read the disk or wait on
+        // launchctl, so they run off the caller's thread (the main actor in the app).
+        let agents = agentsDirectory
+        let (extra, stopped) = await Blocking.run { () -> ([JournalEntry], Bool) in
+            guard runner.protectedPaths.verdict(for: plist, allowedRoots: [agents]) == .allowed else { return ([], false) }
             switch unload(plist) {
-            case .stopped: stopped = true
-            case .notLoaded: break
-            case .failed(let entry): extra.append(entry)
+            case .stopped: return ([], true)
+            case .notLoaded: return ([], false)
+            case .failed(let entry): return ([entry], false)
             }
         }
         let record = await runner.run(
@@ -371,10 +372,13 @@ public final class StartupModel {
     }
 
     /// Unloads a user launch agent and moves its plist to the Trash (journaled as `.startupChange`).
-    /// Nil when refused: the item doesn't qualify, another change is running, or the fixture is on.
+    /// Nil when refused: the item doesn't qualify, another change is running, the fixture is on, or
+    /// Dustling can't take things back out of the Trash and the user didn't confirm that
+    /// (`confirmedLimited`, passed only by the confirmation sheet that said so).
     @discardableResult
-    public func remove(_ item: StartupItem) async -> RunRecord? {
+    public func remove(_ item: StartupItem, confirmedLimited: Bool = false) async -> RunRecord? {
         guard !fixtureOn, busyItemID == nil, let remover, remover.canRemove(item) else { return nil }
+        guard canTakeOutOfTrash || confirmedLimited else { return nil }
         busyItemID = item.id
         guard let removal = await remover.remove(item) else {
             busyItemID = nil
