@@ -219,5 +219,34 @@ import Testing
         #expect(downloads.isDeclaredRoot(sb.environment.home.appending(path: "Downloads")))
         #expect(!downloads.isDeclaredRoot(lib.appending(path: "Caches")))
     }
+    // MARK: - In-use owners (Important #6)
+
+    @Test func browserCacheFoldersMapToTheirAppsBundleIDs() async throws {
+        let expected = [
+            "Google": "com.google.Chrome", "Firefox": "org.mozilla.firefox", "BraveSoftware": "com.brave.Browser",
+            "Microsoft Edge": "com.microsoft.edgemac", "com.apple.Safari": "com.apple.Safari",
+            "company.thebrowser.Browser": "company.thebrowser.Browser",
+        ]
+        let sb = try TestSandbox()
+        for name in expected.keys { try sb.file("home/Library/Caches/\(name)/x") }
+        let r = try await scan(sb, running: Set(expected.values))
+        let owners = Dictionary(uniqueKeysWithValues:
+            (r[.browserCaches]?.items ?? []).map { ($0.url.lastPathComponent, $0.inUseByBundleID) })
+        #expect(owners.count == expected.count)
+        for (name, id) in expected { #expect(owners[name] == .some(id), "\(name)") }
+        let idle = try await scan(sb, running: [])
+        #expect((idle[.browserCaches]?.items ?? []).allSatisfy { $0.inUseByBundleID == nil })
+    }
+
+    @Test func containerCachesBelongToTheContainersApp() async throws {
+        let sb = try TestSandbox()
+        try sb.file("home/Library/Containers/com.foo.app/Data/Library/Caches/blob/y")
+        try sb.file("home/Library/Containers/com.bar.app/Data/Library/Caches/other/y")
+        let r = try await scan(sb, running: ["com.foo.app"])
+        let owners = Dictionary(uniqueKeysWithValues:
+            (r[.userCaches]?.items ?? []).map { ($0.url.lastPathComponent, $0.inUseByBundleID) })
+        #expect(owners["blob"] == .some("com.foo.app"))
+        #expect(owners["other"] == .some(nil))
+    }
 }
 

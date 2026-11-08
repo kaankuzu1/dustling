@@ -6,9 +6,29 @@ public enum JunkCatalog {
     /// Items in Downloads not accessed for longer than this count as old (90 days).
     public static let oldDownloadAge: TimeInterval = 90 * 24 * 60 * 60
 
-    static let browserCacheNames: Set<String> = [
-        "com.apple.Safari", "Google", "Firefox", "BraveSoftware", "Microsoft Edge", "company.thebrowser.Browser",
+    /// Browser cache folder names in `~/Library/Caches` and the bundle ID of the app that owns each.
+    static let browserCacheOwners: [String: String] = [
+        "Google": "com.google.Chrome",
+        "Firefox": "org.mozilla.firefox",
+        "BraveSoftware": "com.brave.Browser",
+        "Microsoft Edge": "com.microsoft.edgemac",
+        "com.apple.Safari": "com.apple.Safari",
+        "company.thebrowser.Browser": "company.thebrowser.Browser",
     ]
+    static let browserCacheNames = Set(browserCacheOwners.keys)
+
+    /// The bundle ID of the app an item most likely belongs to, for "is it open right now" checks:
+    /// a container cache (`Containers/<id>/Data/Library/Caches/*`) belongs to `<id>`, a known browser
+    /// cache folder to its browser, anything else to the bundle ID its name spells.
+    static func ownerBundleID(of item: URL) -> String {
+        let parent = item.deletingLastPathComponent().standardizedFileURL.pathComponents
+        if parent.count >= 5, Array(parent.suffix(3)) == ["Data", "Library", "Caches"],
+           parent[parent.count - 5] == "Containers" {
+            return parent[parent.count - 4]
+        }
+        let name = item.lastPathComponent
+        return browserCacheOwners[name] ?? name
+    }
     static let packageManagerCacheNames: Set<String> = ["Homebrew", "pip", "CocoaPods", "Yarn"]
     private static let ignoredDownloadNames: Set<String> = [".DS_Store", ".localized"]
 

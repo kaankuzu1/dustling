@@ -117,10 +117,10 @@ public struct JunkScanner: Sendable {
                     }
                     claimed.insert(child.path)
                     issues.append(contentsOf: size.unreadable.map { .unreadable($0) })
-                    let name = child.lastPathComponent
+                    let owner = JunkCatalog.ownerBundleID(of: child)
                     items.append(JunkItem(
                         url: child, bytes: size.bytes, category: category.id,
-                        inUseByBundleID: running.contains(name) ? name : nil))
+                        inUseByBundleID: running.contains(owner) ? owner : nil))
                 }
             }
 
