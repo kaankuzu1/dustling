@@ -40,6 +40,34 @@ struct RunJournalTests {
         #expect(try j.newest()?.id == newer.id)
     }
 
+    /// One run per app in a multi-app uninstall starts within the same second; they keep their order.
+    @Test func runsInTheSameSecondKeepTheirOrder() throws {
+        let s = try TestSandbox()
+        let j = journal(s)
+        let start = Date(timeIntervalSince1970: 1_700_000_000.1)
+        let runs = (0..<6).map { i in
+            RunRecord(startedAt: start.addingTimeInterval(Double(i) * 0.05), kind: .uninstall(appName: "App \(i)"),
+                      entries: [], restorable: true)
+        }
+        for run in runs.shuffled() { try j.save(run) }
+        #expect(try j.all().map(\.id) == runs.reversed().map(\.id))
+        #expect(try j.newest()?.id == runs.last?.id)
+    }
+
+    /// History files written by 0.1.0 store whole seconds; they still read.
+    @Test func readsWholeSecondDatesFromOlderVersions() throws {
+        let s = try TestSandbox()
+        let j = journal(s)
+        let run = RunRecord(startedAt: Date(timeIntervalSince1970: 1_000), kind: .junkClean, entries: [], restorable: false)
+        try j.save(run)
+        let file = s.root.appending(path: "history/\(run.id.uuidString).json")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        #expect(text.contains("1970-01-01T00:16:40.000Z"))
+        try text.replacingOccurrences(of: "1970-01-01T00:16:40.000Z", with: "1970-01-01T00:16:40Z")
+            .write(to: file, atomically: true, encoding: .utf8)
+        #expect(try j.all().first?.startedAt == run.startedAt)
+    }
+
     @Test func saveAndLoadRoundTrip() throws {
         let s = try TestSandbox()
         let j = journal(s)

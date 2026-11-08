@@ -295,6 +295,9 @@ private struct JunkActionBar: View {
             .dismissedOnQuit($reviewingFiles)
             #if DEBUG
             .task { if HomeFixture.state == "reviewfiles" { reviewingFiles = true } }
+            .task {
+                if HomeFixture.state == "closeapps" { closingApps = CloseAppsRun(holders: HomeFixture.closeAppsHolders) }
+            }
             #endif
             .sheet(item: $closingApps) { run in CloseAppsSheet(run: run) }
             .dismissedOnQuit($closingApps)

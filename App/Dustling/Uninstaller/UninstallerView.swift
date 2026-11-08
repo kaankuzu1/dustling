@@ -255,9 +255,10 @@ struct UninstallerView: View {
         case .removing:
             removingBar
         case .done:
-            let moved = model.result.map { UninstallSummary.make(records: $0.records, stopped: $0.stopped, home: models.homeDirectory).movedBytes } ?? 0
+            // What is in the Trash now: Put back on an app takes its share out.
+            let inTrash = model.result.map { model.bytesStillInTrash($0.records) } ?? 0
             ActionBar(
-                title: "\(Bytes.format(moved)) in the Trash",
+                title: "\(Bytes.format(inTrash)) in the Trash",
                 caption: "Available space grows when you empty the Trash."
             ) {
                 Button("Done") { model.dismissResult() }

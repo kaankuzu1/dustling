@@ -87,6 +87,9 @@ struct CloseAppsSheet: View {
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 13).weight(.semibold))
                     .foregroundStyle(Palette.ink)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    // The buttons keep their full labels; this line gives way first.
+                    .layoutPriority(-1)
                 Spacer(minLength: 12)
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -97,8 +100,10 @@ struct CloseAppsSheet: View {
                 } else {
                     Button("Clean without them (\(Bytes.format(withoutThem)))") { clean(closed: []) }
                         .monospacedDigit()
+                        .fixedSize()
                         .disabled(run.isRunning)
                     Button("Quit apps and clean", action: quitAndClean)
+                        .fixedSize()
                         .dustlingPrimary()
                         .disabled(run.isRunning || run.isFinished)
                 }
@@ -107,7 +112,8 @@ struct CloseAppsSheet: View {
         }
         .padding(.vertical, CGFloat(layout.verticalPadding))
         .padding(.horizontal, 20)
-        .frame(width: 560)
+        // Wide enough for its three buttons with a size in gigabytes ("Clean without them (23.51 GB)").
+        .frame(width: 640)
         .background(Palette.ground)
         .interactiveDismissDisabled(run.isRunning)
         .onAppear {

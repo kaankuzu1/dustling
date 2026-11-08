@@ -39,16 +39,30 @@ public struct RunJournal: Sendable {
         self.directory = directory
     }
 
+    /// ISO 8601 with milliseconds: runs started within the same second (one per app in a multi-app
+    /// uninstall) keep their order. Files written in whole seconds still read.
+    private static let preciseDate = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let wholeSecondDate = Date.ISO8601FormatStyle()
+
     private static func makeEncoder() -> JSONEncoder {
         let e = JSONEncoder()
-        e.dateEncodingStrategy = .iso8601
+        e.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(date.formatted(preciseDate))
+        }
         e.outputFormatting = [.prettyPrinted, .sortedKeys]
         return e
     }
 
     private static func makeDecoder() -> JSONDecoder {
         let d = JSONDecoder()
-        d.dateDecodingStrategy = .iso8601
+        d.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let text = try container.decode(String.self)
+            if let date = try? preciseDate.parse(text) { return date }
+            if let date = try? wholeSecondDate.parse(text) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Not an ISO 8601 date: \(text)")
+        }
         return d
     }
 

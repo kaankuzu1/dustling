@@ -19,6 +19,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - VoiceOver reads every line in a run's log in History, which it skipped before, and says whether each app in the Uninstaller was moved, left alone or is still waiting.
 - The three tool cards on Home are the same height with their buttons in line, also in a narrow window where one caption takes two lines.
 - Move to Trash in the Junk scan is off when nothing is selected to move, instead of only saying so after you click it.
+- In the junk scan's "Close apps to include their files?" sheet, the "Clean without them" button was cut off. The sheet is wider and its buttons always show their full labels. The Uninstaller's "Quit … and move to Trash" button no longer gets cut off by a long app name.
+- "Start scanning" at the end of the setup starts a new scan. Before, it showed the results of the scan from when Dustling opened, which could be minutes old.
+- History lists the apps of a multi-app uninstall in the order they were removed. Runs that started within the same second used to appear in a random order.
+- After putting an app back from the Uninstaller's summary, the "in the Trash" total no longer counts it.
 - On macOS 26, the right edge of every screen was cut off by a few points when the window was at its smallest. The smallest window is now 8 points wider.
 
 ## [0.1.0] - 2026-11-08
