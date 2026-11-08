@@ -21,7 +21,13 @@ Dustling finds what's filling your Mac and clears it safely. It finds caches, lo
 
 It started with a full disk that blocked a macOS update, and a cleaner that sometimes did nothing at all, without saying so. Dustling is built around the opposite promise. If it can't look somewhere, it says so. If it can't remove something, it tells you why. Nothing is ever deleted that you didn't see first.
 
-> **Status: the Mac app is ready to build from source.** The cleaning engine, the command-line tool and the SwiftUI app work today. There is no signed release yet, and the admin helper for system caches comes later. See the [roadmap](#roadmap).
+<p align="center">
+  <a href="https://github.com/kaankuzu1/dustling/releases/latest/download/Dustling.dmg"><strong>Download Dustling.dmg</strong></a>
+  &nbsp;·&nbsp; macOS 14 or later &nbsp;·&nbsp;
+  <a href="CHANGELOG.md">What's new</a>
+</p>
+
+> **Dustling isn't signed with an Apple Developer ID yet,** so macOS asks you to confirm the first time you open it. [Installing Dustling](docs/INSTALL.md) shows how. The admin helper for system caches comes later; see the [roadmap](#roadmap).
 
 <p align="center">
   <picture>
@@ -35,6 +41,7 @@ It started with a full disk that blocked a macOS update, and a cleaner that some
 - [What it does](#what-it-does)
 - [Safety promises](#safety-promises)
 - [Screenshots](#screenshots)
+- [Install](#install)
 - [Getting started](#getting-started)
   - [Build the app](#build-the-app)
 - [Command line](#command-line)
@@ -76,7 +83,18 @@ Every screen, in light and dark, is in [`docs/screenshots`](docs/screenshots). T
 | **Open apps are left alone** | Caches of apps that are currently running are skipped and reported. |
 | **No network, no tracking** | Dustling never needs the internet to clean, and it collects no analytics. No account required. |
 
+## Install
+
+Download **[Dustling.dmg](https://github.com/kaankuzu1/dustling/releases/latest/download/Dustling.dmg)**, open it and drag Dustling to Applications. Because it isn't signed with an Apple Developer ID yet, the first time you open it:
+
+- **macOS 15 Sequoia or later:** click **Done**, then go to **System Settings → Privacy & Security** and click **Open Anyway** next to "Dustling was blocked".
+- **macOS 14 Sonoma:** Control-click Dustling in Applications and choose **Open**.
+
+[Installing Dustling](docs/INSTALL.md) covers updating, checking the download and uninstalling. Every version is listed in the [changelog](CHANGELOG.md) and on the [Releases](https://github.com/kaankuzu1/dustling/releases) page.
+
 ## Getting started
+
+To run the command-line tool or build the app from source:
 
 **Requirements:** macOS 14 Sonoma or newer, and Xcode 26 or later (Swift 6). See [Build the app](#build-the-app) for the Mac app.
 
@@ -206,7 +224,8 @@ Design notes live in [`docs/superpowers`](docs/superpowers):
 - [x] **Core engine and command-line tool.** Junk scan, uninstaller, startup items, History and Restore, health check.
 - [x] **The Mac app.** A SwiftUI interface with Dustling's "Mosaic" design: a mosaic view of your storage, live scanning, per-item progress and a guided Full Disk Access setup. Motion respects Reduce Motion, and the app supports VoiceOver and keyboard navigation.
 - [ ] **Admin helper.** A small privileged helper (via `SMAppService`) for system caches, launch daemons and package receipts. It repairs itself if macOS unregisters it.
-- [ ] **Releases.** A signed, notarized `.dmg` on GitHub Releases, a Homebrew cask, and a website at dustling.app.
+- [x] **Releases.** Versioned releases with a `.dmg` on GitHub Releases, a [changelog](CHANGELOG.md), and a website at [dustling.app](https://dustling.app).
+- [ ] **Signing.** A Developer ID signature and notarization, so macOS opens Dustling without asking, and a Homebrew cask.
 
 ## Contributing
 
@@ -219,6 +238,7 @@ swift test
 
 - Tests run in temporary sandboxes and never touch your real home folder, Trash or launchd. Please keep it that way.
 - New behavior comes with a test that fails without it.
+- Changes people will notice get a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md). [docs/RELEASING.md](docs/RELEASING.md) explains versions and releases.
 - Anything that moves or deletes files must go through `TrashMover`, which applies the protected-path rules, and must produce an explicit outcome.
 
 ## License
