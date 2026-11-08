@@ -63,7 +63,7 @@ public struct AppScout: Sendable {
                 guard FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDir), isDir.boolValue
                 else { continue }
                 guard seen.insert(entry.path).inserted else { continue }
-                apps.append(makeApp(entry))
+                apps.append(makeApp(entry, linkTarget: isLink ? resolved : nil))
             } else if !isLink, values?.isDirectory == true, depth < Self.maxDepth {
                 search(entry, depth: depth + 1, apps: &apps, unreadable: &unreadable, seen: &seen)
             }
@@ -90,7 +90,9 @@ public struct AppScout: Sendable {
 
     // MARK: - Metadata
 
-    private func makeApp(_ url: URL) -> InstalledApp {
+    /// `linkTarget` is set when the `.app` entry is a symbolic link; metadata and size then come from
+    /// the target (the link itself occupies next to nothing).
+    private func makeApp(_ url: URL, linkTarget: URL?) -> InstalledApp {
         let info = NSDictionary(contentsOf: url.appending(path: "Contents/Info.plist")) as? [String: Any] ?? [:]
         func string(_ key: String) -> String? {
             guard let value = info[key] as? String, !value.isEmpty else { return nil }
@@ -106,8 +108,9 @@ public struct AppScout: Sendable {
             teamID: teamIdentifier(of: url),
             executableName: executable,
             steamAppID: executable.flatMap { steamAppID(in: url.appending(path: "Contents/MacOS/\($0)")) },
-            bytes: sizer.measure(url).bytes,
-            lastUsed: lastUsed
+            bytes: sizer.measure(linkTarget ?? url).bytes,
+            lastUsed: lastUsed,
+            linkTarget: linkTarget
         )
     }
 

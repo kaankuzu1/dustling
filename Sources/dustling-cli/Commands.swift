@@ -209,7 +209,8 @@ enum Commands {
         let found = sortedApps()
         for (offset, app) in found.apps.enumerated() {
             let number = String(offset + 1).leftPadded(to: 3)
-            print("\(number)  \(app.displayName)  \(Format.bytes(app.bytes))  \(Format.path(app.url))")
+            print("\(number)  \(app.displayName)  \(Format.bytes(app.bytes))  \(Format.path(app.url))"
+                + Format.linkNote(app))
         }
         if found.apps.isEmpty { print("No apps found.") }
         Format.printIssues(found.unreadable.map { .unreadable($0) })
@@ -258,10 +259,18 @@ enum Commands {
         let result = finder.leftoversWithIssues(for: app, among: others)
         Format.printIssues(result.issues)
 
-        print("\(app.displayName)  \(Format.bytes(app.bytes))  \(Format.path(app.url))")
-        let selected = includeAll ? result.leftovers : result.leftovers.filter(\.preselected)
+        print("\(app.displayName)  \(Format.bytes(app.bytes))  \(Format.path(app.url))" + Format.linkNote(app))
+        // For a symlinked app only the link goes; the real app and its files stay, so nothing is
+        // preselected (the user can still opt in with --all).
+        let isLink = app.linkTarget != nil
+        let preselected = { (leftover: Leftover) in !isLink && leftover.preselected }
+        let selected = includeAll ? result.leftovers : result.leftovers.filter(preselected)
+        if isLink {
+            Format.printWarning("\(Format.path(app.url)) is a link: only the link will be removed, the app stays at "
+                + "\(Format.path(app.linkTarget!)). Its files below belong to that app, so none are checked.")
+        }
         for leftover in result.leftovers {
-            let mark = (includeAll || leftover.preselected) ? "[x]" : "[ ]"
+            let mark = (includeAll || preselected(leftover)) ? "[x]" : "[ ]"
             var notes = ""
             if let note = leftover.note { notes += "  (\(note))" }
             if leftover.mayContainUserData { notes += "  (may contain your data)" }
@@ -273,14 +282,17 @@ enum Commands {
             for leftover in selected where leftover.mayContainUserData {
                 Format.printWarning("--all includes \(Format.path(leftover.url)), which may contain your data")
             }
-        } else if result.leftovers.contains(where: { !$0.preselected }) {
+        } else if result.leftovers.contains(where: { !preselected($0) }) {
             print("Unchecked items are kept. Add --all to move them too.")
         }
 
         let movable = selected.filter { !$0.requiresAdmin }
-        let total = app.bytes + movable.reduce(0) { $0 + $1.bytes }
+        // Removing a link frees (next to) nothing, so the target's size isn't counted.
+        let total = (isLink ? 0 : app.bytes) + movable.reduce(0) { $0 + $1.bytes }
         let count = 1 + movable.count
-        guard Format.confirm("Move \(count) items (\(Format.bytes(total))) to Trash? [y/N]", assumeYes: assumeYes) else {
+        let prompt = "Move \(Format.plural(count, "item")) (\(Format.bytes(total))) to Trash?"
+            + (isLink ? " The link is removed, not the app." : "") + " [y/N]"
+        guard Format.confirm(prompt, assumeYes: assumeYes) else {
             print("Cancelled.")
             return 0
         }

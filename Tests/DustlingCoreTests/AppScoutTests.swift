@@ -114,4 +114,24 @@ import Testing
         #expect(result.unreadable.isEmpty)
         #expect(result.apps.map(\.displayName) == ["Fine"])
     }
+    // MARK: - Symlinked apps (Important #7)
+
+    @Test func symlinkedAppReportsItsTargetAndTheTargetsSize() throws {
+        let sandbox = try TestSandbox()
+        let real = try sandbox.app("elsewhere/Riot Client.app", bundleID: "com.riot")
+        try sandbox.file("elsewhere/Riot Client.app/Contents/Resources/big.bin", bytes: 64 * 1024)
+        try sandbox.app("Applications/Plain.app", bundleID: "com.plain")
+        let link = sandbox.environment.applicationDirectories[0].appending(path: "Riot İstemcisi.app")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let apps = scout(sandbox).discover()
+        let riot = try #require(apps.first { $0.bundleID == "com.riot" })
+        #expect(riot.url.lastPathComponent == "Riot İstemcisi.app")
+        #expect(riot.linkTarget?.resolvingSymlinksInPath().path == real.resolvingSymlinksInPath().path)
+        #expect(riot.bytes == DirectorySizer().measure(real).bytes)
+        #expect(riot.bytes >= 64 * 1024)
+        let plain = try #require(apps.first { $0.bundleID == "com.plain" })
+        #expect(plain.linkTarget == nil)
+        #expect(plain.bytes == DirectorySizer().measure(plain.url).bytes)
+    }
 }
+

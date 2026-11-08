@@ -6,13 +6,15 @@ public protocol RunningAppsProviding: Sendable {
 }
 
 /// Matches running applications by bundle location, so a same-named app elsewhere doesn't block.
+/// A symlinked app also counts as running when its target is.
 public struct WorkspaceRunningApps: RunningAppsProviding {
     public init() {}
 
     public func isRunning(_ app: InstalledApp) -> Bool {
-        let target = app.url.standardizedFileURL
+        let targets = Set([app.url, app.linkTarget].compactMap { $0?.resolvingSymlinksInPath().standardizedFileURL.path })
         return NSWorkspace.shared.runningApplications.contains {
-            $0.bundleURL?.standardizedFileURL == target
+            guard let bundle = $0.bundleURL else { return false }
+            return targets.contains(bundle.resolvingSymlinksInPath().standardizedFileURL.path)
         }
     }
 }

@@ -62,6 +62,12 @@ enum Format {
         if hiddenFDA > 0 { print("  ! \u{2026}and \(hiddenFDA) more folders need Full Disk Access") }
     }
 
+    /// " → <target> (only the link will be removed; the app stays)" for a symlinked app, else "".
+    static func linkNote(_ app: InstalledApp) -> String {
+        guard let target = app.linkTarget else { return "" }
+        return " \u{2192} \(path(target)) (only the link will be removed; the app stays)"
+    }
+
     static func printWarning(_ text: String) {
         print("  ! \(text)")
     }
