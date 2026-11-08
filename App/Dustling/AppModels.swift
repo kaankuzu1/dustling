@@ -93,6 +93,12 @@ final class AppModels {
                 placesCheck = { _ in HomeFixture.places(limited: limited) }
             }
         }
+        // QA in a sample home folder (`CFFIXED_USER_HOME`, see docs/RELEASING.md): nothing in it is
+        // protected, so treat Full Disk Access as on and the Uninstaller lists apps.
+        if UserDefaults.standard.bool(forKey: "DustlingQAAssumeFullDiskAccess"),
+           ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] != nil {
+            probe = { .granted }
+        }
         #endif
         let health = HealthModel(
             probe: probe,
