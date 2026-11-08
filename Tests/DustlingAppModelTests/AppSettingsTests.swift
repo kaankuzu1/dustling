@@ -30,10 +30,7 @@ struct AppSettingsTests {
     private struct Boom: LocalizedError { var errorDescription: String? { "The operation couldn't be completed." } }
 
     private func fresh() -> UserDefaults {
-        let name = "dustling-settings-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
-        return defaults
+        ScratchDefaults.make("dustling-settings")
     }
 
     private let environment = SystemEnvironment(
