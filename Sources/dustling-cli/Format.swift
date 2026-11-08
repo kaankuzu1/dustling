@@ -1,27 +1,13 @@
+import DustlingAppModel
 import DustlingCore
 import Foundation
 
 /// English-only output helpers. Kept free of I/O decisions so they stay trivially testable.
 enum Format {
-    /// English on any system locale.
-    static func bytes(_ count: UInt64) -> String {
-        bytes(Int64(clamping: count))
-    }
+    /// English on any system locale; see `Bytes`.
+    static func bytes(_ count: UInt64) -> String { Bytes.format(count) }
 
-    /// ByteCountFormatter has no locale setting (it follows the system language, so a Turkish Mac
-    /// would print "MB" with a comma), so this mirrors its `.file` style: decimal units, English.
-    static func bytes(_ count: Int64) -> String {
-        let value = Double(max(0, count))
-        let units: [(String, Int)] = [("KB", 0), ("MB", 1), ("GB", 2), ("TB", 2), ("PB", 2)]
-        if value < 1000 { return count == 1 ? "1 byte" : "\(max(0, count)) bytes" }
-        var scaled = value / 1000
-        var index = 0
-        while scaled >= 1000 && index < units.count - 1 {
-            scaled /= 1000
-            index += 1
-        }
-        return String(format: "%.\(units[index].1)f %@", scaled, units[index].0)
-    }
+    static func bytes(_ count: Int64) -> String { Bytes.format(count) }
 
     static func plural(_ count: Int, _ singular: String, _ plural: String? = nil) -> String {
         "\(count) " + (count == 1 ? singular : (plural ?? singular + "s"))
