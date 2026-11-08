@@ -32,7 +32,7 @@ targets:
         type: folder
         buildPhase: resources
       # The Icon Composer icon (default and dark appearances). One file reference, compiled by actool
-      # into Assets.car and AppIcon.icns; the AppIcon.appiconset stays as the fallback for older Xcode.
+      # into Assets.car and AppIcon.icns. With both present, actool builds the icon from this file.
       - path: Dustling/Resources/AppIcon.icon
         type: file
         buildPhase: resources

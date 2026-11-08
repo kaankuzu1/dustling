@@ -4,7 +4,7 @@ The SwiftUI app. It is built on the `DustlingCore` and `DustlingAppModel` librar
 
 ## Build
 
-Requirements: macOS 14 or newer, Xcode 16 or newer, and XcodeGen (`brew install xcodegen`).
+Requirements: macOS 14 or newer to run it, Xcode 26 or newer to build it (the app icon is an Icon Composer file), and XcodeGen (`brew install xcodegen`).
 
 ```bash
 cd App
@@ -42,4 +42,5 @@ If the repository sits in an iCloud-synced folder (Desktop or Documents), File P
 - `Dustling/Theme/DustlingTheme.swift`: the Mosaic design tokens, copied unchanged from the approved handoff.
 - `Dustling/Shell/`: the window shell (sidebar, footer, toolbar, action bar) and shared pieces (banner, chip, Mote, pixel icons, skeletons).
 - `Dustling/Resources/Fonts/`: Geist, Geist Mono, Geist Pixel and Pixelify Sans (SIL OFL 1.1). `SOURCES.md` lists where each file came from and its SHA-256.
-- `Dustling/Resources/Assets.xcassets/AppIcon.appiconset`: rendered from `docs/assets/dustling-icon.svg`.
+- `Dustling/Resources/AppIcon.icon`: the app icon as an Icon Composer document, with a default and a dark background under the mascot (glass, specular highlights and shadows off). `actool` compiles it into `Assets.car` and `AppIcon.icns`; macOS 14 and 15 show the default look.
+- `Dustling/Resources/Assets.xcassets/AppIcon.appiconset`: rendered from `docs/assets/dustling-icon.svg`. Kept from before the `.icon`; with both present, Xcode 26 builds the icon from `AppIcon.icon`.

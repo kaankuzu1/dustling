@@ -21,12 +21,20 @@ Dustling finds what's filling your Mac and clears it safely. It finds caches, lo
 
 It started with a full disk that blocked a macOS update, and a cleaner that sometimes did nothing at all, without saying so. Dustling is built around the opposite promise. If it can't look somewhere, it says so. If it can't remove something, it tells you why. Nothing is ever deleted that you didn't see first.
 
-> **Status: early.** The cleaning engine and a command-line tool work today. The Mac app (SwiftUI, with Dustling's own design) is being built on top of them. See the [roadmap](#roadmap).
+> **Status: the Mac app is ready to build from source.** The cleaning engine, the command-line tool and the SwiftUI app work today. There is no signed release yet, and the admin helper for system caches comes later. See the [roadmap](#roadmap).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/home-dark.png">
+    <img alt="Dustling's Home screen: how much space the macOS update needs, a mosaic of everything Dustling could reclaim, and cards for the Junk scan, Uninstaller and Startup items" src="docs/screenshots/home-light.png" width="860">
+  </picture>
+</p>
 
 ## Contents
 
 - [What it does](#what-it-does)
 - [Safety promises](#safety-promises)
+- [Screenshots](#screenshots)
 - [Getting started](#getting-started)
   - [Build the app](#build-the-app)
 - [Command line](#command-line)
@@ -44,6 +52,18 @@ It started with a full disk that blocked a macOS update, and a cleaner that some
 - **History and Restore.** Every run is recorded. Changed your mind? Put a whole cleanup back, or just one file, as long as it's still in the Trash.
 - **Health check.** Verifies Full Disk Access by actually trying to read a protected location, and shows free space the same way the macOS updater counts it, including "purgeable" space macOS frees on its own.
 
+## Screenshots
+
+| Junk scan | Uninstaller |
+| --- | --- |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/junk-results-dark.png"><img alt="Junk scan results: safe categories preselected, review categories unchecked, each with its size and a mini mosaic" src="docs/screenshots/junk-results-light.png"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/uninstaller-detail-dark.png"><img alt="Uninstaller: apps with their leftovers, and the selected app's leftovers listed one by one" src="docs/screenshots/uninstaller-detail-light.png"></picture> |
+
+| Startup items | History |
+| --- | --- |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/startup-normal-dark.png"><img alt="Startup items: login agents and background daemons with switches, and one that belongs to an app that was removed" src="docs/screenshots/startup-normal-light.png"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/history-runs-dark.png"><img alt="History: every run on a timeline, with Restore" src="docs/screenshots/history-runs-light.png"></picture> |
+
+Every screen, in light and dark, is in [`docs/screenshots`](docs/screenshots). They show sample data from Dustling's screenshot fixtures, not anyone's real files.
+
 ## Safety promises
 
 | Promise | What it means in practice |
@@ -58,7 +78,7 @@ It started with a full disk that blocked a macOS update, and a cleaner that some
 
 ## Getting started
 
-**Requirements:** macOS 14 Sonoma or newer, and Xcode 16 or newer (Swift 6).
+**Requirements:** macOS 14 Sonoma or newer, and Xcode 16 or newer (Swift 6) for the engine and the command-line tool. The Mac app needs Xcode 26 (see [Build the app](#build-the-app)).
 
 ```bash
 git clone https://github.com/kaankuzu1/dustling.git
@@ -90,16 +110,27 @@ Something went missing? `swift run dustling-cli history` shows every run, and `r
 
 ### Build the app
 
-The Mac app lives in `App/`. It needs Xcode 16 or newer and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
+The Mac app lives in `App/`. You need:
+
+- Xcode 26 or newer. The app icon is an Icon Composer file, and the project is only tested with Xcode 26.
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`.
 
 ```bash
 cd App
 xcodegen generate
+open Dustling.xcodeproj
+```
+
+Then choose the **Dustling** scheme and press Run (⌘R). To build from the command line instead:
+
+```bash
 xcodebuild -project Dustling.xcodeproj -scheme Dustling -configuration Debug -derivedDataPath build build
 open build/Build/Products/Debug/Dustling.app
 ```
 
-The generated project and `build/` are not checked in. See [App/README.md](App/README.md) for signing and Full Disk Access.
+The generated project and `build/` are not checked in; change `App/project.yml` instead. The first time Dustling opens, it walks you through Full Disk Access. Without it, the app still works and says which places it couldn't read.
+
+[App/README.md](App/README.md) covers signing with your own team (so macOS keeps Full Disk Access across rebuilds) and building from a folder that iCloud Drive syncs (Desktop or Documents).
 
 ## Command line
 
@@ -171,7 +202,7 @@ Design notes live in [`docs/superpowers`](docs/superpowers):
 ## Roadmap
 
 - [x] **Core engine and command-line tool.** Junk scan, uninstaller, startup items, History and Restore, health check.
-- [ ] **The Mac app.** A SwiftUI interface with Dustling's "Mosaic" design: a mosaic view of your storage, live scanning, per-item progress and a guided Full Disk Access setup. Motion respects Reduce Motion.
+- [x] **The Mac app.** A SwiftUI interface with Dustling's "Mosaic" design: a mosaic view of your storage, live scanning, per-item progress and a guided Full Disk Access setup. Motion respects Reduce Motion, and every control works with VoiceOver and the keyboard.
 - [ ] **Admin helper.** A small privileged helper (via `SMAppService`) for system caches, launch daemons and package receipts. It repairs itself if macOS unregisters it.
 - [ ] **Releases.** A signed, notarized `.dmg` on GitHub Releases, a Homebrew cask, and a website at dustling.app.
 
