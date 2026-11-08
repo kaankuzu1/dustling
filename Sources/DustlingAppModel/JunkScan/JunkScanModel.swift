@@ -57,10 +57,12 @@ public struct CleanSummary: Equatable, Sendable {
 
 public enum JunkScanModelError: Error, Equatable, LocalizedError, Sendable {
     case noCleanupToUndo
+    case alreadyPutBack
 
     public var errorDescription: String? {
         switch self {
         case .noCleanupToUndo: "There is no cleanup to put back."
+        case .alreadyPutBack: "This cleanup was already put back."
         }
     }
 }
@@ -85,6 +87,10 @@ public final class JunkScanModel {
     public private(set) var categories: [CategoryTileModel] = []
     /// What the last Put everything back did, item by item.
     public private(set) var restoreOutcomes: [RestoreOutcome]?
+    /// A plain sentence about the last action that did nothing (e.g. nothing selected); nil otherwise.
+    public private(set) var message: String?
+    /// True once the run just made was put back (allowed once per run).
+    public private(set) var didPutBack = false
     /// Applied at the next scan (the "Preselect safe categories" setting).
     public var preselectSafe: Bool
 
@@ -132,6 +138,11 @@ public final class JunkScanModel {
         if case .done(let record) = state { CleanSummary(record) } else { nil }
     }
 
+    /// True while the run just made can still be put back (once per run).
+    public var canPutBack: Bool {
+        if case .done(let record) = state { !didPutBack && record.restorable } else { false }
+    }
+
     public var isBusy: Bool {
         switch state {
         case .scanning, .moving: true
@@ -150,6 +161,8 @@ public final class JunkScanModel {
         scans = [:]
         categories = []
         restoreOutcomes = nil
+        message = nil
+        didPutBack = false
         state = .scanning(ScanProgress(
             currentPath: environment.home, bytesFound: 0, categoriesDone: 0, categoriesTotal: catalog.count))
         let scanner = self.scanner
@@ -211,19 +224,22 @@ public final class JunkScanModel {
 
     private func tile(for scan: CategoryScan, selected: Bool?) -> CategoryTileModel {
         let category = scan.category
-        let initial = !scan.stopped && category.selection == .preselected && preselectSafe
+        // Admin-only categories wait for the cleanup helper: shown with their size, never selected.
+        let initial = !scan.stopped && !category.requiresAdmin && category.selection == .preselected && preselectSafe
         return CategoryTileModel(
             id: category.id, title: category.title,
-            note: category.id == .iosBackups ? "Your data, never selected for you" : nil,
+            note: category.requiresAdmin
+                ? "Needs the cleanup helper"
+                : (category.id == .iosBackups ? "Your data, never selected for you" : nil),
             bytes: scan.bytes, itemCount: scan.items.count, selection: category.selection,
-            isSelected: scan.stopped ? false : (selected ?? initial), stopped: scan.stopped,
+            isSelected: (scan.stopped || category.requiresAdmin) ? false : (selected ?? initial), stopped: scan.stopped,
             issues: scan.issues, inUseCount: scan.items.filter { $0.inUseByBundleID != nil }.count)
     }
 
     public func toggle(_ id: JunkCategoryID) {
         guard case .ready = state, let index = categories.firstIndex(where: { $0.id == id }) else { return }
         let tile = categories[index]
-        guard !tile.stopped, tile.selection != .emptyTrashOnly else { return }
+        guard !tile.stopped, tile.selection != .emptyTrashOnly, scans[id]?.category.requiresAdmin != true else { return }
         categories[index].isSelected.toggle()
     }
 
@@ -238,6 +254,8 @@ public final class JunkScanModel {
         var sizes: [URL: UInt64] = [:]
         var extra: [JournalEntry] = []
         var roots = Set<URL>()
+        message = nil
+        didPutBack = false
         for tile in categories where tile.isSelected && !tile.stopped {
             guard let scan = scans[tile.id] else { continue }
             for item in scan.items {
@@ -246,6 +264,7 @@ public final class JunkScanModel {
                     extra.append(JournalEntry(
                         originalPath: path, bytes: item.bytes, outcome: .skipped(reason: "in use by \(owner)")))
                 } else if scan.category.requiresAdmin {
+                    // Unreachable while admin tiles can't be selected; kept as defence.
                     extra.append(JournalEntry(originalPath: path, bytes: item.bytes, outcome: .needsAdmin))
                 } else {
                     let parent = item.url.deletingLastPathComponent()
@@ -261,7 +280,7 @@ public final class JunkScanModel {
             }
         }
         guard !urls.isEmpty || !extra.isEmpty else {
-            state = .problem("Nothing is selected to move to the Trash.")
+            message = "Nothing is selected to move to the Trash."
             return
         }
 
@@ -297,6 +316,7 @@ public final class JunkScanModel {
     /// items were never moved.
     public func putEverythingBack() async throws -> [RestoreOutcome] {
         guard case .done(let record) = state else { throw JunkScanModelError.noCleanupToUndo }
+        guard !didPutBack else { throw JunkScanModelError.alreadyPutBack }
         let paths = Set(record.entries.compactMap { entry -> String? in
             if case .movedToTrash = entry.outcome { entry.originalPath } else { nil }
         })
@@ -306,6 +326,7 @@ public final class JunkScanModel {
         do {
             let outcomes = try await Task.detached { try journal.restore(runID: id, paths: paths) }.value
             restoreOutcomes = outcomes
+            didPutBack = true
             onRunCompleted()
             return outcomes
         } catch {

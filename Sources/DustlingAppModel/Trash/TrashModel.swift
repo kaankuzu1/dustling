@@ -6,6 +6,13 @@ import Observation
 ///
 /// Sizing the Trash is blocking filesystem work, so `refresh()` runs it off the main actor and
 /// publishes the result here; a slower older refresh never overwrites a newer one.
+public enum EmptyTrashResult: Sendable {
+    case emptied(RunRecord)
+    /// Nothing was deleted; `reason` is in plain words. When the Trash changed since it was
+    /// confirmed, the model has already refreshed, so the UI can show the new size and ask again.
+    case refused(reason: String)
+}
+
 @MainActor @Observable
 public final class TrashModel {
     /// Nil until the first `refresh()`.
@@ -20,6 +27,7 @@ public final class TrashModel {
     @ObservationIgnored private let journal: RunJournal
     @ObservationIgnored private let onRunCompleted: @MainActor () -> Void
     @ObservationIgnored private var generation = 0
+    public private(set) var isEmptying = false
 
     public init(
         inspector: TrashInspector, journal: RunJournal, onRunCompleted: @escaping @MainActor () -> Void = {}
@@ -61,20 +69,28 @@ public final class TrashModel {
     }
 
     /// Permanently deletes everything in the Trash. The UI confirms first; this is the only way the
-    /// app empties it. Refuses (with a failed entry, nothing deleted) when `canEmpty` is false.
-    public func emptyTrash() async -> RunRecord {
-        guard canEmpty else {
-            let reason = disabledReason ?? "The Trash can't be emptied"
-            return RunRecord(
-                startedAt: Date(), kind: .emptyTrash,
-                entries: [JournalEntry(originalPath: "<trash>", bytes: 0, outcome: .failed(reason: reason))],
-                restorable: false)
+    /// app empties it. Refuses (nothing deleted) when `canEmpty` is false, when another empty is
+    /// running, and when the Trash was re-read just before deleting and is no longer what was
+    /// confirmed (unreadable, or a different size).
+    public func emptyTrash() async -> EmptyTrashResult {
+        guard !isEmptying else { return .refused(reason: "The Trash is already being emptied") }
+        guard canEmpty, let confirmed = contents?.size.bytes else {
+            return .refused(reason: disabledReason ?? "The Trash can't be emptied")
         }
+        isEmptying = true
+        defer { isEmptying = false }
         let inspector = self.inspector
-        let record = await Task.detached(priority: .userInitiated) { inspector.emptyTrash() }.value
+        let attempt = await Task.detached(priority: .userInitiated) { () -> RunRecord? in
+            let now = inspector.sizeWithIssues()
+            guard now.issues.isEmpty, now.size.bytes == confirmed else { return nil }
+            return inspector.emptyTrash()
+        }.value
         await refresh()
+        guard let record = attempt else {
+            return .refused(reason: "The Trash changed since you looked at it. Check it again before emptying")
+        }
         onRunCompleted()
-        return record
+        return .emptied(record)
     }
 
     private struct Snapshot: Sendable {

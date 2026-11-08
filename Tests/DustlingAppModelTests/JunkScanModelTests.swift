@@ -173,13 +173,33 @@ struct JunkScanModelTests {
         #expect(record.entries.count == 3)
     }
 
-    @Test func nothingSelectedIsAProblemNotASilentNoOp() async throws {
+    @Test func nothingSelectedStaysReadyWithAMessage() async throws {
         let rig = try ModelRig()
         let model = makeModel(rig, preselectSafe: false)
         await scanned(model)
         await model.clean()
-        guard case .problem(let text) = model.state else { Issue.record("expected problem"); return }
-        #expect(!text.isEmpty)
+        guard case .ready = model.state else { Issue.record("expected ready"); return }
+        #expect(model.message == "Nothing is selected to move to the Trash.")
+    }
+
+    @Test func adminCategoriesStartUncheckedAndCantBeToggled() async throws {
+        let rig = try ModelRig()
+        let sys = rig.root.appending(path: "Library/Caches", directoryHint: .isDirectory)
+        try rig.file(sys.appending(path: "x/blob"), bytes: 4096)
+        let categories = [JunkCategory(
+            id: .systemCachesAndLogs, title: "System caches and logs", selection: .preselected,
+            requiresAdmin: true, roots: [sys])]
+        let model = JunkScanModel(
+            scanner: rig.scanner(), runner: rig.runner(), journal: rig.journal,
+            environment: rig.environment, options: rig.options, categories: { categories })
+        await scanned(model)
+        let tile = try #require(model.categories.first)
+        #expect(!tile.isSelected)
+        #expect(tile.bytes > 0)
+        #expect(tile.note == "Needs the cleanup helper")
+        model.toggle(.systemCachesAndLogs)
+        #expect(!model.categories[0].isSelected)
+        #expect(model.selectedBytes == 0)
     }
 
     @Test func putEverythingBackRestoresOnlyMovedItems() async throws {
@@ -205,6 +225,9 @@ struct JunkScanModelTests {
         #expect(FileManager.default.fileExists(atPath: boom.path))
         #expect(FileManager.default.fileExists(atPath: open.path))
         #expect(completed.value == 2)   // after the clean and after the restore
+        // Once per run.
+        #expect(!model.canPutBack)
+        await #expect(throws: JunkScanModelError.alreadyPutBack) { _ = try await model.putEverythingBack() }
     }
 
     @Test func putEverythingBackWithoutARunThrows() async throws {
