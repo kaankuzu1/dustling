@@ -18,6 +18,14 @@ import Testing
         #expect(apps.first?.teamID == nil)
     }
 
+    @Test func canSkipMeasuringSizes() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.app("Applications/X.app", bundleID: "com.x")
+        let apps = AppScout(environment: sandbox.environment, measuresSizes: false).discover()
+        #expect(apps.map(\.bundleID) == ["com.x"])
+        #expect(apps.first?.bytes == 0)
+    }
+
     @Test func doesNotDescendIntoBundles() throws {
         let sandbox = try TestSandbox()
         try sandbox.app("Applications/X.app", bundleID: "com.x")

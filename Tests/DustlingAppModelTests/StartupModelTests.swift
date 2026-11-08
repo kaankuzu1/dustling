@@ -85,13 +85,15 @@ struct StartupModelTests {
         await model.load()
         let item = try #require(model.items.first)
 
-        let record = await model.toggle(item)
+        let record = try #require(await model.toggle(item))
 
         #expect(record.kind == .startupChange)
         let entry = try #require(record.entries.first)
         #expect(entry.outcome == .skipped(reason: "disabled"))
         #expect(OutcomePresentation.text(entry.outcome, in: record.kind) == "Turned off")
         #expect(model.lastChange == "Turned off com.x.agent")
+        #expect(model.lastResult?.result == StartupScreen.ChangeResult(
+            success: true, title: "Turned off tool.", message: nil))
         #expect(completed.value == 1)
         #expect(commands.calls.contains { $0.contains("disable") })
         #expect(try rig.journal.all().count == 1)
@@ -171,6 +173,150 @@ struct StartupModelTests {
         #expect(model.orphanBanner?.items.map(\.label) == ["com.x.gone"])
         #expect(looked.all == ["/nope/gone"])
     }
+}
+
+@MainActor
+struct StartupModelScreenTests {
+    private func makeModel(
+        _ rig: ModelRig, commands: FakeCommands = FakeCommands(), apps: [InstalledApp] = [],
+        onRunCompleted: @escaping @MainActor () -> Void = {}
+    ) -> StartupModel {
+        let scanner = rig.startupScanner(commands: commands)
+        let recorder = StartupChangeRecorder(
+            scanner: scanner, journal: rig.journal, logger: RunLogger(directory: rig.environment.logsDirectory))
+        let remover = StartupRemover(runner: rig.runner(), commands: commands, environment: rig.environment)
+        return StartupModel(
+            scanner: scanner, recorder: recorder, apps: { apps }, remover: remover, onRunCompleted: onRunCompleted)
+    }
+
+    private var agents: (ModelRig) -> URL { { $0.environment.userLibrary.appending(path: "LaunchAgents") } }
+
+    @Test func rowsShowTheOwningAppFromTheAppList() async throws {
+        let rig = try ModelRig()
+        let appURL = rig.environment.applicationDirectories[0].appending(path: "Tool.app", directoryHint: .isDirectory)
+        let program = try rig.file(appURL.appending(path: "Contents/MacOS/tool"), bytes: 1)
+        try rig.writeLaunchPlist(agents(rig), label: "com.tool.agent", program: program.path(percentEncoded: false))
+        let app = InstalledApp(
+            url: appURL, displayName: "Tool", bundleID: "com.tool", teamID: nil, executableName: "tool",
+            steamAppID: nil, bytes: 0, lastUsed: nil)
+        let model = makeModel(rig, apps: [app])
+        await model.load()
+        let row = try #require(model.groups.first { $0.kind == .agents }?.rows.first)
+        #expect(row.owner == "Tool")
+        #expect(row.ownerAppURL == appURL)
+        #expect(row.name == "Tool")
+        #expect(row.kindName == "Launch agent")
+        #expect(row.badge == nil)
+    }
+
+    @Test func orphanRowsSayTheAppWasRemoved() async throws {
+        let rig = try ModelRig()
+        try rig.writeLaunchPlist(
+            agents(rig), label: "com.gone.agent", program: "/Applications/Gone App.app/Contents/MacOS/gone")
+        let model = makeModel(rig)
+        await model.load()
+        let row = try #require(model.groups.first { $0.kind == .agents }?.rows.first)
+        #expect(row.isOrphaned)
+        #expect(row.badge == .appNotFound)
+        #expect(row.owner == "Removed app")
+        #expect(model.orphanScreenBanner?.title == "Gone App was uninstalled, but its startup item still runs.")
+    }
+
+    @Test func kindFilterNarrowsTheGroups() async throws {
+        let rig = try ModelRig()
+        let tool = try rig.file(rig.root.appending(path: "bin/tool"), bytes: 1).path(percentEncoded: false)
+        try rig.writeLaunchPlist(agents(rig), label: "com.x.agent", program: tool)
+        try rig.writeLaunchPlist(rig.environment.systemLibrary.appending(path: "LaunchDaemons"), label: "com.x.d", program: tool)
+        let model = makeModel(rig)
+        await model.load()
+        #expect(model.shownGroups.map(\.kind) == [.loginItems, .agents, .daemons])
+        model.kindFilter = .daemons
+        #expect(model.shownGroups.map(\.kind) == [.daemons])
+        let daemon = try #require(model.shownGroups.first?.rows.first)
+        #expect(daemon.badge == .helper)
+        #expect(!daemon.canToggle)
+        #expect(!model.canRemove(daemon.item))
+    }
+
+    @Test func removeUnloadsTheAgentMovesItToTheTrashAndRecordsIt() async throws {
+        let rig = try ModelRig()
+        let commands = FakeCommands()
+        let tool = try rig.file(rig.root.appending(path: "bin/tool"), bytes: 1).path(percentEncoded: false)
+        let plist = try rig.writeLaunchPlist(agents(rig), label: "com.x.agent", program: tool)
+        let completed = Counter()
+        let model = makeModel(rig, commands: commands, onRunCompleted: { completed.bump() })
+        model.canTakeOutOfTrash = true
+        await model.load()
+        let item = try #require(model.items.first)
+        #expect(model.canRemove(item))
+        let itemPlist = try #require(item.plistURL).path(percentEncoded: false)
+
+        let record = try #require(await model.remove(item))
+
+        #expect(record.kind == .startupChange)
+        #expect(record.restorable)
+        guard case .movedToTrash = record.entries.first?.outcome else {
+            Issue.record("expected a move, got \(record.entries)")
+            return
+        }
+        #expect(!FileManager.default.fileExists(atPath: plist.path(percentEncoded: false)))
+        #expect(commands.calls.contains { $0.contains("bootout") && $0.contains(itemPlist) })
+        #expect(completed.value == 1)
+        #expect(model.items.isEmpty)
+        #expect(model.lastResult?.result.title == "Moved tool to the Trash.")
+        #expect(model.lastResult?.record.id == record.id)
+        #expect(try rig.journal.all().map(\.id) == [record.id])
+    }
+
+    @Test func removeIsRefusedForItemsOutsideTheUsersLaunchAgents() async throws {
+        let rig = try ModelRig()
+        let tool = try rig.file(rig.root.appending(path: "bin/tool"), bytes: 1).path(percentEncoded: false)
+        let plist = try rig.writeLaunchPlist(
+            rig.environment.systemLibrary.appending(path: "LaunchAgents"), label: "com.x.sys", program: tool)
+        let model = makeModel(rig)
+        await model.load()
+        let item = try #require(model.items.first)
+        #expect(!model.canRemove(item))
+        #expect(await model.remove(item) == nil)
+        #expect(FileManager.default.fileExists(atPath: plist.path(percentEncoded: false)))
+        #expect(try rig.journal.all().isEmpty)
+    }
+
+    @Test func toggleFailureIsShownNotSilent() async throws {
+        let rig = try ModelRig()
+        let tool = try rig.file(rig.root.appending(path: "bin/tool"), bytes: 1).path(percentEncoded: false)
+        try rig.writeLaunchPlist(rig.environment.systemLibrary.appending(path: "LaunchDaemons"), label: "com.x.d", program: tool)
+        let model = makeModel(rig)
+        await model.load()
+        let daemon = try #require(model.items.first)
+        let record = try #require(await model.toggle(daemon))
+        #expect(record.entries.first?.outcome == .needsAdmin)
+        #expect(model.lastResult?.result.success == false)
+        #expect(model.lastResult?.result.message == "Needs the cleanup helper (coming in a later version)")
+        model.dismissResult()
+        #expect(model.lastResult == nil)
+    }
+
+    #if DEBUG
+    @Test func fixtureNeverTouchesTheDisk() async throws {
+        let rig = try ModelRig()
+        let commands = FakeCommands()
+        let model = makeModel(rig, commands: commands)
+        let fake = StartupItem(
+            label: "com.fixture.agent", scope: .userAgent,
+            plistURL: rig.root.appending(path: "nowhere/com.fixture.agent.plist"), program: "/nowhere/tool",
+            ownerAppName: "Fixture", isEnabled: true, managedInSystemSettingsOnly: false)
+        model.showFixture(items: [fake], orphanIDs: [fake.id])
+        #expect(model.items == [fake])
+        #expect(model.orphanScreenBanner != nil)
+        await model.load()
+        #expect(model.items == [fake])
+        #expect(await model.toggle(fake) == nil)
+        #expect(await model.remove(fake) == nil)
+        #expect(commands.calls.isEmpty)
+        #expect(try rig.journal.all().isEmpty)
+    }
+    #endif
 }
 
 private final class Paths: @unchecked Sendable {

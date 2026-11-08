@@ -58,7 +58,8 @@ public struct RunLogger: Sendable {
             + "\(run.needsAdminCount) need admin, \(run.skippedCount) skipped"
     }
 
-    static func text(for run: RunRecord) -> String {
+    /// The lines `write` would add for this run, header to totals.
+    public static func text(for run: RunRecord) -> String {
         ([headerLine(run)] + run.entries.map(entryLine) + [totalsLine(run)]).joined(separator: "\n") + "\n"
     }
 

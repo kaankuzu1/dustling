@@ -8,10 +8,14 @@ public struct AppScout: Sendable {
 
     private let environment: SystemEnvironment
     private let sizer: DirectorySizer
+    private let measuresSizes: Bool
 
-    public init(environment: SystemEnvironment, sizer: DirectorySizer = DirectorySizer()) {
+    /// `measuresSizes: false` lists the apps without measuring them (`bytes` is 0), for callers that
+    /// only need names and locations, such as the owners of startup items.
+    public init(environment: SystemEnvironment, sizer: DirectorySizer = DirectorySizer(), measuresSizes: Bool = true) {
         self.environment = environment
         self.sizer = sizer
+        self.measuresSizes = measuresSizes
     }
 
     /// Installed apps sorted by display name (case-insensitive).
@@ -108,7 +112,7 @@ public struct AppScout: Sendable {
             teamID: teamIdentifier(of: url),
             executableName: executable,
             steamAppID: executable.flatMap { steamAppID(in: url.appending(path: "Contents/MacOS/\($0)")) },
-            bytes: sizer.measure(linkTarget ?? url).bytes,
+            bytes: measuresSizes ? sizer.measure(linkTarget ?? url).bytes : 0,
             lastUsed: lastUsed,
             linkTarget: linkTarget
         )

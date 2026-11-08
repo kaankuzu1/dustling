@@ -130,4 +130,83 @@ struct HistoryModelTests {
         }
         #expect(!FileManager.default.fileExists(atPath: original.path))
     }
+
+    @Test func restoreIsRefusedWithoutTrashAccess() async throws {
+        let rig = try ModelRig()
+        let original = rig.root.appending(path: "orig/file.txt")
+        let run = try trashedRun(rig, name: "file.txt", original: original.path, ago: 60)
+        let model = HistoryModel(journal: rig.journal)
+        model.canTakeOutOfTrash = false
+        await model.refresh()
+        await #expect(throws: HistoryModelError.cantTakeOutOfTrash) {
+            _ = try await model.restore(runID: run.id)
+        }
+        #expect(HistoryModelError.cantTakeOutOfTrash.localizedDescription
+            == "Dustling can't take things out of the Trash without Full Disk Access.")
+        #expect(!FileManager.default.fileExists(atPath: original.path))
+    }
+
+    @Test func restoringCheckedItemsAcrossRunsPutsBackOnlyThose() async throws {
+        let rig = try ModelRig()
+        let a = rig.root.appending(path: "orig/a.txt")
+        let b = rig.root.appending(path: "orig/b.txt")
+        let c = rig.root.appending(path: "orig/c.txt")
+        let runA = try trashedRun(rig, name: "a.txt", original: a.path, ago: 60)
+        _ = try trashedRun(rig, name: "b.txt", original: b.path, ago: 120)
+        _ = try trashedRun(rig, name: "c.txt", original: c.path, ago: 180)
+        let completed = Counter()
+        let model = HistoryModel(journal: rig.journal, onRunCompleted: { completed.bump() })
+        await model.refresh()
+        let chosen = model.allItems.filter { $0.path == a.path || $0.path == b.path }
+
+        let outcomes = try await model.restore(items: chosen)
+
+        #expect(outcomes.count == 2)
+        #expect(outcomes.contains(.restored(a.path)) && outcomes.contains(.restored(b.path)))
+        #expect(FileManager.default.fileExists(atPath: a.path))
+        #expect(FileManager.default.fileExists(atPath: b.path))
+        #expect(!FileManager.default.fileExists(atPath: c.path))
+        #expect(completed.value == 1)
+        #expect(model.allItems.first { $0.runID == runA.id }?.entry.restored == true)
+        #expect(model.lastRestore?.title == "Put back 2 items.")
+    }
+
+    @Test func bugReportReadsTheRunsLinesFromTheLogFile() async throws {
+        let rig = try ModelRig()
+        let logger = RunLogger(directory: rig.environment.logsDirectory)
+        let run = RunRecord(
+            startedAt: Date(), kind: .startupChange,
+            entries: [JournalEntry(originalPath: rig.environment.home.appending(path: "x.plist").path(percentEncoded: false),
+                                   bytes: 0, outcome: .skipped(reason: "disabled"))],
+            restorable: false)
+        try rig.journal.save(run)
+        try logger.write(run)
+        let model = HistoryModel(journal: rig.journal, logger: logger, home: rig.environment.home)
+        await model.refresh()
+        let text = await model.bugReport(for: run.id)
+        #expect(text.hasPrefix(ISO8601DateFormatter().string(from: run.startedAt)))
+        #expect(text.contains("skipped: disabled"))
+        #expect(text.contains("~/x.plist"))
+        #expect(model.logFile(for: run.id) == logger.file(for: run.startedAt))
+    }
+
+    #if DEBUG
+    @Test func fixtureNeverTouchesTheDisk() async throws {
+        let rig = try ModelRig()
+        let model = HistoryModel(journal: rig.journal)
+        let fake = RunRecord(
+            startedAt: Date(), kind: .junkClean,
+            entries: [JournalEntry(originalPath: "/nowhere/a", bytes: 1, outcome: .movedToTrash(trashedPath: "/nowhere/t/a"))],
+            restorable: true)
+        model.showFixture([fake])
+        #expect(model.runs.map(\.id) == [fake.id])
+        #expect(model.runs.first?.restorable == true)
+        await model.refresh()
+        #expect(model.runs.map(\.id) == [fake.id])
+        await #expect(throws: HistoryModelError.fixture) {
+            _ = try await model.restore(runID: fake.id)
+        }
+        #expect(try rig.journal.all().isEmpty)
+    }
+    #endif
 }

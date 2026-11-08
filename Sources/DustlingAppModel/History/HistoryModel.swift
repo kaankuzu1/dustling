@@ -27,11 +27,14 @@ public struct HistoryItem: Identifiable, Equatable, Sendable {
     public let runID: UUID
     public let runTitle: String
     public let runDate: Date
+    public let runKind: RunKind
     public let path: String
     public let bytes: UInt64
     public let status: String
     /// This item can be put back from the Trash right now.
     public let restorable: Bool
+    /// The journal entry as saved, for the screen's status column.
+    public let entry: JournalEntry
     public var id: String { runID.uuidString + "|" + path }
     public var name: String { URL(filePath: path).lastPathComponent }
 }
@@ -42,9 +45,17 @@ public enum HistoryItemFilter: Sendable, CaseIterable {
 
 public enum HistoryModelError: Error, Equatable, LocalizedError, Sendable {
     case trashWasEmptied
+    /// Without Full Disk Access macOS won't let Dustling take anything out of the Trash.
+    case cantTakeOutOfTrash
+    /// The DEBUG screenshot fixture is showing; nothing is restored.
+    case fixture
 
     public var errorDescription: String? {
-        "The Trash was emptied after this run, so its items can't be put back."
+        switch self {
+        case .trashWasEmptied: "The Trash was emptied after this run, so its items can't be put back."
+        case .cantTakeOutOfTrash: "Dustling can't take things out of the Trash without Full Disk Access."
+        case .fixture: "This is a screenshot sample, so nothing was put back."
+        }
     }
 }
 
@@ -61,17 +72,46 @@ public final class HistoryModel {
     public private(set) var isLoading = false
     public var search = ""
     public var itemFilter: HistoryItemFilter = .all
+    /// False without Full Disk Access: macOS then won't let Dustling take anything out of the Trash,
+    /// so the screen offers Show in Trash and `restore` refuses.
+    public var canTakeOutOfTrash = true
+    /// True while items are being put back.
+    public private(set) var isRestoring = false
+    /// How many items the restore running now asked for.
+    public private(set) var restoringCount = 0
+    /// What the last restore did, for the screen's banner. Cleared by `dismissRestore()`.
+    public private(set) var lastRestore: HistoryScreen.RestoreSummary?
 
     @ObservationIgnored private let journal: RunJournal
+    @ObservationIgnored private let logger: RunLogger?
+    /// The home folder, shown as `~` in the bug report.
+    public let home: URL?
     @ObservationIgnored private let onRunCompleted: @MainActor () -> Void
     @ObservationIgnored private var generation = 0
+    #if DEBUG
+    @ObservationIgnored public private(set) var isFixture = false
+    #endif
 
-    public init(journal: RunJournal, onRunCompleted: @escaping @MainActor () -> Void = {}) {
+    public init(
+        journal: RunJournal, logger: RunLogger? = nil, home: URL? = nil,
+        onRunCompleted: @escaping @MainActor () -> Void = {}
+    ) {
         self.journal = journal
+        self.logger = logger
+        self.home = home
         self.onRunCompleted = onRunCompleted
     }
 
+    private var fixtureOn: Bool {
+        #if DEBUG
+        return isFixture
+        #else
+        return false
+        #endif
+    }
+
     public func refresh() async {
+        guard !fixtureOn else { return }
         generation += 1
         let mine = generation
         isLoading = true
@@ -90,7 +130,7 @@ public final class HistoryModel {
                     problem: "Dustling couldn't read its history: \(error.localizedDescription)")
             }
         }
-        guard mine == generation else { return }
+        guard mine == generation, !fixtureOn else { return }
         isLoading = false
         problem = snapshot.problem
         unreadableRecords = snapshot.unreadable
@@ -112,9 +152,9 @@ public final class HistoryModel {
         allItems = sorted.flatMap { run in
             run.entries.filter { !$0.originalPath.hasPrefix("<") }.map { entry in
                 HistoryItem(
-                    runID: run.id, runTitle: Self.title(run.kind), runDate: run.startedAt,
+                    runID: run.id, runTitle: HistoryScreen.runTitle(run), runDate: run.startedAt, runKind: run.kind,
                     path: entry.originalPath, bytes: entry.bytes, status: Self.status(entry, in: run.kind),
-                    restorable: restorableRuns.contains(run.id) && RunJournal.isRestorable(entry))
+                    restorable: restorableRuns.contains(run.id) && isRestorable(entry), entry: entry)
             }
         }
     }
@@ -144,6 +184,14 @@ public final class HistoryModel {
         return OutcomePresentation.text(entry.outcome, in: kind)
     }
 
+    /// The journal's check, except in the DEBUG fixture (whose items aren't on disk).
+    private func isRestorable(_ entry: JournalEntry) -> Bool {
+        #if DEBUG
+        if isFixture { return !entry.restored && !entry.gone && { if case .movedToTrash = entry.outcome { true } else { false } }() }
+        #endif
+        return RunJournal.isRestorable(entry)
+    }
+
     // MARK: items
 
     /// `allItems` narrowed by the filter and the search text (matches the file name or path).
@@ -166,24 +214,119 @@ public final class HistoryModel {
         }
     }
 
+    // MARK: log
+
+    /// The log file the run was written to (nil without a logger).
+    public func logFile(for runID: UUID) -> URL? {
+        guard let logger, let run = runs.first(where: { $0.id == runID })?.record else { return nil }
+        return logger.file(for: run.startedAt)
+    }
+
+    /// "Copy for a bug report": the run's own log lines, with the home folder as `~`.
+    public func bugReport(for runID: UUID) async -> String {
+        guard let run = runs.first(where: { $0.id == runID })?.record else { return "" }
+        let file = logFile(for: runID)
+        let text = await Blocking.run { () -> String? in
+            guard let file else { return nil }
+            return try? String(contentsOf: file, encoding: .utf8)
+        }
+        return HistoryScreen.bugReport(logText: text, record: run, home: home?.path(percentEncoded: false) ?? "")
+    }
+
     // MARK: restore
 
     /// Puts items back from the Trash. `paths` limits it to those original paths. Throws
-    /// `HistoryModelError.trashWasEmptied` for a run older than the last Empty Trash, and the
-    /// journal's own errors (`notRestorable`, `saveFailed`, ...) otherwise. Refreshes afterwards
-    /// and calls `onRunCompleted` whenever a restore was attempted.
+    /// `cantTakeOutOfTrash` without Full Disk Access, `HistoryModelError.trashWasEmptied` for a run
+    /// older than the last Empty Trash, and the journal's own errors (`notRestorable`, `saveFailed`,
+    /// ...) otherwise. Refreshes afterwards and calls `onRunCompleted` whenever a restore was attempted.
     public func restore(runID: UUID, paths: Set<String>? = nil) async throws -> [RestoreOutcome] {
+        if fixtureOn { throw HistoryModelError.fixture }
+        guard canTakeOutOfTrash else { throw HistoryModelError.cantTakeOutOfTrash }
+        guard !isRestoring else { return [] }
         if !runs.contains(where: { $0.id == runID }) { await refresh() }
         if let run = runs.first(where: { $0.id == runID }), let emptied = lastEmptyTrash,
            run.record.startedAt < emptied {
             throw HistoryModelError.trashWasEmptied
         }
+        isRestoring = true
+        restoringCount = paths?.count ?? runs.first { $0.id == runID }.map { row in
+            row.record.entries.filter { RunJournal.isRestorable($0) }.count
+        } ?? 0
         let journal = self.journal
         let result = await Blocking.run { () -> Result<[RestoreOutcome], Error> in
             Result { try journal.restore(runID: runID, paths: paths) }
         }
+        isRestoring = false
+        if case .success(let outcomes) = result { lastRestore = HistoryScreen.restoreSummary(outcomes) }
         await refresh()
         onRunCompleted()
         return try result.get()
     }
+
+    /// Puts back the checked items of the All items table, run by run. A run that can't be restored
+    /// any more turns into a failed outcome for each of its items, so every item is accounted for.
+    @discardableResult
+    public func restore(items: [HistoryItem]) async throws -> [RestoreOutcome] {
+        if fixtureOn { throw HistoryModelError.fixture }
+        guard canTakeOutOfTrash else { throw HistoryModelError.cantTakeOutOfTrash }
+        guard !isRestoring, !items.isEmpty else { return [] }
+        isRestoring = true
+        restoringCount = items.count
+        let byRun = Dictionary(grouping: items, by: \.runID)
+        let emptied = lastEmptyTrash
+        let journal = self.journal
+        var outcomes: [RestoreOutcome] = []
+        for (runID, chosen) in byRun.sorted(by: { $0.value[0].runDate > $1.value[0].runDate }) {
+            let paths = Set(chosen.map(\.path))
+            if let emptied, chosen[0].runDate < emptied {
+                let reason = HistoryModelError.trashWasEmptied.localizedDescription
+                outcomes += paths.sorted().map { .failed($0, reason: reason) }
+                continue
+            }
+            let result = await Blocking.run { () -> Result<[RestoreOutcome], Error> in
+                Result { try journal.restore(runID: runID, paths: paths) }
+            }
+            switch result {
+            case .success(let done): outcomes += done
+            case .failure(let error):
+                if case RunJournalError.saveFailed(let done, _) = error { outcomes += done }
+                let reported = Set(outcomes.map(Self.path))
+                outcomes += paths.subtracting(reported).sorted().map { .failed($0, reason: error.localizedDescription) }
+            }
+        }
+        isRestoring = false
+        lastRestore = HistoryScreen.restoreSummary(outcomes)
+        await refresh()
+        onRunCompleted()
+        return outcomes
+    }
+
+    private static func path(_ outcome: RestoreOutcome) -> String {
+        switch outcome {
+        case .restored(let p), .conflict(let p), .missingFromTrash(let p), .failed(let p, _): p
+        }
+    }
+
+    public func dismissRestore() {
+        lastRestore = nil
+    }
+
+    #if DEBUG
+    /// DEBUG screenshots only: shows `records` as if read from History. While on, `refresh` and
+    /// `restore` refuse, so nothing is read from or written to the disk.
+    public func showFixture(_ records: [RunRecord]) {
+        isFixture = true
+        isLoading = false
+        problem = nil
+        unreadableRecords = []
+        publish(records)
+    }
+
+    /// DEBUG screenshots only.
+    public func showFixtureRestore(_ summary: HistoryScreen.RestoreSummary?, restoring: Int = 0) {
+        lastRestore = summary
+        isRestoring = restoring > 0
+        restoringCount = restoring
+    }
+    #endif
 }
