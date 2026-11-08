@@ -33,7 +33,7 @@ extension CategoryScan {
     /// This category's size together with whether it is complete.
     public var total: ScanTotal {
         ScanTotal(
-            bytes: bytes, itemCount: items.count, isComplete: issues.isEmpty,
+            bytes: bytes, itemCount: items.count, isComplete: issues.isEmpty && !stopped,
             needsFullDiskAccess: issues.contains { if case .missingFullDiskAccess = $0 { true } else { false } })
     }
 }

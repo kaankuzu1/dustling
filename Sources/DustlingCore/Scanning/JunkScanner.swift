@@ -78,24 +78,61 @@ public struct JunkScanner: Sendable {
         return (roots, issues)
     }
 
-    /// Scans categories in order. An item already claimed by an earlier category is skipped. Throws
-    /// `CancellationError` if the task is cancelled. `onCategory` fires as each category finishes.
+    /// Throttles and clamps progress: at most one event per 100 ms (monotonic clock), `bytesFound` never
+    /// decreases, and `finish` always emits. Used from one task only.
+    private final class ProgressEmitter {
+        private let total: Int
+        private let sink: @Sendable (ScanProgress) -> Void
+        private var last: ContinuousClock.Instant?
+        private var highWater: UInt64 = 0
+        var done = 0
+        init(total: Int, sink: @escaping @Sendable (ScanProgress) -> Void) {
+            self.total = total
+            self.sink = sink
+        }
+        func tick(_ path: URL, bytes: UInt64) {
+            let now = ContinuousClock.now
+            if let last, last.duration(to: now) < .milliseconds(100) { return }
+            emit(path, bytes, at: now)
+        }
+        func finish(_ path: URL, bytes: UInt64) { emit(path, bytes, at: .now) }
+        private func emit(_ path: URL, _ bytes: UInt64, at now: ContinuousClock.Instant) {
+            last = now
+            highWater = max(highWater, bytes)
+            sink(ScanProgress(currentPath: path, bytesFound: highWater, categoriesDone: done, categoriesTotal: total))
+        }
+    }
+
+    /// Scans categories in order. An item already claimed by an earlier category is skipped. `onCategory`
+    /// fires as each category finishes. `onProgress` is throttled to one call per 100 ms, plus one when
+    /// each category completes.
+    ///
+    /// Cancelling the task stops the scan even in the middle of a big folder and never throws: the result
+    /// holds the finished categories plus, if one was in progress, that category with `stopped = true`
+    /// and only the items fully measured (an item cut off mid-measurement is dropped, not shown with a
+    /// partial size). Categories not yet started are absent.
     public func scan(
         _ categories: [JunkCategory],
-        onCategory: @Sendable (CategoryScan) -> Void
-    ) async throws -> [CategoryScan] {
+        onCategory: @Sendable (CategoryScan) -> Void,
+        onProgress: @escaping @Sendable (ScanProgress) -> Void = { _ in }
+    ) async -> [CategoryScan] {
         let running = runningBundleIDs()
         let sizer = DirectorySizer()
         var claimed = Set<String>()
         var results: [CategoryScan] = []
+        let progress = ProgressEmitter(total: categories.count, sink: onProgress)
+        var committed: UInt64 = 0   // bytes of items accepted so far, across categories
 
         for category in categories {
-            try Task.checkCancellation()
+            if Task.isCancelled { break }
             var items: [JunkItem] = []
             let resolved = resolveRoots(category)
             var issues = resolved.issues
+            var stopped = false
+            var lastPath = category.roots.first ?? URL(filePath: "/")
 
-            for root in resolved.roots {
+            rootLoop: for root in resolved.roots {
+                if Task.isCancelled { stopped = true; break }
                 let children: [URL]
                 switch Self.list(root) {
                 case .success(let c): children = c
@@ -104,9 +141,15 @@ public struct JunkScanner: Sendable {
                 case .failure: issues.append(.unreadable(root)); continue
                 }
                 for child in children.sorted(by: { $0.path < $1.path }) {
-                    try Task.checkCancellation()
+                    if Task.isCancelled { stopped = true; break rootLoop }
                     guard category.itemFilter(child), !claimed.contains(child.path) else { continue }
-                    let size = sizer.measure(child)
+                    lastPath = child
+                    progress.tick(child, bytes: committed)
+                    let base = committed
+                    let size = sizer.measure(
+                        child, isCancelled: { Task.isCancelled },
+                        onEntry: { path, soFar in progress.tick(path, bytes: base + soFar) })
+                    if size.cancelled { stopped = true; break rootLoop }
                     if let measured = category.measuredFilter {
                         do {
                             guard try measured(child, size) else { continue }
@@ -116,6 +159,7 @@ public struct JunkScanner: Sendable {
                         }
                     }
                     claimed.insert(child.path)
+                    committed += size.bytes
                     issues.append(contentsOf: size.unreadable.map { .unreadable($0) })
                     let owner = JunkCatalog.ownerBundleID(of: child)
                     items.append(JunkItem(
@@ -126,9 +170,12 @@ public struct JunkScanner: Sendable {
 
             let scan = CategoryScan(
                 category: category, items: items,
-                bytes: items.reduce(0) { $0 + $1.bytes }, issues: issues)
+                bytes: items.reduce(0) { $0 + $1.bytes }, issues: issues, stopped: stopped)
             results.append(scan)
             onCategory(scan)
+            if !stopped { progress.done += 1 }
+            progress.finish(lastPath, bytes: committed)
+            if stopped { break }
         }
         return results
     }

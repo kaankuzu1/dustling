@@ -97,13 +97,35 @@ public enum ScanIssue: Equatable, Sendable {
     case commandFailed(command: String, reason: String)
 }
 
+/// A live snapshot of a running scan, for a "space found" counter and a path ticker.
+public struct ScanProgress: Sendable {
+    public let currentPath: URL
+    /// Bytes found so far. Never decreases during one scan.
+    public let bytesFound: UInt64
+    public let categoriesDone: Int
+    public let categoriesTotal: Int
+
+    public init(currentPath: URL, bytesFound: UInt64, categoriesDone: Int, categoriesTotal: Int) {
+        self.currentPath = currentPath
+        self.bytesFound = bytesFound
+        self.categoriesDone = categoriesDone
+        self.categoriesTotal = categoriesTotal
+    }
+}
+
 public struct CategoryScan: Sendable {
     public let category: JunkCategory
     public let items: [JunkItem]
     public let bytes: UInt64
     public let issues: [ScanIssue]
+    /// True when the scan was stopped while this category was in progress: `items` and `bytes` are only
+    /// what had been fully measured, never the category's real total.
+    public let stopped: Bool
 
-    public init(category: JunkCategory, items: [JunkItem], bytes: UInt64, issues: [ScanIssue]) {
+    public init(
+        category: JunkCategory, items: [JunkItem], bytes: UInt64, issues: [ScanIssue], stopped: Bool = false
+    ) {
+        self.stopped = stopped
         self.category = category
         self.items = items
         self.bytes = bytes

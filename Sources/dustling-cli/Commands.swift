@@ -59,32 +59,32 @@ enum Commands {
 
     static func scan() async -> Int32 {
         print("Scanning...")
-        do {
-            let results = try await makeScanner().scan(JunkCatalog.standard(env)) { scan in
-                printCategory(scan)
-            }
-            // Separate totals on purpose: they mean different things and are never added up.
-            let totals = ScanTotals(results)
-            print("")
-            print("Cleanable by default: \(Format.total(totals.cleanableByDefault))  (dustling-cli clean)")
-            if totals.skippedInUse > 0 {
-                print("  \(Format.bytes(totals.skippedInUse)) of the default categories belongs to apps that are open "
-                    + "right now and will be skipped")
-            }
-            print("Review items: \(Format.total(totals.review))  (dustling-cli clean --include <categoryID>)")
-            print("Needs admin: \(Format.total(totals.needsAdmin))  (not touched by this version)")
-            print("Trash: \(Format.total(totals.trash))  (dustling-cli empty-trash)")
-            return 0
-        } catch {
-            Format.printError("Scan stopped: \(error.localizedDescription)")
+        let results = await makeScanner().scan(JunkCatalog.standard(env)) { scan in
+            printCategory(scan)
+        }
+        if results.contains(where: \.stopped) {
+            Format.printError("Scan stopped before it finished; the numbers above are partial.")
             return 1
         }
+        // Separate totals on purpose: they mean different things and are never added up.
+        let totals = ScanTotals(results)
+        print("")
+        print("Cleanable by default: \(Format.total(totals.cleanableByDefault))  (dustling-cli clean)")
+        if totals.skippedInUse > 0 {
+            print("  \(Format.bytes(totals.skippedInUse)) of the default categories belongs to apps that are open "
+                + "right now and will be skipped")
+        }
+        print("Review items: \(Format.total(totals.review))  (dustling-cli clean --include <categoryID>)")
+        print("Needs admin: \(Format.total(totals.needsAdmin))  (not touched by this version)")
+        print("Trash: \(Format.total(totals.trash))  (dustling-cli empty-trash)")
+        return 0
     }
 
     private static func printCategory(_ scan: CategoryScan) {
         let id = scan.category.id.rawValue
         print("\(scan.category.title) (\(id))\(Format.tag(for: scan.category.selection)): "
             + Format.categorySummary(scan)
+            + (scan.stopped ? " [scan stopped]" : "")
             + (scan.category.requiresAdmin ? " [needs admin]" : ""))
         Format.printIssues(scan.issues)
     }
@@ -126,11 +126,9 @@ enum Commands {
         }
 
         print("Scanning...")
-        let results: [CategoryScan]
-        do {
-            results = try await makeScanner().scan(JunkCatalog.standard(env)) { _ in }
-        } catch {
-            Format.printError("Scan stopped: \(error.localizedDescription)")
+        let results = await makeScanner().scan(JunkCatalog.standard(env)) { _ in }
+        if results.contains(where: \.stopped) {
+            Format.printError("Scan stopped before it finished; nothing was cleaned.")
             return 1
         }
 

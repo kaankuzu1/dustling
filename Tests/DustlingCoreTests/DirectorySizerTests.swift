@@ -86,4 +86,15 @@ struct DirectorySizerTests {
         #expect(r.bytes == 0)
         #expect(r.fileCount == 0)
     }
+
+    @Test func stopsEarlyWhenCancelledAndSaysSo() throws {
+        let sb = try TestSandbox()
+        for i in 0..<50 { try sb.file("d/f\(i)", bytes: 10) }
+        let dir = sb.root.appending(path: "d", directoryHint: .isDirectory)
+        var polls = 0
+        let r = DirectorySizer().measure(dir, isCancelled: { polls += 1; return polls > 5 })
+        #expect(r.cancelled)
+        #expect(r.fileCount < 50)
+        #expect(DirectorySizer().measure(dir).cancelled == false)
+    }
 }
