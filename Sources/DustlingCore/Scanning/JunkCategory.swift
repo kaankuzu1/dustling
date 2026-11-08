@@ -82,12 +82,18 @@ public struct JunkItem: Sendable, Identifiable {
     public let bytes: UInt64
     public let category: JunkCategoryID
     public let inUseByBundleID: String?
+    /// The app the item belongs to, running or not (from its folder name), so callers can tell later
+    /// whether it is in use. Falls back to `inUseByBundleID`.
+    public let ownerBundleID: String?
 
-    public init(url: URL, bytes: UInt64, category: JunkCategoryID, inUseByBundleID: String? = nil) {
+    public init(
+        url: URL, bytes: UInt64, category: JunkCategoryID, inUseByBundleID: String? = nil, ownerBundleID: String? = nil
+    ) {
         self.url = url
         self.bytes = bytes
         self.category = category
         self.inUseByBundleID = inUseByBundleID
+        self.ownerBundleID = ownerBundleID ?? inUseByBundleID
     }
 }
 
@@ -97,13 +103,36 @@ public enum ScanIssue: Equatable, Sendable {
     case commandFailed(command: String, reason: String)
 }
 
+/// A live snapshot of a running scan, for a "space found" counter and a path ticker.
+/// Live only; final totals must come from the returned CategoryScans.
+public struct ScanProgress: Sendable {
+    public let currentPath: URL
+    /// Bytes found so far. Never decreases during one scan.
+    public let bytesFound: UInt64
+    public let categoriesDone: Int
+    public let categoriesTotal: Int
+
+    public init(currentPath: URL, bytesFound: UInt64, categoriesDone: Int, categoriesTotal: Int) {
+        self.currentPath = currentPath
+        self.bytesFound = bytesFound
+        self.categoriesDone = categoriesDone
+        self.categoriesTotal = categoriesTotal
+    }
+}
+
 public struct CategoryScan: Sendable {
     public let category: JunkCategory
     public let items: [JunkItem]
     public let bytes: UInt64
     public let issues: [ScanIssue]
+    /// True when the scan was stopped while this category was in progress: `items` and `bytes` are only
+    /// what had been fully measured, never the category's real total.
+    public let stopped: Bool
 
-    public init(category: JunkCategory, items: [JunkItem], bytes: UInt64, issues: [ScanIssue]) {
+    public init(
+        category: JunkCategory, items: [JunkItem], bytes: UInt64, issues: [ScanIssue], stopped: Bool = false
+    ) {
+        self.stopped = stopped
         self.category = category
         self.items = items
         self.bytes = bytes

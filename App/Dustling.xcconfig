@@ -1,0 +1,16 @@
+// Shared build settings for the Dustling app target.
+//
+// Signing: without a team, builds use "Sign to Run Locally" (ad-hoc). To sign with your own
+// (Personal) Team, create App/Local.xcconfig (git-ignored) containing for example:
+//
+//   DEVELOPMENT_TEAM = ABCDE12345
+//   CODE_SIGN_IDENTITY = Apple Development
+//
+// Full Disk Access is tied to the code signature, so a stable team signature keeps the grant
+// across rebuilds; ad-hoc builds may lose it after every rebuild.
+
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+
+#include? "Local.xcconfig"

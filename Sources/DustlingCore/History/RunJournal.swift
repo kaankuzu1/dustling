@@ -20,6 +20,17 @@ public enum RunJournalError: Error, Equatable, Sendable {
     }
 }
 
+extension RunJournalError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .runNotFound: "This run isn't in History any more."
+        case .historyUnreadable(let url, _): "Dustling couldn't read its History folder (\(url.path(percentEncoded: false)))."
+        case .saveFailed: "Some items came back, but Dustling couldn't update History."
+        case .notRestorable: "Nothing in this run can be put back. It was put back already or is no longer in the Trash."
+        }
+    }
+}
+
 /// Durable, one-file-per-run record of what a cleanup did, plus the undo (`restore`).
 public struct RunJournal: Sendable {
     public let directory: URL
@@ -51,6 +62,11 @@ public struct RunJournal: Sendable {
         try data.write(to: fileURL(run.id), options: .atomic)
     }
 
+    /// When the run's file was last written, or nil if it can't be read.
+    public func modificationDate(of id: UUID) -> Date? {
+        (try? fileURL(id).resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    }
+
     /// A missing directory means no runs yet; any other listing error is surfaced.
     private func jsonFiles() throws -> [URL] {
         do {
@@ -74,6 +90,25 @@ public struct RunJournal: Sendable {
             }
         }
         return runs.sorted { $0.startedAt > $1.startedAt }
+    }
+
+    /// The run that started last, reading as few files as possible: files newest-written first, and
+    /// it stops at the first file last written before the best run so far started (a run is saved
+    /// after it starts, so nothing older can have started later). Unreadable files are skipped.
+    public func newest() throws -> RunRecord? {
+        let decoder = Self.makeDecoder()
+        let dated = try jsonFiles().map { url -> (URL, Date) in
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            return (url, date ?? .distantFuture)
+        }.sorted { $0.1 > $1.1 }
+        var best: RunRecord?
+        for (url, written) in dated {
+            if let best, written < best.startedAt { break }
+            guard let data = try? Data(contentsOf: url), let run = try? decoder.decode(RunRecord.self, from: data)
+            else { continue }
+            if best.map({ run.startedAt > $0.startedAt }) ?? true { best = run }
+        }
+        return best
     }
 
     /// Journal files that could not be read or decoded (so the UI can say so instead of hiding them).
@@ -129,6 +164,29 @@ public struct RunJournal: Sendable {
         return changed
     }
 
+    /// Why moving an item out of the Trash failed, in plain words. macOS refuses to let an app without
+    /// Full Disk Access take anything out of the Trash, and Foundation's message then blames the
+    /// destination folder; say what really happened instead.
+    public static func restoreFailureReason(
+        _ error: Error, trashedPath: String, destinationWritable: Bool = true, home: String = NSHomeDirectory()
+    ) -> String {
+        // A destination that really can't be written to keeps Foundation's own message.
+        guard destinationWritable, isPermissionError(error) else { return error.localizedDescription }
+        let folder = URL(fileURLWithPath: trashedPath).deletingLastPathComponent().path
+        let homeTrash = URL(fileURLWithPath: home).appendingPathComponent(".Trash").path
+        let shown = folder == homeTrash ? "~/.Trash" : folder
+        return "Dustling can't take it out of the Trash (\(shown)) without Full Disk Access"
+    }
+
+    private static func isPermissionError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain,
+           [NSFileWriteNoPermissionError, NSFileReadNoPermissionError].contains(ns.code) { return true }
+        if ns.domain == NSPOSIXErrorDomain, [Int(EPERM), Int(EACCES)].contains(ns.code) { return true }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error { return isPermissionError(underlying) }
+        return false
+    }
+
     /// Moves trashed entries back. Never overwrites: an occupied original path is a `.conflict`. Only
     /// the item that was trashed is ever moved: if something else now sits at its Trash path, the
     /// entry is `.missingFromTrash` and permanently gone. Throws `.notRestorable` when nothing in the
@@ -173,7 +231,9 @@ public struct RunJournal: Sendable {
                 try fm.createDirectory(at: original.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fm.moveItem(at: URL(fileURLWithPath: trashed), to: original)
             } catch {
-                results.append(.failed(entry.originalPath, reason: error.localizedDescription))
+                results.append(.failed(entry.originalPath, reason: Self.restoreFailureReason(
+                    error, trashedPath: trashed,
+                    destinationWritable: fm.isWritableFile(atPath: original.deletingLastPathComponent().path))))
                 continue
             }
             run.entries[index].restored = true

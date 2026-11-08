@@ -1,3 +1,4 @@
+import DustlingAppModel
 import DustlingCore
 import AppKit
 import Foundation
@@ -7,11 +8,19 @@ enum Commands {
     private static let env = SystemEnvironment.current
     private static let commands = ProcessCommandRunner()
 
+    /// The CLI has no settings yet: defaults. Catalog, cleaning and uninstalling all derive from this one value.
+    /// The app's scan settings (exclusions, skip-recent, external Trash) when the app has saved
+    /// them, so the CLI never touches what the app was told to leave alone; plain defaults otherwise.
+    private static let options = AppSettings.savedScanOptions(in: UserDefaults(suiteName: AppSettings.appDefaultsDomain)) {
+        FileHandle.standardError.write(Data(
+            "note: the app's scan settings couldn't be read, so the defaults are used (no exclusions).\n".utf8))
+    }
+
     private static var journal: RunJournal { RunJournal(directory: env.historyDirectory) }
 
     private static func makeRunner() -> CleanupRunner {
         CleanupRunner(
-            mover: TrashMover(backend: SystemTrashBackend(), protectedPaths: ProtectedPaths(environment: env)),
+            mover: TrashMover(backend: SystemTrashBackend(), protectedPaths: options.protectedPaths(environment: env)),
             journal: journal, logger: RunLogger(directory: env.logsDirectory), sizer: DirectorySizer())
     }
 
@@ -59,32 +68,32 @@ enum Commands {
 
     static func scan() async -> Int32 {
         print("Scanning...")
-        do {
-            let results = try await makeScanner().scan(JunkCatalog.standard(env)) { scan in
-                printCategory(scan)
-            }
-            // Separate totals on purpose: they mean different things and are never added up.
-            let totals = ScanTotals(results)
-            print("")
-            print("Cleanable by default: \(Format.total(totals.cleanableByDefault))  (dustling-cli clean)")
-            if totals.skippedInUse > 0 {
-                print("  \(Format.bytes(totals.skippedInUse)) of the default categories belongs to apps that are open "
-                    + "right now and will be skipped")
-            }
-            print("Review items: \(Format.total(totals.review))  (dustling-cli clean --include <categoryID>)")
-            print("Needs admin: \(Format.total(totals.needsAdmin))  (not touched by this version)")
-            print("Trash: \(Format.total(totals.trash))  (dustling-cli empty-trash)")
-            return 0
-        } catch {
-            Format.printError("Scan stopped: \(error.localizedDescription)")
+        let results = await makeScanner().scan(JunkCatalog.standard(env, options: options)) { scan in
+            printCategory(scan)
+        }
+        if results.contains(where: \.stopped) {
+            Format.printError("Scan stopped before it finished; the numbers above are partial.")
             return 1
         }
+        // Separate totals on purpose: they mean different things and are never added up.
+        let totals = ScanTotals(results)
+        print("")
+        print("Cleanable by default: \(Format.total(totals.cleanableByDefault))  (dustling-cli clean)")
+        if totals.skippedInUse > 0 {
+            print("  \(Format.bytes(totals.skippedInUse)) of the default categories belongs to apps that are open "
+                + "right now and will be skipped")
+        }
+        print("Review items: \(Format.total(totals.review))  (dustling-cli clean --include <categoryID>)")
+        print("Needs admin: \(Format.total(totals.needsAdmin))  (not touched by this version)")
+        print("Trash: \(Format.total(totals.trash))  (dustling-cli empty-trash)")
+        return 0
     }
 
     private static func printCategory(_ scan: CategoryScan) {
         let id = scan.category.id.rawValue
         print("\(scan.category.title) (\(id))\(Format.tag(for: scan.category.selection)): "
             + Format.categorySummary(scan)
+            + (scan.stopped ? " [scan stopped]" : "")
             + (scan.category.requiresAdmin ? " [needs admin]" : ""))
         Format.printIssues(scan.issues)
     }
@@ -126,11 +135,9 @@ enum Commands {
         }
 
         print("Scanning...")
-        let results: [CategoryScan]
-        do {
-            results = try await makeScanner().scan(JunkCatalog.standard(env)) { _ in }
-        } catch {
-            Format.printError("Scan stopped: \(error.localizedDescription)")
+        let results = await makeScanner().scan(JunkCatalog.standard(env, options: options)) { _ in }
+        if results.contains(where: \.stopped) {
+            Format.printError("Scan stopped before it finished; nothing was cleaned.")
             return 1
         }
 
@@ -392,8 +399,17 @@ enum Commands {
             print("Cancelled.")
             return 0
         }
-        let outcome = scanner.setEnabled(item, enable)
+        let recorder = StartupChangeRecorder(
+            scanner: scanner, journal: journal, logger: RunLogger(directory: env.logsDirectory))
+        let record = recorder.setEnabled(item, enable)
+        guard let outcome = record.entries.first?.outcome else { return 2 }
         print("\(item.label): \(outcome.label)")
+        // The change itself is done; say so if it could not be written to History or the log.
+        for extra in record.entries.dropFirst() {
+            if case .failed(let reason) = extra.outcome {
+                Format.printWarning("Couldn't write to \(extra.originalPath == "<history>" ? "History" : "the log"): \(reason)")
+            }
+        }
         return Format.isProblem(outcome) ? 2 : 0
     }
 
@@ -555,7 +571,8 @@ enum Commands {
             return 1
         }
         let inspector = TrashInspector(
-            environment: env, journal: journal, logger: RunLogger(directory: env.logsDirectory), sizer: DirectorySizer())
+            environment: env, journal: journal, logger: RunLogger(directory: env.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: options.includeExternalTrash)
         let contents = inspector.contents()
         let needsAccess = contents.issues.contains { if case .missingFullDiskAccess = $0 { true } else { false } }
         Format.printIssues(contents.issues)

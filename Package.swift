@@ -6,11 +6,14 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "DustlingCore", targets: ["DustlingCore"]),
+        .library(name: "DustlingAppModel", targets: ["DustlingAppModel"]),
         .executable(name: "dustling-cli", targets: ["dustling-cli"]),
     ],
     targets: [
         .target(name: "DustlingCore"),
-        .executableTarget(name: "dustling-cli", dependencies: ["DustlingCore"]),
+        .target(name: "DustlingAppModel", dependencies: ["DustlingCore"]),
+        .executableTarget(name: "dustling-cli", dependencies: ["DustlingCore", "DustlingAppModel"]),
         .testTarget(name: "DustlingCoreTests", dependencies: ["DustlingCore"]),
+        .testTarget(name: "DustlingAppModelTests", dependencies: ["DustlingAppModel", "DustlingCore"]),
     ]
 )

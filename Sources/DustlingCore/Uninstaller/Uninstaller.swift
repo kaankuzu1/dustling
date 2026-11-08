@@ -13,7 +13,7 @@ public struct WorkspaceRunningApps: RunningAppsProviding {
     public func isRunning(_ app: InstalledApp) -> Bool {
         let targets = Set([app.url, app.linkTarget].compactMap { $0?.resolvingSymlinksInPath().standardizedFileURL.path })
         return NSWorkspace.shared.runningApplications.contains {
-            guard let bundle = $0.bundleURL else { return false }
+            guard let bundle = $0.bundleURL, !$0.isTerminated else { return false }
             return targets.contains(bundle.resolvingSymlinksInPath().standardizedFileURL.path)
         }
     }
@@ -37,6 +37,8 @@ public struct Uninstaller: Sendable {
     private let running: RunningAppsProviding
     private let environment: SystemEnvironment
 
+    /// The bootout guard is the runner's own `ProtectedPaths`, so a user-excluded launch agent is
+    /// neither booted out nor trashed.
     public init(
         runner: CleanupRunner, commands: CommandRunning, running: RunningAppsProviding,
         environment: SystemEnvironment
@@ -49,16 +51,40 @@ public struct Uninstaller: Sendable {
 
     /// `leftovers` is the set the user selected; it is not re-filtered here, but each one must be a
     /// direct child of a declared leftover location (and not a declared location itself) or it is
-    /// skipped as outside the cleanup area.
+    /// skipped as outside the cleanup area. `skipped` are leftovers the caller decided not to touch
+    /// (e.g. without Full Disk Access): they are never attempted and are recorded here as
+    /// `.skipped(reason: skipReason)`, so a caller can't put anything else in the record.
     public func uninstall(
         _ app: InstalledApp,
         leftovers: [Leftover],
-        onItem: @Sendable (URL, DeletionOutcome) -> Void
+        skipped: [Leftover] = [],
+        skipReason: String = "skipped by request",
+        onItem: @escaping @Sendable (URL, DeletionOutcome) -> Void
     ) async throws -> RunRecord {
+        // Moving, measuring and unloading block, so they run on the file-work queue, never on the
+        // cooperative pool. An uninstall isn't cancellable: once the app has moved, its leftovers follow.
+        try await FileWork.run {
+            try uninstallBlocking(app, leftovers: leftovers, skipped: skipped, skipReason: skipReason, onItem: onItem)
+        }
+    }
+
+    private func uninstallBlocking(
+        _ app: InstalledApp,
+        leftovers: [Leftover],
+        skipped: [Leftover],
+        skipReason: String,
+        onItem: (URL, DeletionOutcome) -> Void
+    ) throws -> RunRecord {
         if running.isRunning(app) { throw UninstallError.appIsRunning(app.displayName) }
 
         let startedAt = Date()
         let kind = RunKind.uninstall(appName: app.displayName)
+        let skippedPaths = Set(skipped.map { Self.key($0.url) })
+        let leftovers = leftovers.filter { !skippedPaths.contains(Self.key($0.url)) }
+        let skipEntries = skipped.map {
+            JournalEntry(originalPath: $0.url.path(percentEncoded: false), bytes: $0.bytes,
+                         outcome: .skipped(reason: skipReason))
+        }
         let locations = LeftoverFinder.locationDirectories(environment)
         let roots = environment.applicationDirectories + locations
 
@@ -73,7 +99,7 @@ public struct Uninstaller: Sendable {
                     originalPath: leftover.url.path(percentEncoded: false), bytes: leftover.bytes, outcome: outcome))
                 onItem(leftover.url, outcome)
             }
-            return runner.finish(entries, kind: kind, startedAt: startedAt)
+            return runner.finish(entries + skipEntries, kind: kind, startedAt: startedAt)
         }
 
         let locationPaths = Set(locations.map { Self.key($0) })
@@ -87,7 +113,7 @@ public struct Uninstaller: Sendable {
 
         var extra: [JournalEntry] = []
         let agentsDirectory = environment.userLibrary.appending(path: "LaunchAgents", directoryHint: .isDirectory)
-        let guardPaths = ProtectedPaths(environment: environment)
+        let guardPaths = runner.protectedPaths
         for agent in userLeftovers where agent.kind == .launchAgent {
             // Only agents that really live in ~/Library/LaunchAgents are ever booted out.
             guard guardPaths.verdict(for: agent.url, allowedRoots: [agentsDirectory]) == .allowed,
@@ -112,7 +138,7 @@ public struct Uninstaller: Sendable {
                 originalPath: leftover.url.path(percentEncoded: false),
                 bytes: leftover.bytes, outcome: .needsAdmin))
         }
-        return runner.finish(entries + extra, kind: kind, startedAt: startedAt)
+        return runner.finish(entries + skipEntries + extra, kind: kind, startedAt: startedAt)
     }
 
     private static func key(_ url: URL) -> String {

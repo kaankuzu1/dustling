@@ -8,7 +8,7 @@ import Testing
     ) async throws -> [JunkCategoryID: CategoryScan] {
         let catalog = JunkCatalog.standard(sandbox.environment, now: now)
         let scanner = JunkScanner(environment: sandbox.environment, runningBundleIDs: { running })
-        let results = try await scanner.scan(catalog, onCategory: { _ in })
+        let results = await scanner.scan(catalog, onCategory: { _ in })
         return Dictionary(uniqueKeysWithValues: results.map { ($0.category.id, $0) })
     }
 
@@ -124,10 +124,189 @@ import Testing
         let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
         let task = Task {
             while !Task.isCancelled { await Task.yield() }
-            return try await scanner.scan(catalog, onCategory: { _ in })
+            return await scanner.scan(catalog, onCategory: { _ in })
         }
         task.cancel()
-        await #expect(throws: CancellationError.self) { try await task.value }
+        // Cancelled before any category started: no throw, and the first category is marked stopped, empty.
+        let result = await task.value
+        #expect(result.count == 1)
+        #expect(result[0].stopped && result[0].items.isEmpty)
+    }
+
+    // MARK: - Progress and mid-folder stop
+
+    /// Thread-safe collector for @Sendable callbacks.
+    private final class Box<T>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: T
+        init(_ value: T) { self.value = value }
+        func with<R>(_ body: (inout T) -> R) -> R { lock.lock(); defer { lock.unlock() }; return body(&value) }
+    }
+
+    private func makeFiles(_ count: Int, in dir: URL) throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for i in 0..<count {
+            #expect(FileManager.default.createFile(atPath: dir.appending(path: "f\(i)").path, contents: nil))
+        }
+    }
+
+    private func category(_ id: JunkCategoryID, root: URL) -> JunkCategory {
+        JunkCategory(id: id, title: "t", selection: .preselected, requiresAdmin: false, roots: [root])
+    }
+
+    @Test func progressIsThrottledAndMonotonic() async throws {
+        let sb = try TestSandbox()
+        var cats: [JunkCategory] = []
+        for (i, id) in [JunkCategoryID.userCaches, .userLogs].enumerated() {
+            let root = sb.root.appending(path: "r\(i)", directoryHint: .isDirectory)
+            for n in 0..<80 { try sb.file("r\(i)/f\(n)", bytes: 10) }
+            // Slow measurement (about 5 ms per item) so each category runs well past 100 ms.
+            cats.append(JunkCategory(
+                id: id, title: "t", selection: .preselected, requiresAdmin: false, roots: [root],
+                measuredFilter: { _, _ in Thread.sleep(forTimeInterval: 0.005); return true }))
+        }
+        let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        let events = Box<[(ScanProgress, ContinuousClock.Instant)]>([])
+        let started = ContinuousClock.now
+        _ = await scanner.scan(cats, onCategory: { _ in }, onProgress: { p in
+            events.with { $0.append((p, .now)) }   // timestamp taken inside the callback
+        })
+        let elapsed = started.duration(to: .now)
+        let all = events.with { $0 }
+        var sameCategoryGaps = 0
+        for (a, b) in zip(all, all.dropFirst()) {
+            #expect(b.0.bytesFound >= a.0.bytesFound)
+            #expect(b.0.categoriesDone >= a.0.categoriesDone)
+            if a.0.categoriesDone == b.0.categoriesDone {
+                sameCategoryGaps += 1
+                #expect(a.1.duration(to: b.1) >= .milliseconds(90))
+            }
+        }
+        // The throttle was really exercised: several events inside the categories, not just one each.
+        #expect(sameCategoryGaps >= 2)
+        #expect(all.allSatisfy { $0.0.categoriesTotal == 2 })
+        #expect(all.last?.0.categoriesDone == 2)
+        // Loose upper bound: far fewer events than the 160 items measured.
+        let ms = Int(elapsed / .milliseconds(1))
+        #expect(all.count <= ms / 100 + 1 + 2 + 2)
+    }
+
+    @Test func filteredCategoryNeverInflatesLiveCounter() async throws {
+        let sb = try TestSandbox()
+        let rejectRoot = sb.root.appending(path: "rej", directoryHint: .isDirectory)
+        for n in 0..<20 { try sb.file("rej/f\(n)", bytes: 50_000) }
+        let keepRoot = sb.root.appending(path: "keep", directoryHint: .isDirectory)
+        for n in 0..<5 { try sb.file("keep/f\(n)", bytes: 50_000) }
+        let rejecting = JunkCategory(
+            id: .userCaches, title: "t", selection: .preselected, requiresAdmin: false, roots: [rejectRoot],
+            measuredFilter: { _, _ in false })
+        var scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        scanner.progressInterval = .zero
+        let events = Box<[ScanProgress]>([])
+        let results = await scanner.scan(
+            [rejecting, category(.userLogs, root: keepRoot)], onCategory: { _ in },
+            onProgress: { p in events.with { $0.append(p) } })
+        let all = events.with { $0 }
+        #expect(results[0].items.isEmpty)
+        let duringRejecting = all.filter { $0.categoriesDone == 0 }
+        #expect(!duringRejecting.isEmpty)
+        #expect(duringRejecting.allSatisfy { $0.bytesFound == 0 })
+        #expect(all.last?.bytesFound == results.reduce(0) { $0 + $1.bytes })
+        #expect(results[1].bytes > 0)
+    }
+
+    @Test func cancelBetweenCategoriesMarksNextOneStopped() async throws {
+        let sb = try TestSandbox()
+        var cats: [JunkCategory] = []
+        for (i, id) in [JunkCategoryID.userCaches, .userLogs, .browserCaches].enumerated() {
+            try sb.file("c\(i)/a", bytes: 10)
+            cats.append(category(id, root: sb.root.appending(path: "c\(i)", directoryHint: .isDirectory)))
+        }
+        let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        let seen = Box<[CategoryScan]>([])
+        let canceller = LateCanceller()
+        let task = Task {
+            await scanner.scan(cats, onCategory: { s in seen.with { $0.append(s) } }, onProgress: { p in
+                if p.categoriesDone == 1 { canceller.cancelTask() }
+            })
+        }
+        canceller.attach(task)
+        let result = await task.value
+        #expect(result.count == 2)
+        #expect(result[0].stopped == false)
+        #expect(result[1].category.id == .userLogs)
+        #expect(result[1].stopped)
+        #expect(result[1].items.isEmpty && result[1].issues.isEmpty)
+        #expect(seen.with { $0.count } == 2)
+        #expect(ScanTotals(result).cleanableByDefault.isComplete == false)
+    }
+
+    @Test func stopMarksPartialCategory() async throws {
+        let sb = try TestSandbox()
+        let first = sb.root.appending(path: "first", directoryHint: .isDirectory)
+        try sb.file("first/a", bytes: 10)
+        let second = sb.root.appending(path: "second", directoryHint: .isDirectory)
+        try makeFiles(3_000, in: second.appending(path: "big", directoryHint: .isDirectory))
+        try sb.file("second/aaa-small", bytes: 10)   // sorts before "big": measured before the cancel
+        let third = sb.root.appending(path: "third", directoryHint: .isDirectory)
+        try sb.file("third/c", bytes: 10)
+        // Deterministic stop: cancel right after the small item is accepted, before the big one is measured.
+        let canceller = LateCanceller()
+        let secondCat = JunkCategory(
+            id: .userLogs, title: "t", selection: .preselected, requiresAdmin: false, roots: [second],
+            measuredFilter: { url, _ in
+                if url.lastPathComponent == "aaa-small" { canceller.cancelTask() }
+                return true
+            })
+        let cats = [category(.userCaches, root: first), secondCat, category(.browserCaches, root: third)]
+        let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        let seen = Box<[CategoryScan]>([])
+        let task = Task {
+            await scanner.scan(cats, onCategory: { s in seen.with { $0.append(s) } }, onProgress: { _ in })
+        }
+        canceller.attach(task)
+        let result = await task.value
+        #expect(result.count == 2)                       // third never started
+        #expect(result[0].stopped == false)
+        #expect(names(result[0]) == ["a"])
+        #expect(result[1].category.id == .userLogs)
+        #expect(result[1].stopped == true)
+        // Only what was fully measured: the small item, never the half-measured big folder.
+        #expect(names(result[1]) == ["aaa-small"])
+        #expect(result[1].bytes == result[1].items.reduce(0) { $0 + $1.bytes })
+        #expect(result[1].total.isComplete == false)     // shown as "at least", never as a full number
+        #expect(seen.with { $0.count } == 2)
+    }
+
+    @Test func cancelDuringHugeDirectoryStopsQuickly() async throws {
+        let sb = try TestSandbox()
+        let root = sb.root.appending(path: "huge", directoryHint: .isDirectory)
+        try sb.file("huge/aaa-small", bytes: 10)
+        try makeFiles(20_000, in: root.appending(path: "big", directoryHint: .isDirectory))
+        var scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        scanner.progressInterval = .zero   // every enumeration tick reaches the callback
+        let cancelledAt = Box<ContinuousClock.Instant?>(nil)
+        let insideBig = Box<Int>(0)
+        let canceller = LateCanceller()
+        let task = Task {
+            await scanner.scan([category(.userCaches, root: root)], onCategory: { _ in }, onProgress: { p in
+                // Events with a path inside big/ come from the enumeration itself; stop at the third
+                // (about 257 entries in), well before the 20 000th.
+                guard p.currentPath.path.contains("/big/") else { return }
+                if insideBig.with({ $0 += 1; return $0 }) == 3 {
+                    cancelledAt.with { $0 = .now }
+                    canceller.cancelTask()
+                }
+            })
+        }
+        canceller.attach(task)
+        let result = await task.value
+        let returned = ContinuousClock.now
+        let start = try #require(cancelledAt.with { $0 })
+        #expect(start.duration(to: returned) < .seconds(1))
+        #expect(result.count == 1)
+        #expect(result[0].stopped)
+        #expect(names(result[0]) == ["aaa-small"])   // the half-measured big folder is dropped
     }
 
     private func fdaPaths(_ scan: CategoryScan?) -> [String] {
@@ -175,7 +354,7 @@ import Testing
         #expect(utimes(dir.path, &times) == 0)
         let catalog = JunkCatalog.standard(sb.environment).filter { $0.id == .largeOldDownloads }
         let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
-        let out = try await scanner.scan(catalog, onCategory: { _ in })
+        let out = await scanner.scan(catalog, onCategory: { _ in })
         #expect(names(out.first) == ["olddir"])
     }
 
@@ -188,7 +367,7 @@ import Testing
             roots: [sb.environment.home.appending(path: "Downloads")],
             measuredFilter: { _, _ in throw Boom() })
         let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
-        let out = try await scanner.scan([cat], onCategory: { _ in })
+        let out = await scanner.scan([cat], onCategory: { _ in })
         #expect(out[0].items.isEmpty)
         #expect(out[0].issues.count == 1)
         guard case .unreadable(let u)? = out[0].issues.first else { Issue.record("expected unreadable"); return }
@@ -236,6 +415,10 @@ import Testing
         for (name, id) in expected { #expect(owners[name] == .some(id), "\(name)") }
         let idle = try await scan(sb, running: [])
         #expect((idle[.browserCaches]?.items ?? []).allSatisfy { $0.inUseByBundleID == nil })
+        // The owner is kept even when it isn't running, so in-use can be checked again later.
+        let idleOwners = Dictionary(uniqueKeysWithValues:
+            (idle[.browserCaches]?.items ?? []).map { ($0.url.lastPathComponent, $0.ownerBundleID) })
+        for (name, id) in expected { #expect(idleOwners[name] == .some(id), "\(name)") }
     }
 
     @Test func containerCachesBelongToTheContainersApp() async throws {

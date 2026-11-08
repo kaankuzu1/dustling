@@ -2,9 +2,9 @@ import Foundation
 
 public struct TrashMover: Sendable {
     private let backend: TrashBackend
-    private let protectedPaths: ProtectedPaths
+    public let protectedPaths: ProtectedPaths
 
-    static let noAccessReason = "no access (Full Disk Access may be needed)"
+    public static let noAccessReason = "no access (Full Disk Access may be needed)"
 
     public init(backend: TrashBackend, protectedPaths: ProtectedPaths) {
         self.backend = backend
@@ -96,7 +96,7 @@ public struct TrashMover: Sendable {
     }
 
     /// The C library's English description of an errno (not localized on macOS).
-    static func describe(_ code: Int32) -> String {
+    public static func describe(_ code: Int32) -> String {
         String(cString: strerror(code))
     }
 }

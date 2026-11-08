@@ -32,18 +32,27 @@ public struct TrashInspector: Sendable {
     private let logger: RunLogger
     private let sizer: DirectorySizer
     private let inspect: @Sendable (URL) -> Kind
+    private let includeExternalVolumes: Bool
 
     static let noAccessReason = "no access, grant Full Disk Access"
 
-    public init(environment: SystemEnvironment, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer) {
-        self.init(environment: environment, journal: journal, logger: logger, sizer: sizer, inspect: Self.lstatKind)
+    /// `includeExternalVolumes: false` limits sizing and emptying to `~/.Trash`.
+    public init(
+        environment: SystemEnvironment, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer,
+        includeExternalVolumes: Bool = true
+    ) {
+        self.init(
+            environment: environment, journal: journal, logger: logger, sizer: sizer,
+            includeExternalVolumes: includeExternalVolumes, inspect: Self.lstatKind)
     }
 
     /// Test seam: replaces the `lstat` classification so error branches can be exercised.
     init(
         environment: SystemEnvironment, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer,
+        includeExternalVolumes: Bool = true,
         inspect: @escaping @Sendable (URL) -> Kind
     ) {
+        self.includeExternalVolumes = includeExternalVolumes
         self.inspect = inspect
         self.environment = environment
         self.journal = journal
@@ -169,6 +178,7 @@ public struct TrashInspector: Sendable {
         var found: [Discovered] = []
         check([environment.userTrash], reporting: environment.userTrash, into: &found)
 
+        guard includeExternalVolumes else { return found }
         let volumes = environment.volumesDirectory
         switch Self.list(volumes) {
         case .failure(let failure):

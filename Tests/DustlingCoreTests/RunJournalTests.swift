@@ -25,6 +25,21 @@ struct RunJournalTests {
         return RunRecord(id: UUID(), startedAt: date, kind: .junkClean, entries: entries, restorable: true)
     }
 
+    @Test func newestIsTheRunThatStartedLastEvenIfAnOlderOneWasSavedLater() throws {
+        let s = try TestSandbox()
+        let j = journal(s)
+        #expect(try j.newest() == nil)
+        let older = RunRecord(startedAt: Date().addingTimeInterval(-300), kind: .junkClean, entries: [], restorable: false)
+        let newer = RunRecord(startedAt: Date().addingTimeInterval(-60), kind: .emptyTrash, entries: [], restorable: false)
+        try j.save(older)
+        try j.save(newer)
+        var resaved = older
+        resaved.restorable = true
+        try j.save(resaved)   // written last, started first
+        try Data("not json".utf8).write(to: s.root.appending(path: "history/broken.json"))
+        #expect(try j.newest()?.id == newer.id)
+    }
+
     @Test func saveAndLoadRoundTrip() throws {
         let s = try TestSandbox()
         let j = journal(s)
@@ -200,6 +215,19 @@ struct RunJournalTests {
         #expect(!saved.entries[0].restored)
         #expect(saved.entries[1].restored)
         #expect(saved.restorable)
+    }
+
+    @Test func permissionRefusalOutOfTheTrashNamesTheTrashAndFullDiskAccess() {
+        let denied = CocoaError(.fileWriteNoPermission, userInfo: [NSUnderlyingErrorKey: POSIXError(.EPERM)])
+        #expect(RunJournal.restoreFailureReason(denied, trashedPath: "/Users/k/.Trash/CoreSimulator", home: "/Users/k")
+            == "Dustling can't take it out of the Trash (~/.Trash) without Full Disk Access")
+        #expect(RunJournal.restoreFailureReason(POSIXError(.EACCES), trashedPath: "/Volumes/S/.Trashes/501/x", home: "/Users/k")
+            == "Dustling can't take it out of the Trash (/Volumes/S/.Trashes/501) without Full Disk Access")
+        #expect(RunJournal.restoreFailureReason(
+            denied, trashedPath: "/Users/k/.Trash/x", destinationWritable: false, home: "/Users/k") == denied.localizedDescription)
+        let other = POSIXError(.EIO)
+        #expect(RunJournal.restoreFailureReason(other, trashedPath: "/Users/k/.Trash/x", home: "/Users/k")
+            == other.localizedDescription)
     }
 
     @Test func unreadableHistoryDirectoryThrows() throws {

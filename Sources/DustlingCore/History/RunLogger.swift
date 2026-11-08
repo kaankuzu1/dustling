@@ -9,28 +9,58 @@ public struct RunLogger: Sendable {
     }
 
     public func write(_ run: RunRecord) throws {
+        try append(Self.text(for: run), on: run.startedAt)
+    }
+
+    /// Incremental logging: header, then one line per finished item, then the totals line.
+    /// Together they produce exactly what `write` does.
+    public func writeHeader(_ run: RunRecord) throws {
+        try append(Self.headerLine(run) + "\n", on: run.startedAt)
+    }
+
+    public func append(_ entry: JournalEntry, to run: RunRecord) throws {
+        try append(Self.entryLine(entry) + "\n", on: run.startedAt)
+    }
+
+    public func writeTotals(_ run: RunRecord) throws {
+        try append(Self.totalsLine(run) + "\n", on: run.startedAt)
+    }
+
+    /// The log file a run started on `date` is written to.
+    public func file(for date: Date) -> URL {
+        directory.appending(path: "dustling-\(Self.dayStamp(date)).log")
+    }
+
+    private func append(_ text: String, on date: Date) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let file = directory.appending(path: "dustling-\(Self.dayStamp(run.startedAt)).log")
+        let file = file(for: date)
         if !FileManager.default.fileExists(atPath: file.path(percentEncoded: false)) {
             try Data().write(to: file)
         }
         let handle = try FileHandle(forWritingTo: file)
         defer { try? handle.close() }
         try handle.seekToEnd()
-        try handle.write(contentsOf: Data(Self.text(for: run).utf8))
+        try handle.write(contentsOf: Data(text.utf8))
     }
 
-    static func text(for run: RunRecord) -> String {
-        var lines = ["\(ISO8601DateFormatter().string(from: run.startedAt)) run=\(run.id.uuidString) kind=\(kindLabel(run.kind))"]
-        for entry in run.entries {
-            var line = "  \(entry.outcome.label)  \(bytesLabel(entry.bytes))  \(entry.originalPath)"
-            if case .movedToTrash(let trashed) = entry.outcome { line += " -> \(trashed)" }
-            lines.append(line)
-        }
-        lines.append(
-            "  total: moved \(bytesLabel(run.bytesMovedToTrash)) to Trash, \(run.failedCount) failed, "
-                + "\(run.needsAdminCount) need admin, \(run.skippedCount) skipped")
-        return lines.joined(separator: "\n") + "\n"
+    private static func headerLine(_ run: RunRecord) -> String {
+        "\(ISO8601DateFormatter().string(from: run.startedAt)) run=\(run.id.uuidString) kind=\(kindLabel(run.kind))"
+    }
+
+    private static func entryLine(_ entry: JournalEntry) -> String {
+        var line = "  \(entry.outcome.label)  \(bytesLabel(entry.bytes))  \(entry.originalPath)"
+        if case .movedToTrash(let trashed) = entry.outcome { line += " -> \(trashed)" }
+        return line
+    }
+
+    private static func totalsLine(_ run: RunRecord) -> String {
+        "  total: moved \(bytesLabel(run.bytesMovedToTrash)) to Trash, \(run.failedCount) failed, "
+            + "\(run.needsAdminCount) need admin, \(run.skippedCount) skipped"
+    }
+
+    /// The lines `write` would add for this run, header to totals.
+    public static func text(for run: RunRecord) -> String {
+        ([headerLine(run)] + run.entries.map(entryLine) + [totalsLine(run)]).joined(separator: "\n") + "\n"
     }
 
     private static func bytesLabel(_ bytes: UInt64) -> String {

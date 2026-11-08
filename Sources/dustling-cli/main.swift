@@ -22,6 +22,13 @@ Options:
 Cleaning and uninstalling only move items to the Trash. Empty Trash is the only permanent delete.
 """
 
+// A run left "in progress" by a crash or a force quit is finished off before anything else.
+do {
+    _ = try CleanupRunner.recoverInterrupted(journal: RunJournal(directory: SystemEnvironment.current.historyDirectory))
+} catch {
+    FileHandle.standardError.write(Data("note: couldn't finish interrupted runs in the history: \(error.localizedDescription)\n".utf8))
+}
+
 let arguments = Array(CommandLine.arguments.dropFirst())
 let exitCode: Int32
 

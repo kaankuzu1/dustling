@@ -1,0 +1,76 @@
+name: Dustling
+options:
+  bundleIdPrefix: app.dustling
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+
+packages:
+  DustlingPackage:
+    path: ..
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+targets:
+  Dustling:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    configFiles:
+      Debug: Dustling.xcconfig
+      Release: Dustling.xcconfig
+    sources:
+      - path: Dustling
+        excludes:
+          - "Resources/Fonts/**"
+          - "Resources/AppIcon.icon/**"
+      - path: Dustling/Resources/Fonts
+        type: folder
+        buildPhase: resources
+      # The Icon Composer icon (default and dark appearances). One file reference, compiled by actool
+      # into Assets.car and AppIcon.icns. With both present, actool builds the icon from this file.
+      - path: Dustling/Resources/AppIcon.icon
+        type: file
+        buildPhase: resources
+    dependencies:
+      - package: DustlingPackage
+        product: DustlingCore
+      - package: DustlingPackage
+        product: DustlingAppModel
+    settings:
+      base:
+        PRODUCT_NAME: Dustling
+        PRODUCT_BUNDLE_IDENTIFIER: app.dustling.Dustling
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Dustling
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Dustling is free software under the MIT licence."
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: NO
+        COMBINE_HIDPI_IMAGES: YES
+        SWIFT_EMIT_LOC_STRINGS: NO
+        DEAD_CODE_STRIPPING: YES
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    preBuildScripts:
+      # Keep build products out of iCloud sync (see the post-build step below). Harmless elsewhere.
+      - name: Exclude build products from iCloud sync
+        script: |
+          mkdir -p "${BUILT_PRODUCTS_DIR}"
+          xattr -w 'com.apple.fileprovider.ignore#P' 1 "${BUILT_PRODUCTS_DIR}" || echo "note: couldn't mark ${BUILT_PRODUCTS_DIR} as not synced"
+        basedOnDependencyAnalysis: false
+    postBuildScripts:
+      # The repo may live in an iCloud-synced folder (Desktop or Documents). File Provider then tags
+      # the .app with Finder info, and codesign refuses "resource fork, Finder information, or
+      # similar detritus". Clear extended attributes right before the final signing step.
+      - name: Strip extended attributes before signing
+        script: xattr -cr "${TARGET_BUILD_DIR}/${WRAPPER_NAME}"
+        basedOnDependencyAnalysis: false
+    scheme:
+      testTargets: []
