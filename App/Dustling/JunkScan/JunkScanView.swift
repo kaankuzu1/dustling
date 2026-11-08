@@ -277,7 +277,9 @@ private struct JunkActionBar: View {
                     }
                 }
                 .dustlingPrimary()
-                .disabled(gate.kind == .refused)
+                // With nothing selected (or every file left out), it would only say so.
+                .disabled(gate.kind == .refused || !junk.hasItemsToMove)
+                .help(junk.hasItemsToMove ? "Moves the selected files to the Trash" : "Nothing is selected to move")
             }
             .dismissedOnQuit($confirmingLimitedClean)
             .alert(

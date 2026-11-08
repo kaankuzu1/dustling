@@ -18,6 +18,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Icons on buttons such as Move to Trash and Empty Trash stay visible in light mode when Dustling isn't the active app, and dim with their button when it can't be used.
 - VoiceOver reads every line in a run's log in History, which it skipped before, and says whether each app in the Uninstaller was moved, left alone or is still waiting.
 - The three tool cards on Home are the same height with their buttons in line, also in a narrow window where one caption takes two lines.
+- Move to Trash in the Junk scan is off when nothing is selected to move, instead of only saying so after you click it.
 
 ## [0.1.0] - 2026-11-08
 
