@@ -26,7 +26,7 @@ struct RootView: View {
             minWidth: DustlingTheme.Metrics.sidebarWidth + DustlingTheme.Metrics.contentMinWidth,
             minHeight: 560)
         // Full Disk Access changed (polling, activation): re-check which places are locked.
-        .task(id: models.health.fullDiskAccess) { await models.refreshPlaces() }
+        .task(id: models.fullDiskAccessKey) { await models.refreshPlaces() }
         .task { models.onboarding.openAtLaunchIfNeeded(models: models, openWindow: openWindow) }
     }
 }

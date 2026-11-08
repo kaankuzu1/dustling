@@ -93,7 +93,7 @@ public final class StartupModel {
         let mine = generation
         isLoading = true
         let scanner = self.scanner, fileExists = self.fileExists
-        let found = await Task.detached(priority: .userInitiated) { () -> ([StartupItem], [ScanIssue], [StartupItem]) in
+        let found = await Blocking.run { () -> ([StartupItem], [ScanIssue], [StartupItem]) in
             let scanned = scanner.scanWithIssues()
             // Only an absolute program path can be judged; a bare name is looked up on PATH at launch.
             let orphans = scanned.items.filter { item in
@@ -101,7 +101,7 @@ public final class StartupModel {
                 return !fileExists(program)
             }
             return (scanned.items, scanned.issues, orphans)
-        }.value
+        }
         guard mine == generation else { return }
         isLoading = false
         items = found.0
@@ -152,7 +152,7 @@ public final class StartupModel {
     public func toggle(_ item: StartupItem) async -> RunRecord {
         let recorder = self.recorder
         let target = !item.isEnabled
-        let record = await Task.detached(priority: .userInitiated) { recorder.setEnabled(item, target) }.value
+        let record = await Blocking.run { recorder.setEnabled(item, target) }
         if let entry = record.entries.first {
             let what = OutcomePresentation.text(entry.outcome, in: record.kind)
             lastChange = OutcomePresentation.isSuccessfulToggle(entry.outcome, in: record.kind)

@@ -56,6 +56,17 @@ final class AppModels {
         Task { await storage.refresh() }
     }
 
+    /// What a places check depends on. Views key `.task(id:)` on it, so places are checked after the
+    /// first published probe even when that probe publishes `.unknown` (the status alone wouldn't change).
+    struct FullDiskAccessKey: Hashable {
+        let status: FullDiskAccessStatus
+        let published: Bool
+    }
+
+    var fullDiskAccessKey: FullDiskAccessKey {
+        FullDiskAccessKey(status: health.fullDiskAccess, published: health.hasPublishedStatus)
+    }
+
     /// Re-checks which places are locked. Waits for the first Full Disk Access probe, because
     /// without access the check must not open folders that would prompt for consent.
     func refreshPlaces() async {

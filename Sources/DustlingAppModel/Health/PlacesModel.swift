@@ -175,7 +175,7 @@ public final class PlacesModel {
         let check = self.check
         generation += 1
         let mine = generation
-        let result = await Task.detached(priority: .userInitiated) { check(fullDiskAccessGranted) }.value
+        let result = await Blocking.run { check(fullDiskAccessGranted) }
         guard mine == generation else { return }
         places = result
     }

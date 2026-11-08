@@ -58,10 +58,10 @@ public final class TrashModel {
         let mine = generation
         let inspector = self.inspector
         let journal = self.journal
-        let found = await Task.detached(priority: .userInitiated) { () -> Snapshot in
+        let found = await Blocking.run { () -> Snapshot in
             let sized = inspector.sizeWithIssues()
             return Snapshot(sized: sized, inTrash: Self.inTrashBytes(journal))
-        }.value
+        }
         guard mine == generation else { return }
         contents = found.sized
         inTrashBytesSinceLastEmpty = found.inTrash.bytes
@@ -80,11 +80,11 @@ public final class TrashModel {
         isEmptying = true
         defer { isEmptying = false }
         let inspector = self.inspector
-        let attempt = await Task.detached(priority: .userInitiated) { () -> RunRecord? in
+        let attempt = await Blocking.run { () -> RunRecord? in
             let now = inspector.sizeWithIssues()
             guard now.issues.isEmpty, now.size.bytes == confirmed else { return nil }
             return inspector.emptyTrash()
-        }.value
+        }
         await refresh()
         guard let record = attempt else {
             return .refused(reason: "The Trash changed since you looked at it. Check it again before emptying")

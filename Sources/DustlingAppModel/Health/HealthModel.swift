@@ -118,7 +118,7 @@ public final class HealthModel {
         let probe = self.probe
         generation += 1
         let mine = generation
-        let status = await Task.detached(priority: .userInitiated) { probe() }.value
+        let status = await Blocking.run { probe() }
         guard mine == generation else { return }
         fullDiskAccess = status
         hasPublishedStatus = true

@@ -148,7 +148,7 @@ public final class UninstallerModel {
         counted = []
         issues = []
         let scout = self.scout, finder = self.finder, protected = self.protectedPaths
-        let discovered = await Task.detached(priority: .userInitiated) { scout.discoverWithIssues() }.value
+        let discovered = await Blocking.run { scout.discoverWithIssues() }
         guard mine == generation else { return }
         unreadableAppFolders = discovered.unreadable
         appList = discovered.apps
@@ -158,10 +158,10 @@ public final class UninstallerModel {
         rebuildApps()
         for app in discovered.apps {
             let others = Self.others(than: app, in: discovered.apps)
-            let found = await Task.detached(priority: .userInitiated) { () -> ([LeftoverRow], [ScanIssue]) in
+            let found = await Blocking.run { () -> ([LeftoverRow], [ScanIssue]) in
                 let result = finder.leftoversWithIssues(for: app, among: others)
                 return (result.leftovers.map { Self.makeRow($0, for: app, protectedPaths: protected) }, result.issues)
-            }.value
+            }
             guard mine == generation else { return }
             let old = Dictionary((rows[app.url] ?? []).map { ($0.id, $0.checked) }, uniquingKeysWith: { _, n in n })
             rows[app.url] = found.0.map { row in

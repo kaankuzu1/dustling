@@ -178,6 +178,14 @@ struct HealthModelTests {
         #expect(model.fullDiskAccess == .denied)
     }
 
+    /// An undecided probe is still a published result: views keyed on it check places then.
+    @Test func unknownResultCountsAsPublished() async {
+        let model = HealthModel(probe: { .unknown }, clock: ManualClock())
+        await model.refresh()
+        #expect(model.fullDiskAccess == .unknown)
+        #expect(model.hasPublishedStatus)
+    }
+
     @Test func refreshLastRunUpdatesWithoutProbing() async {
         let script = ProbeScript { _ in .granted }
         nonisolated(unsafe) var run: RunRecord?

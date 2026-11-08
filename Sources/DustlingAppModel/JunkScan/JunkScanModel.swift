@@ -324,7 +324,7 @@ public final class JunkScanModel {
         let journal = self.journal
         let id = record.id
         do {
-            let outcomes = try await Task.detached { try journal.restore(runID: id, paths: paths) }.value
+            let outcomes = try await Blocking.run { try journal.restore(runID: id, paths: paths) }
             restoreOutcomes = outcomes
             didPutBack = true
             onRunCompleted()

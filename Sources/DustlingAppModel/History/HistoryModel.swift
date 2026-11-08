@@ -76,7 +76,7 @@ public final class HistoryModel {
         let mine = generation
         isLoading = true
         let journal = self.journal
-        let snapshot = await Task.detached(priority: .userInitiated) { () -> Snapshot in
+        let snapshot = await Blocking.run { () -> Snapshot in
             var problem: String?
             do { try journal.refreshRestorability() } catch {
                 problem = "Dustling couldn't update which cleanups can be put back: \(error.localizedDescription)"
@@ -89,7 +89,7 @@ public final class HistoryModel {
                     records: [], unreadable: journal.unreadableRecords(),
                     problem: "Dustling couldn't read its history: \(error.localizedDescription)")
             }
-        }.value
+        }
         guard mine == generation else { return }
         isLoading = false
         problem = snapshot.problem
@@ -179,9 +179,9 @@ public final class HistoryModel {
             throw HistoryModelError.trashWasEmptied
         }
         let journal = self.journal
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<[RestoreOutcome], Error> in
+        let result = await Blocking.run { () -> Result<[RestoreOutcome], Error> in
             Result { try journal.restore(runID: runID, paths: paths) }
-        }.value
+        }
         await refresh()
         onRunCompleted()
         return try result.get()

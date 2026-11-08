@@ -32,9 +32,9 @@ public final class StorageModel {
         let read = self.read
         generation += 1
         let mine = generation
-        let result = await Task.detached(priority: .userInitiated) {
+        let result = await Blocking.run {
             Result { try read() }
-        }.value
+        }
         guard mine == generation else { return }
         switch result {
         case .success(let value):

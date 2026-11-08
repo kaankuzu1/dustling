@@ -13,6 +13,14 @@ struct ReadyStep: View {
         models.places.places != nil && models.places.readableCount == models.places.total
     }
 
+    /// What Full Disk Access would open, then (like the Full Disk Access step) any places that can't
+    /// be read for another reason.
+    private var lockedCaption: String {
+        [models.places.lockedSentence, LimitedModeBanner.honesty, models.places.unreadableSentence]
+            .compactMap { $0 }
+            .joined(separator: " ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             // 64 pt: the nearest integer scale to the mockups' 72 pt Mote.
@@ -35,7 +43,7 @@ struct ReadyStep: View {
             } else {
                 StepHeadline(
                     title: LimitedModeBanner.title(lockedCount: locked.count),
-                    caption: models.places.lockedSentence.map { "\($0) \(LimitedModeBanner.honesty)" },
+                    caption: lockedCaption,
                     small: false, captionSize: 14)
             }
             Button("Start scanning", action: start)

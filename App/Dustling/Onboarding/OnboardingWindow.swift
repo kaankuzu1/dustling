@@ -111,7 +111,7 @@ struct OnboardingWindow: View {
             models.health.stopPolling()
             models.onboarding.markCompleted()
         }
-        .task(id: models.health.fullDiskAccess) { await models.refreshPlaces() }
+        .task(id: models.fullDiskAccessKey) { await models.refreshPlaces() }
     }
 
     /// Closes the onboarding and shows the main window, optionally at a destination.
