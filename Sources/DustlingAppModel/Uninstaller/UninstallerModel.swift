@@ -234,12 +234,15 @@ public final class UninstallerModel {
     /// leftovers in the background and publishes each count as it finishes. A newer load makes an
     /// older one stop. Refused while an uninstall is running. Check marks the user made are kept for
     /// leftovers that are found again.
-    public func load() async {
+    /// Returns false when the load was refused (no access to app data, an uninstall running, or the
+    /// screenshot fixture) and nothing was listed.
+    @discardableResult
+    public func load() async -> Bool {
         #if DEBUG
-        guard fixtureRunning == nil else { return }
+        guard fixtureRunning == nil else { return false }
         #endif
-        guard !isUninstalling else { loadPending = true; return }
-        guard canReadAppData else { return }
+        guard !isUninstalling else { loadPending = true; return false }
+        guard canReadAppData else { return false }
         generation += 1
         let mine = generation
         isLoading = true
@@ -247,7 +250,7 @@ public final class UninstallerModel {
         issues = []
         let scout = self.scout, finder = self.finder, protected = self.protectedPaths
         let discovered = await Blocking.run { scout.discoverWithIssues() }
-        guard mine == generation else { return }
+        guard mine == generation else { return true }
         unreadableAppFolders = discovered.unreadable
         appList = discovered.apps
         let present = Set(discovered.apps.map(\.url))
@@ -260,7 +263,7 @@ public final class UninstallerModel {
                 let result = finder.leftoversWithIssues(for: app, among: others)
                 return (result.leftovers.map { Self.makeRow($0, for: app, protectedPaths: protected) }, result.issues)
             }
-            guard mine == generation else { return }
+            guard mine == generation else { return true }
             let old = Dictionary((rows[app.url] ?? []).map { ($0.id, $0.checked) }, uniquingKeysWith: { _, n in n })
             rows[app.url] = found.0.map { row in
                 var merged = row
@@ -272,6 +275,7 @@ public final class UninstallerModel {
             rebuildApps()
         }
         isLoading = false
+        return true
     }
 
     /// Every app except the target and the apps nested inside its bundle.

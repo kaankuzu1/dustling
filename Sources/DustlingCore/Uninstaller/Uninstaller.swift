@@ -65,8 +65,8 @@ public struct Uninstaller: Sendable {
 
         let startedAt = Date()
         let kind = RunKind.uninstall(appName: app.displayName)
-        let skippedPaths = Set(skipped.map { $0.url.standardizedFileURL.path(percentEncoded: false) })
-        let leftovers = leftovers.filter { !skippedPaths.contains($0.url.standardizedFileURL.path(percentEncoded: false)) }
+        let skippedPaths = Set(skipped.map { Self.key($0.url) })
+        let leftovers = leftovers.filter { !skippedPaths.contains(Self.key($0.url)) }
         let skipEntries = skipped.map {
             JournalEntry(originalPath: $0.url.path(percentEncoded: false), bytes: $0.bytes,
                          outcome: .skipped(reason: skipReason))

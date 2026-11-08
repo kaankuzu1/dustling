@@ -303,9 +303,16 @@ final class AppModels {
     /// Loads the apps once Full Disk Access is on; never without it (see `uninstallerLoaded`).
     func loadUninstallerIfAllowed(force: Bool = false) {
         guard health.fullDiskAccess == .granted, force || !uninstallerLoaded else { return }
+        // Access is on now, even if refreshPlaces hasn't caught up yet.
+        uninstaller.canReadAppData = true
+        uninstaller.lockedFolders = []
         uninstallerLoaded = true
         Task {
-            await uninstaller.load()
+            // A refused load must not leave the list stuck empty: the next chance tries again.
+            guard await uninstaller.load() else {
+                uninstallerLoaded = false
+                return
+            }
             uninstallerCounted = !uninstaller.isLoading
         }
     }

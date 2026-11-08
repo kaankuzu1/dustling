@@ -289,8 +289,10 @@ struct UninstallerTests {
             environment: sandbox.environment)
         let skipped = leftover(containerDir, kind: .container, bytes: 9_999)
         // The same item passed to be moved AND skipped is only skipped.
+        // The same folder spelled with a trailing slash still counts as the skipped one.
+        let slashed = leftover(URL(filePath: containerDir.path(percentEncoded: false) + "/"), kind: .container, bytes: 9_999)
         let record = try await uninstaller.uninstall(
-            installedApp(appURL), leftovers: [skipped], skipped: [skipped], skipReason: "needs Full Disk Access"
+            installedApp(appURL), leftovers: [slashed], skipped: [skipped], skipReason: "needs Full Disk Access"
         ) { _, _ in }
 
         let path = containerDir.path(percentEncoded: false)

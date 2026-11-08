@@ -269,7 +269,7 @@ struct UninstallerModelTests {
         #expect(model.isLoading)
 
         gate.open()
-        await loading.value
+        _ = await loading.value
 
         #expect(model.apps.allSatisfy { !$0.isCounting })
         #expect(model.apps.first { $0.app.displayName == "Alpha" }?.leftoverCount == 2)
@@ -336,7 +336,7 @@ struct UninstallerModelTests {
         #expect(records.isEmpty)
         #expect(FileManager.default.fileExists(atPath: app.path))
         gate.open()
-        await loading.value
+        _ = await loading.value
         #expect(model.confirmation.ready)
     }
 
@@ -369,7 +369,7 @@ struct UninstallerModelTests {
         #expect(model.apps.map(\.app.displayName) == ["Beta"])
         #expect(model.apps.allSatisfy { $0.isCounting })
         gate.open()
-        await loading.value
+        _ = await loading.value
         #expect(await waitUntil { model.apps.allSatisfy { !$0.isCounting } })
         #expect(model.apps.first?.leftoverCount == 0)
     }
@@ -557,8 +557,11 @@ struct UninstallerModelTests {
         try rig.makeApp("Alpha", bundleID: "com.test.alpha")
         let model = rig.uninstallerModel()
         model.canReadAppData = false
-        await model.load()
+        #expect(await model.load() == false)
         #expect(model.apps.isEmpty)
+        model.canReadAppData = true
+        #expect(await model.load() == true)
+        #expect(model.apps.count == 1)
         #expect(!model.isLoading)
     }
 
