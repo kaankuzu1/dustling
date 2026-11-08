@@ -74,7 +74,7 @@ struct JunkScanView: View {
         case .ready, .moving:
             SelectionHeader()
         case .done(let record):
-            SummaryView(record: record, confirmingEmptyTrash: $confirmingEmptyTrash)
+            SummaryView(record: record, confirmingEmptyTrash: $confirmingEmptyTrash, closedApps: models.junk.closedApps)
         }
     }
 
@@ -222,12 +222,18 @@ private struct JunkActionBar: View {
     @Environment(AppModels.self) private var models
     @State private var confirmingLimitedClean = false
     @State private var reviewingFiles = false
+    /// Open apps that hold selected files: asked about before cleaning.
+    @State private var closingApps: CloseAppsRun?
 
     private typealias Palette = DustlingTheme.Palette
 
-    /// Without Full Disk Access the user hears first that Dustling can't put the files back.
+    /// Open apps holding selected files are offered to close first. Without Full Disk Access the user
+    /// hears first that Dustling can't put the files back (the close-apps sheet says it too).
     private func moveToTrash() {
-        if models.junk.cleanupGate.kind == .confirmFirst {
+        let holders = models.junk.openAppHolders(running: OpenApps.regular())
+        if !holders.isEmpty {
+            closingApps = CloseAppsRun(holders: holders)
+        } else if models.junk.cleanupGate.kind == .confirmFirst {
             confirmingLimitedClean = true
         } else {
             Task { await models.cleanJunk() }
@@ -277,6 +283,7 @@ private struct JunkActionBar: View {
                 Text(gate.note ?? "")
             }
             .sheet(isPresented: $reviewingFiles) { ReviewFilesSheet() }
+            .sheet(item: $closingApps) { run in CloseAppsSheet(run: run) }
         case .moving(let done, let total, let bytes):
             ActionBar(
                 title: "Moving to the Trash",

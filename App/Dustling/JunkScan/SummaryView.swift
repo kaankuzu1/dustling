@@ -9,6 +9,8 @@ import SwiftUI
 struct SummaryView: View {
     let record: RunRecord
     @Binding var confirmingEmptyTrash: Bool
+    /// Apps closed before this cleanup, named in the summary.
+    var closedApps: [String] = []
 
     @Environment(AppModels.self) private var models
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -57,7 +59,8 @@ struct SummaryView: View {
                     .foregroundStyle(Palette.muted)
             }
             .accessibilityElement(children: .combine)
-            (Text(summary.sentence + " ").foregroundStyle(Palette.muted)
+            (Text(summary.sentence + " " + (CloseApps.summaryLine(closedApps).map { $0 + " " } ?? ""))
+                .foregroundStyle(Palette.muted)
              + Text("Empty the Trash to free the space").fontWeight(.semibold).foregroundStyle(Palette.ink)
              + Text("; until then everything can go back.").foregroundStyle(Palette.muted))
                 .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))

@@ -237,6 +237,8 @@ public final class JunkScanModel {
     public var canTakeOutOfTrash = false
     /// What happens to a cleanup while `canTakeOutOfTrash` is false.
     public var limitedCleanupPolicy: LimitedCleanupPolicy = .warnBeforeCleaning
+    /// Apps closed before the last cleanup, by name, for the summary. A rescan clears them.
+    public private(set) var closedApps: [String] = []
     /// True while the Review files sheet is open; the app holds off automatic rescans meanwhile, so
     /// the sheet and its draft stay put.
     public var isReviewingFiles = false
@@ -327,6 +329,7 @@ public final class JunkScanModel {
         message = nil
         didPutBack = false
         excludedItems = []
+        closedApps = []
         categoryProgress = [:]
         categoryOutcomes = [:]
         state = .scanning(ScanProgress(
@@ -406,6 +409,44 @@ public final class JunkScanModel {
             excludedBytes: scan.items.filter { excludedItems.contains($0.url) }.reduce(0) { $0 + $1.bytes })
     }
 
+    // MARK: open apps
+
+    /// The regular apps in `running` that hold selected, movable-but-for-them files, largest first.
+    public func openAppHolders(running: [RunningApp]) -> [OpenAppHolder] {
+        let apps = Dictionary(running.map { ($0.bundleID, $0) }, uniquingKeysWith: { first, _ in first })
+        var totals: [String: (bytes: UInt64, count: Int)] = [:]
+        for tile in categories where tile.isSelected && !tile.stopped {
+            guard let scan = scans[tile.id] else { continue }
+            for item in scan.items where !excludedItems.contains(item.url) {
+                guard case .inUse(let id) = Unmovable.check(item, category: scan.category, skipping: cleanupSkip),
+                      apps[id] != nil else { continue }
+                totals[id, default: (0, 0)].bytes += item.bytes
+                totals[id, default: (0, 0)].count += 1
+            }
+        }
+        return totals.compactMap { id, total in
+            apps[id].map {
+                OpenAppHolder(bundleID: id, name: $0.name, bundleURL: $0.bundleURL, bytes: total.bytes, itemCount: total.count)
+            }
+        }
+        .sorted { $0.bytes != $1.bytes ? $0.bytes > $1.bytes : $0.name < $1.name }
+    }
+
+    /// After apps were asked to quit: items whose owner isn't running any more are free to move.
+    /// Items of apps in `stillRunning` stay in use.
+    public func recheckInUse(stillRunning: Set<String>) {
+        guard case .ready = state else { return }
+        for (id, scan) in scans {
+            let items = scan.items.map { item -> JunkItem in
+                guard let owner = item.inUseByBundleID, !stillRunning.contains(owner) else { return item }
+                return JunkItem(url: item.url, bytes: item.bytes, category: item.category, inUseByBundleID: nil)
+            }
+            scans[id] = CategoryScan(
+                category: scan.category, items: items, bytes: scan.bytes, issues: scan.issues, stopped: scan.stopped)
+        }
+        rebuildTiles()
+    }
+
     // MARK: review files
 
     /// The Review files list for the selected categories, as if `excluding` were left out. The sheet
@@ -458,7 +499,8 @@ public final class JunkScanModel {
     ///
     /// `skipping`: places that can't be read now; their items are recorded as skipped. With the gate
     /// at `confirmFirst`, nothing happens unless the user confirmed (`confirmedLimited`).
-    public func clean(skipping: CleanupSkip? = nil, confirmedLimited: Bool = false) async {
+    /// `closedApps`: apps the user let Dustling close first, named in the summary.
+    public func clean(skipping: CleanupSkip? = nil, confirmedLimited: Bool = false, closedApps: [String] = []) async {
         let skipping = skipping ?? cleanupSkip
         guard case .ready = state, !isRestoring else { return }
         switch cleanupGate.kind {
@@ -507,6 +549,7 @@ public final class JunkScanModel {
 
         categoryProgress = progress
         categoryOutcomes = [:]
+        self.closedApps = closedApps
         state = .moving(done: 0, total: urls.count, bytes: 0)
         let runner = self.runner
         let allowedRoots = Array(roots)
