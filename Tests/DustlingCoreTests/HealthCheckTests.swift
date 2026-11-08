@@ -31,6 +31,83 @@ struct HealthCheckTests {
         #expect(FullDiskAccessProbe(environment: sandbox.environment).status() == .unknown)
     }
 
+    // MARK: - Fallback targets (R26 amended)
+
+    private let systemTCCPath = "Library/Application Support/com.apple.TCC/TCC.db"
+
+    private func lock(_ url: URL) throws {
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+    }
+
+    private func unlock(_ url: URL) {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func status(_ sandbox: TestSandbox) -> FullDiskAccessStatus {
+        FullDiskAccessProbe(environment: sandbox.environment).status()
+    }
+
+    @Test func systemTCCDecidesWhenUserTCCIsMissing() throws {
+        let sandbox = try TestSandbox()
+        let db = try sandbox.file(systemTCCPath)
+        #expect(status(sandbox) == .granted)
+        try lock(db)
+        defer { unlock(db) }
+        #expect(status(sandbox) == .denied)
+    }
+
+    @Test(arguments: ["Safari", "Mail", "Messages"])
+    func protectedLibraryFolderDecides(name: String) throws {
+        let sandbox = try TestSandbox()
+        let dir = try sandbox.directory("home/Library/\(name)")
+        #expect(status(sandbox) == .granted)
+        try lock(dir)
+        defer { unlock(dir) }
+        #expect(status(sandbox) == .denied)
+    }
+
+    @Test func firstDecisiveTargetWins() throws {
+        let sandbox = try TestSandbox()
+        let db = try sandbox.file(systemTCCPath)
+        try sandbox.directory("home/Library/Safari")   // readable, but comes later
+        try lock(db)
+        defer { unlock(db) }
+        #expect(status(sandbox) == .denied)
+        let messages = try sandbox.directory("home/Library/Messages")
+        try FileManager.default.removeItem(at: db)
+        try lock(messages)                             // comes after Safari
+        defer { unlock(messages) }
+        #expect(status(sandbox) == .granted)
+    }
+
+    @Test func nonPermissionErrorsFallThrough() throws {
+        let sandbox = try TestSandbox()
+        // ENOTDIR for both TCC paths, ENOTDIR for Safari: none decide, Mail does.
+        try sandbox.file("home/Library/Application Support/com.apple.TCC")
+        try sandbox.file("Library/Application Support/com.apple.TCC")
+        try sandbox.file("home/Library/Safari")
+        #expect(status(sandbox) == .unknown)
+        let mail = try sandbox.directory("home/Library/Mail")
+        try lock(mail)
+        defer { unlock(mail) }
+        #expect(status(sandbox) == .denied)
+    }
+
+    @Test func neverProbesOtherAppsContainers() throws {
+        let sandbox = try TestSandbox()
+        let container = try sandbox.directory("home/Library/Containers/com.apple.mail")
+        try lock(container)
+        defer { unlock(container) }
+        #expect(status(sandbox) == .unknown)
+    }
+
+    @Test func unknownStatusAddsProblemSentence() throws {
+        let sandbox = try TestSandbox()
+        let report = HealthCheck(environment: sandbox.environment, commands: FakeCommandRunner(), volume: sandbox.root).run()
+        #expect(report.fullDiskAccess == .unknown)
+        #expect(report.problems.contains("Couldn't verify Full Disk Access, so some folders may not be scanned."))
+    }
+
     @Test func snapshotCountParsesTmutil() throws {
         let sandbox = try TestSandbox()
         let runner = FakeCommandRunner()
