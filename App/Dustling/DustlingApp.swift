@@ -9,6 +9,7 @@ struct DustlingApp: App {
         DustlingTheme.registerFonts()
         let models = AppModels()
         models.start()
+        Appearance.apply(models.settings.appearance)
         _models = State(initialValue: models)
     }
 
@@ -31,11 +32,8 @@ struct DustlingApp: App {
         .windowResizability(.contentMinSize)
 
         Settings {
-            // The Settings window arrives in Task 15. Until then it opens empty, never with
-            // controls that don't work.
-            Color.clear
-                .frame(width: 560, height: 360)
-                .background(DustlingTheme.Palette.ground)
+            SettingsWindow()
+                .environment(models)
         }
     }
 }

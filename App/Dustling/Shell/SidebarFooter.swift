@@ -17,6 +17,8 @@ struct SidebarFooter: View {
                 .lineLimit(1)
             StorageSummary(storage: models.storage, goal: models.goal)
             HealthLightsButton(selection: $selection)
+            // Settings opens the Settings window. It shows as selected while the Diagnostics page (which
+            // belongs to Settings > Permissions and helper) is open, as in the approved mockup.
             SettingsLink {
                 HStack(spacing: 9) {
                     PixelIconView(.gear, color: Palette.sidebarIcon).frame(width: 18, height: 18)
@@ -27,6 +29,10 @@ struct SidebarFooter: View {
                 }
                 .frame(height: 32)
                 .padding(.horizontal, 4)
+                .background {
+                    RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius, style: .continuous)
+                        .fill(Palette.sidebarSelection.opacity(selection == .diagnostics ? 1 : 0))
+                }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -113,185 +119,6 @@ private struct MeterBar: View, Animatable {
                 context.fill(Path(CGRect(x: x, y: 0, width: w, height: size.height)), with: .color(DustlingTheme.Palette.accent))
                 x += 5
             }
-        }
-    }
-}
-
-// MARK: - Health lights
-
-/// The Full Disk Access status line from the mockup, with the three health lights (Full Disk Access,
-/// cleanup helper, last run) beside it. Clicking it opens the health popover.
-private struct HealthLightsButton: View {
-    @Binding var selection: Destination
-    @Environment(AppModels.self) private var models
-    @State private var showsPopover = false
-    private typealias Palette = DustlingTheme.Palette
-
-    /// The lights to show. The Full Disk Access light stays hidden until the first probe finishes.
-    private var lights: [HealthLight] {
-        models.health.lights.filter { $0.kind != .fullDiskAccess || models.hasProbedFullDiskAccess }
-    }
-
-    private var fullDiskAccessLight: HealthLight? { lights.first { $0.kind == .fullDiskAccess } }
-
-    private var fullDiskAccessLine: String {
-        switch models.health.fullDiskAccess {
-        case .granted: return "Full Disk Access is on"
-        case .denied: return "Full Disk Access is off"
-        case .unknown: return "Couldn't verify Full Disk Access"
-        }
-    }
-
-    var body: some View {
-        Button {
-            showsPopover.toggle()
-        } label: {
-            HStack(spacing: 6) {
-                if let fda = fullDiskAccessLight {
-                    PixelIconView(fda.state == .ok ? .shield : .warn, color: fda.state == .ok ? Palette.success : Palette.warning)
-                    Text(fullDiskAccessLine)
-                        .foregroundStyle(Palette.sidebarMuted)
-                        .lineLimit(1)
-                } else {
-                    Text("Checking Full Disk Access…")
-                        .foregroundStyle(Palette.sidebarMuted)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                HStack(spacing: 4) {
-                    ForEach(lights, id: \.kind) { light in
-                        Circle().fill(light.state.color).frame(width: 7, height: 7)
-                    }
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Dustling health")
-        .accessibilityLabel("Dustling health")
-        .accessibilityValue(lights.map { "\($0.kind.title): \($0.state.spoken)" }.joined(separator: ", "))
-        .popover(isPresented: $showsPopover, arrowEdge: .trailing) {
-            HealthPopover(lights: lights, isCheckingFullDiskAccess: !models.hasProbedFullDiskAccess) { fix in
-                perform(fix)
-            }
-        }
-    }
-
-    private func perform(_ fix: FixAction) {
-        switch fix {
-        case .openFullDiskAccessSettings:
-            if !NSWorkspace.shared.open(FullDiskAccessProbe.settingsURL) {
-                NSLog("Dustling: couldn't open System Settings at \(FullDiskAccessProbe.settingsURL)")
-                let alert = NSAlert()
-                alert.messageText = "System Settings didn't open"
-                alert.informativeText = "Open System Settings yourself, then go to Privacy & Security > Full Disk Access and switch Dustling on."
-                alert.runModal()
-            }
-        case .viewLastRun:
-            showsPopover = false
-            selection = .history
-        }
-    }
-}
-
-/// The health popover (E03 in the approved mockups): each check with its light and its fix.
-private struct HealthPopover: View {
-    let lights: [HealthLight]
-    let isCheckingFullDiskAccess: Bool
-    let perform: (FixAction) -> Void
-    private typealias Palette = DustlingTheme.Palette
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Dustling health")
-                .font(DustlingTheme.Typography.rowTitle)
-                .foregroundStyle(Palette.ink)
-            if isCheckingFullDiskAccess {
-                Text("Checking Full Disk Access…")
-                    .font(DustlingTheme.Typography.caption)
-                    .foregroundStyle(Palette.muted)
-            }
-            ForEach(lights, id: \.kind) { light in
-                HStack(alignment: .center, spacing: 8) {
-                    ZStack {
-                        Circle().fill(light.state.color)
-                        // The mockup draws a 12 pt glyph; pixel icons only come at integer scales, so 8 pt.
-                        PixelIconView(light.state.icon, color: .white, size: .small)
-                    }
-                    .frame(width: 24, height: 24)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(light.kind.title)
-                            .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
-                            .foregroundStyle(Palette.ink)
-                        Text(light.detail)
-                            .font(DustlingTheme.Typography.caption)
-                            .foregroundStyle(Palette.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 8)
-                    if let fix = light.fix {
-                        Button(fix.title) { perform(fix) }
-                            .buttonStyle(.link)
-                            .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5).weight(.semibold))
-                            .foregroundStyle(Palette.accent)
-                    } else if light.state == .ok {
-                        Text("OK")
-                            .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
-                            .foregroundStyle(Palette.muted)
-                    }
-                }
-                .accessibilityElement(children: .combine)
-            }
-        }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 14)
-        .frame(width: 320, alignment: .leading)
-        .background(Palette.ground)
-    }
-}
-
-private extension HealthLight.Kind {
-    var title: String {
-        switch self {
-        case .fullDiskAccess: return "Full Disk Access"
-        case .helper: return "Cleanup helper"
-        case .lastRun: return "Last run"
-        }
-    }
-}
-
-private extension HealthLight.State {
-    var color: Color {
-        switch self {
-        case .ok: return DustlingTheme.Palette.success
-        case .warning: return DustlingTheme.Palette.warning
-        // Ruling R48: "not available yet" is neutral, not a problem.
-        case .info: return DustlingTheme.Palette.muted
-        }
-    }
-
-    var icon: PixelIcon {
-        switch self {
-        case .ok: return .check
-        case .warning: return .warn
-        case .info: return .info
-        }
-    }
-
-    var spoken: String {
-        switch self {
-        case .ok: return "OK"
-        case .warning: return "needs attention"
-        case .info: return "not available yet"
-        }
-    }
-}
-
-private extension FixAction {
-    var title: String {
-        switch self {
-        case .openFullDiskAccessSettings: return "Open System Settings"
-        case .viewLastRun: return "View last run"
         }
     }
 }

@@ -33,6 +33,14 @@ final class AppModels {
     let updateCheck: UpdateSizeCheck
     /// The startup volume's name for the sidebar footer, e.g. "Macintosh HD".
     let volumeName: String
+    /// The Settings window's values (Task 15). Scan settings reach the scan and the protected paths.
+    let settings: AppSettings
+    /// "Retry N items" for the last cleanup (health popover and Diagnostics).
+    let retry: LastRunRetry
+    /// Remembers that Full Disk Access was on, so losing it blocks a scan instead of shrinking it.
+    @ObservationIgnored let accessMemory = FullDiskAccessMemory()
+    /// The blocker sheet over the main window (SCREENS-final §8), only for cases that stop a screen.
+    var blocker: RepairCase?
 
     /// False until a Full Disk Access probe result has been published. The sidebar hides the Full
     /// Disk Access light until then, so the pre-probe `.unknown` never flashes as a warning. A probe
@@ -63,7 +71,12 @@ final class AppModels {
         let health = HealthModel(
             probe: { FullDiskAccessProbe(environment: environment).status() },
             clock: ContinuousClock(),
-            lastRunSummary: { AppModels.latestRun(in: journal) })
+            lastRunSummary: {
+                #if DEBUG
+                if let sample = AppModels.sampleLastRun { return sample }
+                #endif
+                return AppModels.latestRun(in: journal)
+            })
         self.health = health
         let storage = StorageModel(commands: commands)
         self.storage = storage
@@ -76,8 +89,13 @@ final class AppModels {
         junkCatalog = JunkCatalog.standard(environment).map {
             JunkScreen.Entry(id: $0.id, title: $0.title, selection: $0.selection)
         }
-        let options = ScanOptions()
-        let protectedPaths = options.protectedPaths(environment: environment)
+        let settings = AppSettings(environment: environment, loginItems: MainAppLoginItem())
+        self.settings = settings
+        let options = settings.scanOptions
+        // Exclusions follow Settings while Dustling runs: the guard every move goes through reads them live.
+        let exclusions = LiveExclusions(options.exclusionURLs(home: environment.home))
+        settings.onScanOptionsChanged = { exclusions.set($0.exclusionURLs(home: environment.home)) }
+        let protectedPaths = ProtectedPaths(environment: environment, liveExclusions: exclusions)
         let runner = CleanupRunner(
             mover: TrashMover(backend: SystemTrashBackend(), protectedPaths: protectedPaths),
             journal: journal, logger: logger, sizer: DirectorySizer())
@@ -140,6 +158,16 @@ final class AppModels {
             })
         // Unknown until the first probe: assume Restore can't work.
         history.canTakeOutOfTrash = false
+        retry = LastRunRetry(
+            catalog: { JunkCatalog.standard(environment, options: settings.scanOptions) },
+            running: { AppModels.runningBundleIDs() },
+            appName: { AppModels.appName(bundleID: $0) },
+            run: { urls, roots in await runner.run(urls, kind: .junkClean, allowedRoots: roots, onItem: { _, _ in }) },
+            onRunCompleted: {
+                health.refreshLastRun()
+                Task { await trash.refresh() }
+                Task { await storage.refresh() }
+            })
         updateCheck = UpdateSizeCheck(commands: commands)
         updateCheck.onMeasured = { [weak self] bytes in
             self?.goal = UpdateGoal(neededBytes: bytes, source: .measured(.now))
@@ -152,6 +180,7 @@ final class AppModels {
         }
         applyUninstallerFixtureFromLaunchArguments()
         applyStartupHistoryFixtureFromLaunchArguments()
+        applyRepairFixtureFromLaunchArguments()
         #endif
     }
 
@@ -211,7 +240,15 @@ final class AppModels {
     /// Starts a junk scan of the places that read as open right now.
     func scanJunk() {
         guard !junk.isBusy else { return }
-        scanCatalog.categories = HomeMosaic.scannable(JunkCatalog.standard(environment), places: places.places)
+        // Access was on and a real read is denied now: pause instead of a quietly smaller result.
+        if accessMemory.isLost(health.fullDiskAccess) {
+            blocker = .fullDiskAccessLost
+            return
+        }
+        junk.preselectSafe = settings.preselectSafe
+        let catalog = JunkCatalog.standard(environment, options: settings.scanOptions)
+            .filter { settings.scans($0.id, selection: $0.selection) }
+        scanCatalog.categories = HomeMosaic.scannable(catalog, places: places.places)
         lastScanScope = HomeScanScope.make(places: places.places)
         junk.scan()
     }
@@ -274,7 +311,7 @@ final class AppModels {
         case .done: phase = .done
         }
         return JunkScreen.tiles(JunkScreen.Input(
-            catalog: junkCatalog, phase: phase, tiles: junk.categories, places: places.places, scope: lastScanScope,
+            catalog: junkCatalog.filter { settings.scans($0.id, selection: $0.selection) }, phase: phase, tiles: junk.categories, places: places.places, scope: lastScanScope,
             progress: junk.categoryProgress, outcomes: junk.categoryOutcomes))
     }
 
@@ -298,6 +335,8 @@ final class AppModels {
 
     /// The home folder, for shortening paths on screen.
     var homeDirectory: URL { environment.home }
+    /// Where run logs are written (`~/Library/Logs/Dustling`).
+    var logsDirectory: URL { logger.directory }
 
     /// Opens the log file the run was written to. Says so if it can't.
     func openLog(for record: RunRecord) {
@@ -369,7 +408,7 @@ final class AppModels {
         }
     }
 
-    private nonisolated static func runningBundleIDs() -> Set<String> {
+    nonisolated static func runningBundleIDs() -> Set<String> {
         // The scanner flags caches of apps that are open right now.
         Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
     }
@@ -406,6 +445,7 @@ final class AppModels {
     /// Re-checks which places are locked. Waits for the first Full Disk Access probe, because
     /// without access the check must not open folders that would prompt for consent.
     func refreshPlaces() async {
+        accessMemory.observe(health.fullDiskAccess)
         // Without Full Disk Access macOS won't let Dustling take anything out of the Trash.
         junk.canTakeOutOfTrash = health.fullDiskAccess == .granted
         uninstaller.canTakeOutOfTrash = health.fullDiskAccess == .granted

@@ -28,6 +28,10 @@ struct RootView: View {
         // Full Disk Access changed (polling, activation): re-check which places are locked.
         .task(id: models.fullDiskAccessKey) { await models.refreshPlaces() }
         .task { models.onboarding.openAtLaunchIfNeeded(models: models, openWindow: openWindow) }
+        // Only for blockers, such as Full Disk Access lost before a scan (SCREENS-final §8).
+        .sheet(isPresented: Binding(get: { models.blocker != nil }, set: { if !$0 { models.blocker = nil } })) {
+            if let blocker = models.blocker { BlockerSheet(repair: blocker) }
+        }
     }
 }
 
@@ -46,6 +50,8 @@ struct DestinationView: View {
             StartupView()
         } else if destination == .history {
             HistoryView()
+        } else if destination == .diagnostics {
+            DiagnosticsView()
         } else {
             VStack(spacing: 0) {
                 ScreenToolbar(title: destination.title, subtitle: destination.placeholderSubtitle)
@@ -83,6 +89,7 @@ private extension Destination {
         case .uninstaller: return "Apps and the files they leave behind"
         case .startupItems: return "What opens when you log in"
         case .history: return "Every run and what it moved"
+        case .diagnostics: return "Every check and its last result"
         }
     }
 }

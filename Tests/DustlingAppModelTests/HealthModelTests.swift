@@ -234,7 +234,7 @@ struct HealthModelTests {
         await model.refresh()
         let light = model.lights.first { $0.kind == .lastRun }
         #expect(light?.state == .warning)
-        #expect(light?.fix == .viewLastRun)
+        #expect(light?.fix == nil)  // needs admin rights: nothing to retry without the helper
         #expect(model.lastRunProblem != nil)
 
         let clean = HealthModel(probe: { .granted }, clock: ManualClock(), lastRunSummary: { nil })

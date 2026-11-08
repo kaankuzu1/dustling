@@ -1,4 +1,23 @@
 import Foundation
+import os
+
+/// The user's exclusions as they are right now. Settings changes them while Dustling runs, and every
+/// `ProtectedPaths` built with this object follows at once, so the guard used by the mover can never
+/// lag behind what Settings shows. Keys are computed when the list is set, not per verdict.
+public final class LiveExclusions: Sendable {
+    private let keys: OSAllocatedUnfairLock<[[String]]>
+
+    public init(_ urls: [URL]) {
+        keys = OSAllocatedUnfairLock(initialState: ProtectedPaths.keys(for: urls))
+    }
+
+    public func set(_ urls: [URL]) {
+        let new = ProtectedPaths.keys(for: urls)
+        keys.withLock { $0 = new }
+    }
+
+    var current: [[String]] { keys.withLock { $0 } }
+}
 
 public enum PathVerdict: Equatable, Sendable {
     case allowed
@@ -21,7 +40,9 @@ public struct ProtectedPaths: Sendable {
     private let exactDenied: [[String]]
     private let home: [String]
     private let usersRoot: [String]
-    private let excluded: [[String]]
+    private let fixedExcluded: [[String]]
+    private let liveExclusions: LiveExclusions?
+    private var excluded: [[String]] { fixedExcluded + (liveExclusions?.current ?? []) }
 
     static let excludedReason = "excluded in Settings"
     static let containsExcludedReason = "contains a folder excluded in Settings"
@@ -29,7 +50,8 @@ public struct ProtectedPaths: Sendable {
     /// `extraDenied` are the user's exclusions: anything equal to or inside one is denied, and so is
     /// anything that contains one (moving a parent would take the excluded folder with it). Hard denies
     /// are decided first, so an exclusion on a protected location changes nothing there.
-    public init(environment: SystemEnvironment, extraDenied: [URL] = []) {
+    /// `liveExclusions` adds exclusions that can change after this value was built (Settings).
+    public init(environment: SystemEnvironment, extraDenied: [URL] = [], liveExclusions: LiveExclusions? = nil) {
         home = Self.caseKey(Self.resolve(environment.home))
         usersRoot = Self.key(Self.resolve(URL(filePath: "/Users")))
         let entries = Self.systemDenied.map { URL(filePath: $0) }
@@ -38,12 +60,14 @@ public struct ProtectedPaths: Sendable {
         exactDenied = Self.keys(for: Self.homeExactDenied.map {
             $0.isEmpty ? environment.home : environment.home.appending(path: $0)
         })
-        excluded = Self.keys(for: extraDenied)
+        fixedExcluded = Self.keys(for: extraDenied)
+        self.liveExclusions = liveExclusions
     }
 
     /// Why `url` is off limits because of a user exclusion, or nil. Same resolution and fold as the
     /// hard-deny list.
     public func exclusionReason(for url: URL) -> String? {
+        let excluded = self.excluded
         guard !excluded.isEmpty else { return nil }
         let path = Self.key(Self.resolve(url))
         if excluded.contains(where: { Self.isEqualOrInside(path, $0) }) { return Self.excludedReason }

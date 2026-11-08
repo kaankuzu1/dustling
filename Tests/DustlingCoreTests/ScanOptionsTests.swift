@@ -220,3 +220,33 @@ import Testing
         #expect(partial == ScanOptions(exclusions: ["/a"]))
     }
 }
+
+@Suite struct LiveExclusionsTests {
+    /// Settings changes exclusions while Dustling runs: the mover built at launch follows them.
+    @Test func exclusionAddedInSettingsTakesEffectWithoutRestart() throws {
+        let sb = try TestSandbox()
+        let keep = try sb.file("home/Library/Caches/com.keep/a", bytes: 1024).deletingLastPathComponent()
+        let caches = sb.environment.userLibrary.appending(path: "Caches")
+        let live = LiveExclusions([])
+        let paths = ProtectedPaths(environment: sb.environment, liveExclusions: live)
+        #expect(paths.verdict(for: keep, allowedRoots: [caches]) == .allowed)
+
+        live.set([keep])
+        #expect(paths.verdict(for: keep, allowedRoots: [caches]) == .denied(reason: "excluded in Settings"))
+        #expect(paths.exclusionReason(for: keep.appending(path: "a")) == "excluded in Settings")
+
+        live.set([])
+        #expect(paths.verdict(for: keep, allowedRoots: [caches]) == .allowed)
+    }
+
+    /// Fixed exclusions (`extraDenied`) still apply next to the live ones.
+    @Test func fixedAndLiveExclusionsCombine() throws {
+        let sb = try TestSandbox()
+        let one = try sb.file("home/Library/Caches/one/a", bytes: 1).deletingLastPathComponent()
+        let two = try sb.file("home/Library/Caches/two/a", bytes: 1).deletingLastPathComponent()
+        let caches = sb.environment.userLibrary.appending(path: "Caches")
+        let paths = ProtectedPaths(environment: sb.environment, extraDenied: [one], liveExclusions: LiveExclusions([two]))
+        #expect(paths.verdict(for: one, allowedRoots: [caches]) == .denied(reason: "excluded in Settings"))
+        #expect(paths.verdict(for: two, allowedRoots: [caches]) == .denied(reason: "excluded in Settings"))
+    }
+}

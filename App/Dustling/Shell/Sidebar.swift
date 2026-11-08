@@ -1,11 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// The sidebar destinations, in order (SCREENS-final, Shell).
+/// The main window's destinations (SCREENS-final, Shell). The sidebar lists `sidebarCases`; the
+/// Diagnostics page (§8) is reached from the health lights and Settings, and highlights Settings.
 enum Destination: String, CaseIterable, Identifiable, Hashable {
-    case home, junkScan, uninstaller, startupItems, history
+    case home, junkScan, uninstaller, startupItems, history, diagnostics
 
     var id: Self { self }
+
+    static let sidebarCases: [Destination] = [.home, .junkScan, .uninstaller, .startupItems, .history]
 
     var title: String {
         switch self {
@@ -14,6 +17,7 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .uninstaller: return "Uninstaller"
         case .startupItems: return "Startup items"
         case .history: return "History"
+        case .diagnostics: return "Dustling health"
         }
     }
 
@@ -25,6 +29,7 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .uninstaller: return PixelIconView(PixelIcon.apps, color: color)
         case .startupItems: return PixelIconView(PixelIcon.power, color: color)
         case .history: return PixelIconView(.clock, color: color)
+        case .diagnostics: return PixelIconView(.gear, color: color)
         }
     }
 }
@@ -104,10 +109,10 @@ private struct DestinationList: View {
 
     var body: some View {
         List(selection: Binding<Destination?>(
-            get: { selection },
+            get: { selection == .diagnostics ? nil : selection },
             set: { if let new = $0 { selection = new } }
         )) {
-            ForEach(Destination.allCases) { destination in
+            ForEach(Destination.sidebarCases) { destination in
                 SidebarRow(
                     title: destination.title,
                     isSelected: selection == destination,

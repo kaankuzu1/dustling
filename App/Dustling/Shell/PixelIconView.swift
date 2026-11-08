@@ -3,13 +3,14 @@ import SwiftUI
 /// The pixel icons the approved shell uses but `DustlingTheme.PixelIcon` doesn't define yet.
 /// Bitmaps copied from the `PICON` additions in the approved mockups (`screens.html`, "Mosaic" round).
 enum ShellPixelIcon: String, CaseIterable {
-    case home, broom, clock
+    case home, broom, clock, folder
 
     var rows: [String] {
         switch self {
         case .home:  return ["...XX...", "..XXXX..", ".XXXXXX.", "XXXXXXXX", ".X....X.", ".X.XX.X.", ".X.XX.X.", ".XXXXXX."]
         case .broom: return ["......XX", ".....XX.", "....XX..", "...XX...", ".XXXX...", "XXXXXX..", "XXXXXX..", ".X.X.X.."]
         case .clock: return ["..XXXX..", ".X....X.", "X...X..X", "X...X..X", "X...XX.X", "X......X", ".X....X.", "..XXXX.."]
+        case .folder: return ["........", "XXX.....", "X..XXXXX", "X......X", "X......X", "X......X", "XXXXXXXX", "........"]
         }
     }
 }
