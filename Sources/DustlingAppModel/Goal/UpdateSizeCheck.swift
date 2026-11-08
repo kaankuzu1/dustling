@@ -24,8 +24,11 @@ public final class UpdateSizeCheck {
     @ObservationIgnored public var onMeasured: @MainActor (Int64) -> Void = { _ in }
 
     @ObservationIgnored private let measure: @Sendable () throws -> Int64?
-    @ObservationIgnored private var generation = 0
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// True while a `softwareupdate` call is running, even after Cancel.
+    @ObservationIgnored private var running = false
+    /// False after Cancel: the running call's answer is dropped unless Start reattaches to it.
+    @ObservationIgnored private var attached = false
 
     public init(measure: @escaping @Sendable () throws -> Int64?) {
         self.measure = measure
@@ -37,15 +40,20 @@ public final class UpdateSizeCheck {
 
     public var isChecking: Bool { state == .checking }
 
+    /// Starts a check. If a cancelled call is still running, this waits for that one instead of
+    /// starting a second `softwareupdate`.
     public func start() {
         guard !isChecking else { return }
-        generation += 1
-        let mine = generation
-        let measure = self.measure
         state = .checking
+        attached = true
+        guard !running else { return }
+        running = true
+        let measure = self.measure
         task = Task { [self] in
             let result = await Blocking.run { Result { try measure() } }
-            guard mine == generation else { return }
+            running = false
+            guard attached else { return }
+            attached = false
             switch result {
             case .success(let bytes?):
                 state = .measured(bytes)
@@ -58,9 +66,10 @@ public final class UpdateSizeCheck {
         }
     }
 
+    /// Returns at once. The command can't be interrupted; its answer is dropped.
     public func cancel() {
         guard isChecking else { return }
-        generation += 1
+        attached = false
         state = .idle
     }
 

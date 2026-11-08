@@ -16,7 +16,7 @@ struct HeroPanel: View {
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
-        let figures = HomeFigures(models)
+        let figures = models.homeFigures
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 18) {
                 // The mockup's 72 pt Mote, drawn at the nearest integer scale (64 pt).
@@ -29,11 +29,9 @@ struct HeroPanel: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if case .needMore = figures.hero, let available = figures.available {
+            if case .needMore = figures.hero, let available = figures.available, let after = figures.afterCleanup {
                 GoalMeterView(
-                    available: available,
-                    afterCleanup: figures.scanFinished
-                        ? available + Int64(clamping: figures.safeJunk + (figures.trashBytes ?? 0)) : available,
+                    available: available, afterCleanup: after, afterCleanupIsLowerBound: figures.afterCleanupIsLowerBound,
                     needed: models.goal.neededBytes)
                     .padding(.top, 18)
             }
@@ -124,9 +122,20 @@ struct HeroPanel: View {
 
     private func emptyTrashButton(_ figures: HomeFigures) -> some View {
         let trash = models.trash
-        let title = figures.trashBytes.map { "Empty Trash… \(Bytes.format($0))" } ?? "Empty Trash…"
+        // The size only when the whole Trash was read; a lower bound would misstate what gets deleted.
+        let size = figures.trashIsLowerBound ? nil : figures.trashBytes
+        let title = size.map { "Empty Trash… \(Bytes.format($0))" } ?? "Empty Trash…"
         return Button(title) { confirmingEmptyTrash = true }
             .monospacedDigit()
+            // Hover link from the mosaic's "in Trash" cells (DESIGN-mosaic §5).
+            .overlay {
+                RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius + 1, style: .continuous)
+                    .strokeBorder(Palette.accent, lineWidth: 2)
+                    .padding(-3)
+                    .opacity(hovered == .trash ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.hover, reduceMotion: reduceMotion), value: hovered)
             .disabled(!trash.canEmpty || trash.isEmptying)
             .help(trash.disabledReason ?? "Shows what is in the Trash and asks before deleting it")
             .onHover { inside in

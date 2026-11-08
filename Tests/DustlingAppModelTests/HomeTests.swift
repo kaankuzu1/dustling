@@ -212,61 +212,55 @@ struct ScanAgeTests {
     }
 }
 
+private func tile(
+    _ id: JunkCategoryID, _ bytes: UInt64, selected: Bool = true, stopped: Bool = false,
+    selection: Selection = .preselected
+) -> CategoryTileModel {
+    CategoryTileModel(
+        id: id, title: "\(id)", note: nil, bytes: bytes, itemCount: 1, selection: selection,
+        isSelected: selected, stopped: stopped, issues: [], inUseCount: 0)
+}
+
+private let quarter: UInt64 = 268_435_456
+
 struct HomeMosaicTests {
-    private func tile(_ id: JunkCategoryID, _ bytes: UInt64, selected: Bool = true, stopped: Bool = false) -> CategoryTileModel {
-        CategoryTileModel(
-            id: id, title: "\(id)", note: nil, bytes: bytes, itemCount: 1, selection: .preselected,
-            isSelected: selected, stopped: stopped, issues: [], inUseCount: 0)
-    }
-
-    private let quarter: UInt64 = 268_435_456
-
     @Test func reclaimableMosaicHasNoFreeOrOtherCells() {
-        let places = [Place(id: .userCaches, access: .readable), Place(id: .trash, access: .readable)]
         let layout = HomeMosaic.layout(
             tiles: [tile(.userCaches, 2 * quarter), tile(.xcodeJunk, 3 * quarter)],
-            excluding: [], trashBytes: quarter, places: places)
+            excluding: [], trashBytes: quarter, lockedCells: 1)
         #expect(layout.cells == [
             .category(.xcodeJunk), .category(.xcodeJunk), .category(.xcodeJunk),
-            .category(.userCaches), .category(.userCaches), .inTrash,
+            .category(.userCaches), .category(.userCaches), .inTrash, .locked,
         ])
         #expect(layout.rows == 4)
-    }
-
-    @Test func lockedAndUnreadablePlacesAreHatchedNeverZero() {
-        let places = [
-            Place(id: .userCaches, access: .readable), Place(id: .xcodeJunk, access: .locked),
-            Place(id: .userLogs, access: .unreadable), Place(id: .trash, access: .locked),
-        ]
-        let layout = HomeMosaic.layout(tiles: [tile(.userCaches, quarter)], excluding: [], trashBytes: nil, places: places)
-        #expect(layout.cells.filter { $0 == .locked }.count == 3)
-        #expect(!layout.cells.contains(.inTrash))
-    }
-
-    @Test func unreadableTrashInAReadablePlaceStillShowsLocked() {
-        let places = [Place(id: .trash, access: .readable)]
-        let layout = HomeMosaic.layout(tiles: [], excluding: [], trashBytes: nil, places: places)
-        #expect(layout.cells == [.locked])
     }
 
     @Test func cleanedCategoriesLeaveTheMosaic() {
         let layout = HomeMosaic.layout(
             tiles: [tile(.userCaches, quarter), tile(.userLogs, quarter)], excluding: [.userCaches],
-            trashBytes: 0, places: [])
+            trashBytes: 0, lockedCells: 0)
         #expect(layout.cells == [.category(.userLogs)])
         #expect(HomeMosaic.reclaimableBytes(
             tiles: [tile(.userCaches, quarter), tile(.userLogs, quarter)], excluding: [.userCaches], trashBytes: 5)
             == quarter + 5)
     }
 
-    @Test func onlyReadablePlacesAreScanned() throws {
+    @Test func onlyReadablePlacesAreScannedAndNeverTheTrash() throws {
         let rig = try ModelRig()
         let catalog = JunkCatalog.standard(rig.environment, options: rig.options)
-        let places = catalog.map { Place(id: $0.id, access: $0.id == .userLogs ? .readable : .locked) }
+        let places = catalog.map { Place(id: $0.id, access: [.userLogs, .trash].contains($0.id) ? .readable : .locked) }
         #expect(HomeMosaic.scannable(catalog, places: places).map(\.id) == [.userLogs])
         #expect(HomeMosaic.scannable(catalog, places: nil).isEmpty)
         let unreadable = catalog.map { Place(id: $0.id, access: $0.id == .userLogs ? .unreadable : .readable) }
         #expect(!HomeMosaic.scannable(catalog, places: unreadable).map(\.id).contains(.userLogs))
+    }
+
+    @Test func appCachesWithoutContainersScanOnlyTheirPlainRoots() throws {
+        let rig = try ModelRig()
+        let catalog = JunkCatalog.standard(rig.environment, options: rig.options)
+        let places = [Place(id: .userCaches, access: .readable, lockedExpansions: true)]
+        let scanned = try #require(HomeMosaic.scannable(catalog, places: places).first)
+        #expect(scanned.id == .userCaches && scanned.expansions.isEmpty)
     }
 
     @Test func accessibilitySummaryReadsAsOneSentence() {
@@ -274,5 +268,110 @@ struct HomeMosaicTests {
             == "Reclaimable: 15 GB in 6 categories; 5 places locked")
         #expect(HomeMosaic.accessibilitySummary(reclaimable: UInt64(gb), categories: 1, locked: 0)
             == "Reclaimable: 1 GB in 1 category")
+    }
+}
+
+struct HomeScanScopeTests {
+    @Test func scopeGrowsWhenAPlaceOpensOrAContainerPartUnlocks() {
+        let limited = [
+            Place(id: .userLogs, access: .readable), Place(id: .xcodeJunk, access: .locked),
+            Place(id: .userCaches, access: .readable, lockedExpansions: true), Place(id: .trash, access: .locked),
+        ]
+        let scope = HomeScanScope.make(places: limited)
+        #expect(scope == HomeScanScope(full: [.userLogs], partial: [.userCaches]))
+        #expect(!scope.isOutgrown(by: limited))
+        let granted = [
+            Place(id: .userLogs, access: .readable), Place(id: .xcodeJunk, access: .readable),
+            Place(id: .userCaches, access: .readable), Place(id: .trash, access: .readable),
+        ]
+        #expect(scope.isOutgrown(by: granted))
+        #expect(scope.isOutgrown(by: [Place(id: .userCaches, access: .readable)]))
+        // Losing access never asks for a rescan.
+        #expect(!HomeScanScope.make(places: granted).isOutgrown(by: limited))
+    }
+}
+
+struct HomeFiguresTests {
+    private func input(
+        phase: HomeFigures.Phase = .ready, tiles: [CategoryTileModel] = [], selected: UInt64 = 0,
+        trash: HomeFigures.TrashReading = .read(bytes: 0, externalSkipped: false), places: [Place]? = [],
+        scope: HomeScanScope? = HomeScanScope(), available: Int64? = 10 * gb
+    ) -> HomeFigures.Input {
+        HomeFigures.Input(
+            available: available, goal: UpdateGoal(neededBytes: 30 * gb), phase: phase, tiles: tiles,
+            selectedBytes: selected, trash: trash, places: places, scanScope: scope)
+    }
+
+    @Test func readyCountsSafeJunkAndTrashInTheMeter() {
+        let figures = HomeFigures.make(input(
+            tiles: [tile(.userLogs, quarter), tile(.iosBackups, 2 * quarter, selected: false, selection: .review)],
+            selected: quarter, trash: .read(bytes: 1000, externalSkipped: false),
+            places: [Place(id: .userLogs, access: .readable), Place(id: .iosBackups, access: .readable)],
+            scope: HomeScanScope(full: [.userLogs, .iosBackups])))
+        #expect(figures.safeJunk == quarter)
+        #expect(figures.reviewJunk == 2 * quarter)
+        #expect(figures.afterCleanup == 10 * gb + Int64(quarter) + 1000)
+        #expect(!figures.isLowerBound && !figures.afterCleanupIsLowerBound)
+        #expect(figures.reclaimable == 3 * quarter + 1000)
+        #expect(figures.shortfall == 20 * gb)
+    }
+
+    @Test func movingNibblesSelectedAndDoneMovesThemToTheTrash() {
+        let tiles = [tile(.userLogs, quarter), tile(.userCaches, quarter, selected: false), tile(.xcodeJunk, quarter, stopped: true)]
+        let moving = HomeFigures.make(input(phase: .moving, tiles: tiles, selected: quarter))
+        #expect(moving.nibbling == [.userLogs])
+        #expect(moving.cleaned.isEmpty)
+        let done = HomeFigures.make(input(phase: .done, tiles: tiles, selected: quarter))
+        #expect(done.cleaned == [.userLogs])
+        #expect(done.nibbling.isEmpty)
+        #expect(done.safeJunk == 0)
+        #expect(!done.mosaic.cells.contains(.category(.userLogs)))
+        #expect(done.isLowerBound)   // the stopped tile
+    }
+
+    @Test func notScannedYetHasNoTotals() {
+        let figures = HomeFigures.make(input(phase: .scanning, selected: quarter))
+        #expect(!figures.scanFinished)
+        #expect(figures.reclaimable == nil)
+        #expect(figures.afterCleanup == 10 * gb)
+    }
+
+    @Test func unreadableTrashShowsWhatDustlingMovedAsALowerBound() {
+        let places = [Place(id: .trash, access: .locked)]
+        let figures = HomeFigures.make(input(trash: .unreadable(movedSinceLastEmpty: 3 * quarter), places: places))
+        #expect(figures.trashBytes == 3 * quarter)
+        #expect(figures.trashIsLowerBound && figures.isLowerBound && figures.afterCleanupIsLowerBound)
+        #expect(figures.mosaic.cells.filter { $0 == .inTrash }.count == 3)
+        // The locked Trash place is one hatched cell, not two.
+        #expect(figures.lockedCells == 1)
+    }
+
+    @Test func unreadableTrashInAnOpenPlaceAndSkippedVolumesAreLocked() {
+        #expect(HomeFigures.lockedCells(
+            places: [Place(id: .trash, access: .readable)], trash: .unreadable(movedSinceLastEmpty: 0), scope: nil) == 1)
+        let skipped = HomeFigures.make(input(trash: .read(bytes: 10, externalSkipped: true), places: [Place(id: .trash, access: .readable)]))
+        #expect(skipped.lockedCells == 1)
+        #expect(skipped.trashIsLowerBound && skipped.isLowerBound)
+    }
+
+    @Test func placesThatOpenedAfterTheScanStayLockedUntilARescan() {
+        // Scanned in limited mode; Full Disk Access arrived since.
+        let scope = HomeScanScope(full: [.userLogs], partial: [.userCaches])
+        let now = [
+            Place(id: .userLogs, access: .readable), Place(id: .xcodeJunk, access: .readable),
+            Place(id: .userCaches, access: .readable),
+        ]
+        let figures = HomeFigures.make(input(tiles: [tile(.userLogs, quarter), tile(.userCaches, quarter)], places: now, scope: scope))
+        #expect(figures.lockedCells == 2)   // Xcode (not scanned) and the container part of app caches
+        #expect(figures.isLowerBound)
+        let rescanned = HomeFigures.make(input(places: now, scope: HomeScanScope.make(places: now)))
+        #expect(rescanned.lockedCells == 0)
+        #expect(!rescanned.isLowerBound)
+    }
+
+    @Test func lockedPlacesMakeTotalsALowerBound() {
+        let figures = HomeFigures.make(input(places: [Place(id: .xcodeJunk, access: .locked)]))
+        #expect(figures.lockedCells == 1)
+        #expect(figures.isLowerBound)
     }
 }

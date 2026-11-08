@@ -19,8 +19,13 @@ struct MosaicView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var width: CGFloat = 0
     @State private var nibbleStart: Date?
+    @State private var nibbleFinished = false
 
     private typealias Palette = DustlingTheme.Palette
+
+    /// "In Trash" stripes: `muted` at 55%, clearly darker than the locked cells' `line` stripes in
+    /// light mode and brighter than them in dark mode, so the two hatches are easy to tell apart.
+    static let inTrashStripes = Palette.muted.opacity(0.55)
 
     /// Cells never grow past this, so a small mosaic doesn't turn into giant tiles.
     static let maxCell: CGFloat = 14
@@ -47,10 +52,7 @@ struct MosaicView: View {
         let metrics = metrics(for: width)
         let height = CGFloat(layout.rows) * metrics.pitch - metrics.gap
         let nibbleCells = nibbleOrder()
-        let nibbleDone = nibbleStart.map {
-            Date.now.timeIntervalSince($0) > Nibble.totalDuration(cells: nibbleCells.count, reduceMotion: reduceMotion)
-        } ?? true
-        TimelineView(.animation(paused: reduceMotion || nibbling.isEmpty || nibbleDone)) { context in
+        TimelineView(.animation(paused: reduceMotion || nibbling.isEmpty || nibbleFinished)) { context in
             let elapsed = nibbleStart.map { context.date.timeIntervalSince($0) } ?? 0
             Canvas { canvas, _ in
                 draw(in: &canvas, metrics: metrics, nibbleOrder: nibbleCells, elapsed: elapsed)
@@ -72,8 +74,14 @@ struct MosaicView: View {
             case .ended: hovered = nil
             }
         }
-        .onChange(of: nibbling, initial: true) { _, new in
-            nibbleStart = new.isEmpty ? nil : .now
+        // The timeline runs only while cells are still going, then stops.
+        .task(id: nibbling) {
+            nibbleFinished = false
+            nibbleStart = nibbling.isEmpty ? nil : .now
+            guard !nibbling.isEmpty else { return }
+            let duration = Nibble.totalDuration(cells: nibbleOrder().count, reduceMotion: reduceMotion)
+            try? await Task.sleep(for: .seconds(duration))
+            if !Task.isCancelled { nibbleFinished = true }
         }
         .accessibilityElement()
         .accessibilityLabel(accessibilitySummary)
@@ -117,7 +125,7 @@ struct MosaicView: View {
             case .category(let id):
                 layer.fill(Path(rect), with: .color(Self.color(for: id)))
             case .inTrash:
-                Self.hatch(rect, stripes: Palette.neutralCell, ground: nil, in: &layer)
+                Self.hatch(rect, stripes: Self.inTrashStripes, ground: nil, in: &layer)
             case .locked:
                 Self.hatch(rect, stripes: Palette.line, ground: Palette.panel, in: &layer)
             case .free:

@@ -23,16 +23,34 @@ public final class TrashModel {
     /// Set when the history could not be read, so the in-Trash number may be missing runs.
     public private(set) var historyProblem: String?
 
-    @ObservationIgnored private let inspector: TrashInspector
+    /// True when the last refresh looked only at `~/.Trash`: without Full Disk Access the Trash folders
+    /// on other volumes are never opened (a removable or network volume can ask for consent). Their
+    /// contents are then unknown, so show them as locked and totals as a lower bound.
+    public private(set) var externalVolumesSkipped = false
+
+    /// Builds the inspector for one refresh: `true` includes other volumes' Trash folders.
+    @ObservationIgnored private let makeInspector: @Sendable (_ includeExternalVolumes: Bool) -> TrashInspector
+    /// The inspector the shown contents came from; Empty Trash re-reads and empties with the same one.
+    @ObservationIgnored private var inspector: TrashInspector
     @ObservationIgnored private let journal: RunJournal
     @ObservationIgnored private let onRunCompleted: @MainActor () -> Void
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var lastAccess = false
     public private(set) var isEmptying = false
 
-    public init(
+    public convenience init(
         inspector: TrashInspector, journal: RunJournal, onRunCompleted: @escaping @MainActor () -> Void = {}
     ) {
-        self.inspector = inspector
+        self.init(makeInspector: { _ in inspector }, journal: journal, onRunCompleted: onRunCompleted)
+    }
+
+    /// `makeInspector(true)` must include other volumes' Trash folders, `makeInspector(false)` only `~/.Trash`.
+    public init(
+        makeInspector: @escaping @Sendable (_ includeExternalVolumes: Bool) -> TrashInspector, journal: RunJournal,
+        onRunCompleted: @escaping @MainActor () -> Void = {}
+    ) {
+        self.makeInspector = makeInspector
+        self.inspector = makeInspector(false)
         self.journal = journal
         self.onRunCompleted = onRunCompleted
     }
@@ -53,16 +71,27 @@ public final class TrashModel {
         return nil
     }
 
+    /// Re-reads the Trash. Without Full Disk Access only `~/.Trash` is looked at.
+    public func refresh(fullDiskAccessGranted: Bool) async {
+        lastAccess = fullDiskAccessGranted
+        await refresh()
+    }
+
+    /// Re-reads the Trash with the access the last `refresh(fullDiskAccessGranted:)` reported
+    /// (none until then: only `~/.Trash`).
     public func refresh() async {
         generation += 1
         let mine = generation
-        let inspector = self.inspector
+        let external = lastAccess
+        let inspector = makeInspector(external)
         let journal = self.journal
         let found = await Blocking.run { () -> Snapshot in
             let sized = inspector.sizeWithIssues()
             return Snapshot(sized: sized, inTrash: Self.inTrashBytes(journal))
         }
         guard mine == generation else { return }
+        self.inspector = inspector
+        externalVolumesSkipped = !external
         contents = found.sized
         inTrashBytesSinceLastEmpty = found.inTrash.bytes
         historyProblem = found.inTrash.problem
@@ -87,7 +116,7 @@ public final class TrashModel {
         }
         await refresh()
         guard let record = attempt else {
-            return .refused(reason: "The Trash changed since you looked at it. Check it again before emptying")
+            return .refused(reason: "The Trash changed since you looked at it. Check it again before emptying.")
         }
         onRunCompleted()
         return .emptied(record)

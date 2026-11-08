@@ -9,7 +9,7 @@ struct ToolCardRow: View {
     @Environment(AppModels.self) private var models
 
     var body: some View {
-        let figures = HomeFigures(models)
+        let figures = models.homeFigures
         HStack(alignment: .top, spacing: 14) {
             ToolCard(
                 icon: .shell(.broom), series: .c1, title: "Junk scan",

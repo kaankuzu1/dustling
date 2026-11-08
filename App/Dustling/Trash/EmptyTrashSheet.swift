@@ -51,6 +51,8 @@ struct EmptyTrashSheet: View {
         .padding(20)
         .frame(width: 420)
         .background(Palette.ground)
+        // Show what is in the Trash now, not what it held when Home last looked.
+        .task { models.refreshTrash() }
     }
 
     private func empty() {

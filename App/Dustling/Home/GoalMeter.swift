@@ -8,6 +8,8 @@ import SwiftUI
 struct GoalMeterView: View {
     let available: Int64
     let afterCleanup: Int64
+    /// The Trash couldn't be read in full: the after-cleanup figure is at least this.
+    var afterCleanupIsLowerBound = false
     let needed: Int64
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -36,7 +38,10 @@ struct GoalMeterView: View {
 
             HStack(spacing: 14) {
                 legend("Available now", Bytes.format(available), color: Palette.accent)
-                legend("After junk cleanup and Empty Trash", Bytes.format(afterCleanup), color: Self.afterCleanupColor)
+                legend(
+                    "After junk cleanup and Empty Trash",
+                    Bytes.format(afterCleanup) + (afterCleanupIsLowerBound ? " or more" : ""),
+                    color: Self.afterCleanupColor)
                 Spacer(minLength: 8)
                 UpdateCheckControl()
             }

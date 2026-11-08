@@ -81,8 +81,24 @@ struct PlacesModelTests {
         #expect(!probed.contains { $0.hasPrefix(downloads) })
         // Other apps' containers ask "access data from other apps" without Full Disk Access.
         #expect(!probed.contains { $0.hasPrefix(containers) })
-        #expect(places.filter { $0.access == .locked }.map(\.id)
-            == [.userCaches, .oldInstallers, .largeOldDownloads, .mailDownloads])
+        #expect(places.filter { $0.access == .locked }.map(\.id) == [.oldInstallers, .largeOldDownloads, .mailDownloads])
+        // App caches still open at ~/Library/Caches; only their container part is locked.
+        let caches = try #require(places.first { $0.id == .userCaches })
+        #expect(caches.access == .readable && caches.lockedExpansions)
+        #expect(places.filter(\.lockedExpansions).map(\.id) == [.userCaches])
+    }
+
+    @Test func lockedExpansionsAreLeftOutOfTheScan() throws {
+        let rig = try ModelRig()
+        let caches = try #require(JunkCatalog.standard(rig.environment, options: rig.options).first { $0.id == .userCaches })
+        let partial = try #require(PlaceAccessChecker.scannableCategory(
+            caches, place: Place(id: .userCaches, access: .readable, lockedExpansions: true)))
+        #expect(partial.expansions.isEmpty)
+        #expect(partial.roots == caches.roots)
+        let full = try #require(PlaceAccessChecker.scannableCategory(caches, place: Place(id: .userCaches, access: .readable)))
+        #expect(full.expansions.count == 1)
+        #expect(PlaceAccessChecker.scannableCategory(caches, place: Place(id: .userCaches, access: .locked)) == nil)
+        #expect(PlaceAccessChecker.scannableCategory(caches, place: nil) == nil)
     }
 
     @Test func consentFoldersAreProbedWithFullDiskAccess() throws {
@@ -98,7 +114,7 @@ struct PlacesModelTests {
         }
         #expect(probed.contains { $0.contains("/Downloads") })
         #expect(probed.contains { $0.hasSuffix("/Library/Containers") })
-        #expect(places.allSatisfy { $0.access == .readable })
+        #expect(places.allSatisfy { $0.access == .readable && !$0.lockedExpansions })
     }
 
     @Test @MainActor func modelPassesFullDiskAccessToTheCheck() async {

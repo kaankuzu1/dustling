@@ -129,7 +129,7 @@ struct StartupModelTests {
         let recorder = StartupChangeRecorder(
             scanner: scanner, journal: rig.journal, logger: RunLogger(directory: rig.environment.logsDirectory))
         let model = StartupModel(
-            scanner: scanner, recorder: recorder, fileExists: { _ in checks.bump(); return false })
+            scanner: scanner, recorder: recorder, presence: { _ in checks.bump(); return .missing })
         await model.load()
 
         #expect(model.orphanBanner?.items.map(\.label) == ["com.x.gone"])
@@ -138,4 +138,44 @@ struct StartupModelTests {
         for _ in 0..<5 { _ = model.groups; _ = model.orphanBanner }
         #expect(checks.value == afterLoad)
     }
+
+    @Test func unreadableProgramIsNotAnOrphan() throws {
+        try #require(getuid() != 0, "root can look anywhere")
+        let rig = try ModelRig()
+        let locked = rig.root.appending(path: "locked")
+        try rig.file(locked.appending(path: "tool"), bytes: 1)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path(percentEncoded: false))
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path(percentEncoded: false)) }
+        let program = locked.appending(path: "tool").path(percentEncoded: false)
+        #expect(ProgramPresence.check(program) == .unknown)
+        #expect(!ProgramPresence.isOrphan(program, unjudged: [], presence: ProgramPresence.check))
+        #expect(ProgramPresence.check(rig.root.appending(path: "nope/tool").path(percentEncoded: false)) == .missing)
+        // A file used as a folder: ENOTDIR, gone.
+        let file = try rig.file(rig.root.appending(path: "plain"), bytes: 1)
+        #expect(ProgramPresence.check(file.appending(path: "tool").path(percentEncoded: false)) == .missing)
+    }
+
+    @Test func programsInConsentFoldersAreNeverLookedAt() async throws {
+        let rig = try ModelRig()
+        let agents = rig.environment.userLibrary.appending(path: "LaunchAgents")
+        let downloads = rig.environment.home.appending(path: "Downloads")
+        try rig.writeLaunchPlist(agents, label: "com.x.dl", program: downloads.appending(path: "gone").path(percentEncoded: false))
+        try rig.writeLaunchPlist(agents, label: "com.x.vol", program: "/Volumes/Stick/gone")
+        try rig.writeLaunchPlist(agents, label: "com.x.gone", program: "/nope/gone")
+        let looked = Paths()
+        let scanner = rig.startupScanner()
+        let recorder = StartupChangeRecorder(
+            scanner: scanner, journal: rig.journal, logger: RunLogger(directory: rig.environment.logsDirectory))
+        let model = StartupModel(scanner: scanner, recorder: recorder, presence: { looked.add($0); return .missing })
+        await model.load(unjudged: [downloads, URL(filePath: "/Volumes")])
+        #expect(model.orphanBanner?.items.map(\.label) == ["com.x.gone"])
+        #expect(looked.all == ["/nope/gone"])
+    }
+}
+
+private final class Paths: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String] = []
+    func add(_ path: String) { lock.withLock { paths.append(path) } }
+    var all: [String] { lock.withLock { paths } }
 }

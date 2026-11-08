@@ -58,4 +58,19 @@ struct UpdateSizeCheckTests {
         await check.awaitCheck()
         #expect(calls == 1)
     }
+
+    @Test func restartAfterCancelReattachesInsteadOfRunningTwice() async {
+        let gate = Gate()
+        let calls = Counter()
+        let check = UpdateSizeCheck(measure: { calls.bump(); gate.wait(); return 5 })
+        check.start()
+        #expect(await waitUntil { gate.hasEntered })
+        check.cancel()
+        check.start()
+        #expect(check.state == .checking)
+        gate.open()
+        await check.awaitCheck()
+        #expect(calls.value == 1)
+        #expect(check.state == .measured(5))
+    }
 }

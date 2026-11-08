@@ -225,23 +225,14 @@ public enum ScanAge {
 /// storage mosaic it has no free or "other" cells.
 public enum HomeMosaic {
     /// `excluding`: categories a finished cleanup moved to the Trash (they now count in `trashBytes`).
-    /// `trashBytes` nil means the Trash couldn't be read. Places that are locked or unreadable get
-    /// one hatched cell each, and so does an unreadable Trash in a place that reads as open.
+    /// `lockedCells`: one hatched cell per place Dustling couldn't read or scan (`HomeFigures`).
     public static func layout(
-        tiles: [CategoryTileModel], excluding: Set<JunkCategoryID>, trashBytes: UInt64?, places: [Place]?
+        tiles: [CategoryTileModel], excluding: Set<JunkCategoryID>, trashBytes: UInt64?, lockedCells: Int
     ) -> MosaicLayout {
         let shown = tiles.filter { !excluding.contains($0.id) && $0.id != .trash }
         return MosaicLayout.make(
             totalBytes: 0, availableBytes: 0, categories: shown.map { ($0.id, $0.bytes) },
-            inTrashBytes: trashBytes ?? 0, lockedPlaces: lockedCount(places: places, trashReadable: trashBytes != nil))
-    }
-
-    public static func lockedCount(places: [Place]?, trashReadable: Bool) -> Int {
-        let places = places ?? []
-        var count = places.filter { $0.access != .readable }.count
-        let trashPlaceOpen = places.first { $0.id == .trash }.map { $0.access == .readable } ?? true
-        if !trashReadable && trashPlaceOpen { count += 1 }
-        return count
+            inTrashBytes: trashBytes ?? 0, lockedPlaces: lockedCells)
     }
 
     public static func reclaimableBytes(
@@ -250,12 +241,16 @@ public enum HomeMosaic {
         tiles.filter { !excluding.contains($0.id) && $0.id != .trash }.reduce(trashBytes ?? 0) { $0 + $1.bytes }
     }
 
-    /// The categories a scan may open: only places that read as open. Nil places (not checked yet)
-    /// scan nothing, so a scan never opens a folder that would ask for consent.
+    /// The categories a scan may open: only places that read as open, without their locked
+    /// expansions. Nil places (not checked yet) scan nothing, so a scan never opens a folder that
+    /// would ask for consent. The Trash is left out: `TrashModel` reads it, and only with Full Disk
+    /// Access does it look at other volumes.
     public static func scannable(_ catalog: [JunkCategory], places: [Place]?) -> [JunkCategory] {
         guard let places else { return [] }
-        let access = Dictionary(places.map { ($0.id, $0.access) }, uniquingKeysWith: { first, _ in first })
-        return catalog.filter { access[$0.id] == .readable }
+        let byID = Dictionary(places.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return catalog.compactMap { category in
+            category.id == .trash ? nil : PlaceAccessChecker.scannableCategory(category, place: byID[category.id])
+        }
     }
 
     /// What VoiceOver reads for the mosaic.
@@ -263,5 +258,168 @@ public enum HomeMosaic {
         var text = "Reclaimable: \(Bytes.format(reclaimable)) in \(categories) \(categories == 1 ? "category" : "categories")"
         if locked > 0 { text += "; \(locked) \(locked == 1 ? "place" : "places") locked" }
         return text
+    }
+}
+
+/// Which places a junk scan covered: fully, or only their plain roots (expansions locked).
+public struct HomeScanScope: Equatable, Sendable {
+    public var full: Set<JunkCategoryID>
+    public var partial: Set<JunkCategoryID>
+
+    public init(full: Set<JunkCategoryID> = [], partial: Set<JunkCategoryID> = []) {
+        self.full = full
+        self.partial = partial
+    }
+
+    /// The scope a scan of `HomeMosaic.scannable(_, places:)` has.
+    public static func make(places: [Place]?) -> HomeScanScope {
+        var scope = HomeScanScope()
+        for place in places ?? [] where place.access == .readable && place.id != .trash {
+            if place.lockedExpansions { scope.partial.insert(place.id) } else { scope.full.insert(place.id) }
+        }
+        return scope
+    }
+
+    /// True when `places` now open something this scope didn't scan: a new place, or the locked part
+    /// of a partly scanned one. Home then scans again.
+    public func isOutgrown(by places: [Place]?) -> Bool {
+        let now = Self.make(places: places)
+        return !now.full.isSubset(of: full) || !now.partial.isSubset(of: full.union(partial))
+    }
+}
+
+/// What Home shows, worked out from the shared models' state in one place.
+public struct HomeFigures: Equatable, Sendable {
+    public enum Phase: Equatable, Sendable { case notScanned, scanning, ready, moving, done }
+
+    /// The Trash as `TrashModel` last read it.
+    public enum TrashReading: Equatable, Sendable {
+        case unknown
+        /// `externalSkipped`: other volumes' Trash folders weren't opened (no Full Disk Access).
+        case read(bytes: UInt64, externalSkipped: Bool)
+        /// The Trash couldn't be read; `movedSinceLastEmpty` is what Dustling's own runs put there.
+        case unreadable(movedSinceLastEmpty: UInt64)
+    }
+
+    public struct Input: Sendable {
+        public var available: Int64?
+        public var goal: UpdateGoal
+        public var phase: Phase
+        public var tiles: [CategoryTileModel]
+        /// `JunkScanModel.selectedBytes`.
+        public var selectedBytes: UInt64
+        public var trash: TrashReading
+        public var places: [Place]?
+        /// The scope of the last junk scan; nil before one.
+        public var scanScope: HomeScanScope?
+
+        public init(
+            available: Int64?, goal: UpdateGoal, phase: Phase, tiles: [CategoryTileModel], selectedBytes: UInt64,
+            trash: TrashReading, places: [Place]?, scanScope: HomeScanScope?
+        ) {
+            self.available = available
+            self.goal = goal
+            self.phase = phase
+            self.tiles = tiles
+            self.selectedBytes = selectedBytes
+            self.trash = trash
+            self.places = places
+            self.scanScope = scanScope
+        }
+    }
+
+    /// `volumeAvailableCapacityForImportantUsage`, what the macOS updater counts. nil until read.
+    public let available: Int64?
+    public let hero: HomeHero?
+    /// True once a scan has finished and no scan is running.
+    public let scanFinished: Bool
+    public let safeJunk: UInt64
+    public let reviewJunk: UInt64
+    /// What the Trash cells and the meter count: everything in the Trash, or (unreadable) at least what
+    /// Dustling moved there. nil while unread.
+    public let trashBytes: UInt64?
+    public let trashIsLowerBound: Bool
+    public let reclaimable: UInt64?
+    /// Something wasn't read or scanned in full: totals read "or more".
+    public let isLowerBound: Bool
+    /// Available after junk cleanup and Empty Trash; nil until storage is read.
+    public let afterCleanup: Int64?
+    public let afterCleanupIsLowerBound: Bool
+    public let lockedCells: Int
+    public let mosaic: MosaicLayout
+    public let mosaicSummary: String
+    /// Categories a finished cleanup moved to the Trash.
+    public let cleaned: Set<JunkCategoryID>
+    /// Categories being moved right now; their cells nibble away.
+    public let nibbling: Set<JunkCategoryID>
+
+    public var shortfall: Int64 {
+        if case .needMore(let shortfall) = hero { return shortfall }
+        return 0
+    }
+
+    public static func make(_ input: Input) -> HomeFigures {
+        let selected = Set(input.tiles.filter { $0.isSelected && !$0.stopped }.map(\.id))
+        let finished: Bool
+        var cleaned: Set<JunkCategoryID> = [], moving: Set<JunkCategoryID> = []
+        switch input.phase {
+        case .notScanned, .scanning: finished = false
+        case .ready: finished = true
+        case .moving: finished = true; moving = selected
+        case .done: finished = true; cleaned = selected
+        }
+        let open = input.tiles.filter { !cleaned.contains($0.id) && $0.id != .trash }
+
+        let trashBytes: UInt64?, trashLower: Bool
+        switch input.trash {
+        case .unknown: trashBytes = nil; trashLower = false
+        case .read(let bytes, let skipped): trashBytes = bytes; trashLower = skipped
+        case .unreadable(let moved): trashBytes = moved; trashLower = true
+        }
+
+        let locked = lockedCells(
+            places: input.places, trash: input.trash, scope: finished ? input.scanScope : nil)
+        let lower = input.tiles.contains { $0.stopped } || locked > 0 || trashLower
+        let reclaim = HomeMosaic.reclaimableBytes(tiles: input.tiles, excluding: cleaned, trashBytes: trashBytes)
+        let safe = input.phase == .done ? 0 : input.selectedBytes
+        let after = input.available.map { available in
+            finished ? available + Int64(clamping: safe + (trashBytes ?? 0)) : available
+        }
+        return HomeFigures(
+            available: input.available,
+            hero: input.available.map { HomeHero.make(available: $0, goal: input.goal) },
+            scanFinished: finished,
+            safeJunk: safe,
+            reviewJunk: open.filter { $0.selection == .review }.reduce(0) { $0 + $1.bytes },
+            trashBytes: trashBytes, trashIsLowerBound: trashLower,
+            reclaimable: finished ? reclaim : nil, isLowerBound: lower,
+            afterCleanup: after, afterCleanupIsLowerBound: finished && trashLower,
+            lockedCells: locked,
+            mosaic: HomeMosaic.layout(tiles: input.tiles, excluding: cleaned, trashBytes: trashBytes, lockedCells: locked),
+            mosaicSummary: HomeMosaic.accessibilitySummary(
+                reclaimable: reclaim, categories: open.filter { $0.bytes > 0 }.count, locked: locked),
+            cleaned: cleaned, nibbling: moving)
+    }
+
+    /// One hatched cell per place Dustling couldn't read (locked or unreadable), per place the last
+    /// scan covered only in part or not at all (it opened later), for an unreadable Trash in a place
+    /// that reads as open, and for other volumes' Trash folders it didn't open.
+    public static func lockedCells(places: [Place]?, trash: TrashReading, scope: HomeScanScope?) -> Int {
+        let places = places ?? []
+        var count = 0
+        for place in places {
+            if place.access != .readable { count += 1; continue }
+            guard place.id != .trash, let scope else { continue }
+            if !scope.full.contains(place.id) { count += 1 }
+        }
+        let trashPlaceOpen = places.first { $0.id == .trash }.map { $0.access == .readable } ?? true
+        if trashPlaceOpen {
+            switch trash {
+            case .unreadable: count += 1
+            case .read(_, let skipped) where skipped: count += 1
+            default: break
+            }
+        }
+        return count
     }
 }

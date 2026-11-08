@@ -73,32 +73,33 @@ public final class StartupModel {
 
     @ObservationIgnored private let scanner: StartupItemScanner
     @ObservationIgnored private let recorder: StartupChangeRecorder
-    @ObservationIgnored private let fileExists: @Sendable (String) -> Bool
+    @ObservationIgnored private let presence: @Sendable (String) -> ProgramPresence
     @ObservationIgnored private let onRunCompleted: @MainActor () -> Void
     @ObservationIgnored private var generation = 0
 
     public init(
         scanner: StartupItemScanner, recorder: StartupChangeRecorder,
-        fileExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        presence: @escaping @Sendable (String) -> ProgramPresence = ProgramPresence.check,
         onRunCompleted: @escaping @MainActor () -> Void = {}
     ) {
         self.scanner = scanner
         self.recorder = recorder
-        self.fileExists = fileExists
+        self.presence = presence
         self.onRunCompleted = onRunCompleted
     }
 
-    public func load() async {
+    /// Reads the startup items and judges which point to a program that is gone. Programs under
+    /// `unjudged` (folders that ask for consent without Full Disk Access, and other volumes) are never
+    /// looked at, so loading can't raise a prompt; they are simply not called orphans.
+    public func load(unjudged: [URL] = []) async {
         generation += 1
         let mine = generation
         isLoading = true
-        let scanner = self.scanner, fileExists = self.fileExists
+        let scanner = self.scanner, presence = self.presence
         let found = await Blocking.run { () -> ([StartupItem], [ScanIssue], [StartupItem]) in
             let scanned = scanner.scanWithIssues()
-            // Only an absolute program path can be judged; a bare name is looked up on PATH at launch.
-            let orphans = scanned.items.filter { item in
-                guard let program = item.program, program.hasPrefix("/") else { return false }
-                return !fileExists(program)
+            let orphans = scanned.items.filter {
+                ProgramPresence.isOrphan($0.program, unjudged: unjudged, presence: presence)
             }
             return (scanned.items, scanned.issues, orphans)
         }
@@ -161,5 +162,37 @@ public final class StartupModel {
         await load()
         onRunCompleted()
         return record
+    }
+}
+
+/// Whether a startup item's program is still on disk.
+public enum ProgramPresence: Equatable, Sendable {
+    case present
+    /// `lstat` said ENOENT or ENOTDIR: the program is gone.
+    case missing
+    /// It couldn't be looked at (EPERM, EACCES, …). Never counted as gone.
+    case unknown
+
+    public static func check(_ path: String) -> ProgramPresence {
+        var info = stat()
+        if lstat(path, &info) == 0 { return .present }
+        switch errno {
+        case ENOENT, ENOTDIR: return .missing
+        default: return .unknown
+        }
+    }
+
+    /// Only an absolute program path can be judged (a bare name is looked up on PATH at launch), and
+    /// only outside `unjudged`. Orphaned only when the program is known to be missing.
+    public static func isOrphan(
+        _ program: String?, unjudged: [URL], presence: (String) -> ProgramPresence
+    ) -> Bool {
+        guard let program, program.hasPrefix("/") else { return false }
+        let path = URL(filePath: program).standardizedFileURL.pathComponents
+        for folder in unjudged {
+            let prefix = folder.standardizedFileURL.pathComponents
+            if path.count >= prefix.count && Array(path.prefix(prefix.count)) == prefix { return false }
+        }
+        return presence(program) == .missing
     }
 }

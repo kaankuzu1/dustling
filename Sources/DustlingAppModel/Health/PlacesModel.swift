@@ -18,10 +18,15 @@ public enum PlaceAccess: Equatable, Sendable {
 public struct Place: Equatable, Sendable, Identifiable {
     public let id: JunkCategoryID
     public let access: PlaceAccess
+    /// The place's plain roots open, but its expanded roots (other apps' containers) are never opened
+    /// without Full Disk Access. A scan then covers only part of it: show the rest as locked and the
+    /// total as a lower bound.
+    public let lockedExpansions: Bool
 
-    public init(id: JunkCategoryID, access: PlaceAccess) {
+    public init(id: JunkCategoryID, access: PlaceAccess, lockedExpansions: Bool = false) {
         self.id = id
         self.access = access
+        self.lockedExpansions = lockedExpansions
     }
 
     /// How the place reads inside a sentence, e.g. "Dustling can't see Xcode data or the Trash".
@@ -59,7 +64,9 @@ public enum PlaceAccessChecker {
     ///
     /// Roots inside `consentFolders` (Downloads, Desktop, Documents, other apps' containers) are never opened without Full Disk
     /// Access: macOS would show a consent prompt and block until it is answered. Without Full Disk
-    /// Access they count as locked, which is what they are until the user allows them.
+    /// Access they count as locked, which is what they are until the user allows them. An expansion
+    /// parent inside them doesn't lock a place that also has plain roots: the place reads as open with
+    /// `lockedExpansions`, and a scan leaves the expansion out (`scannableCategory`).
     ///
     /// A refusal only means "needs Full Disk Access" while access is off. With access on it, and any
     /// other error, make the place `.unreadable`; other errors are logged.
@@ -68,15 +75,26 @@ public enum PlaceAccessChecker {
         probe: (URL) -> PathAccess = PlaceAccessChecker.probe
     ) -> [Place] {
         let consent = consentFolders.map(components)
-        func access(_ url: URL) -> PathAccess {
+        func asksConsent(_ url: URL) -> Bool {
+            guard !fullDiskAccessGranted else { return false }
             let path = components(url)
-            let asksConsent = consent.contains { path.count >= $0.count && Array(path.prefix($0.count)) == $0 }
-            if asksConsent && !fullDiskAccessGranted { return .denied }
-            return probe(url)
+            return consent.contains { path.count >= $0.count && Array(path.prefix($0.count)) == $0 }
+        }
+        func access(_ url: URL) -> PathAccess {
+            asksConsent(url) ? .denied : probe(url)
         }
         return categories.map { category in
             var result = PlaceAccess.readable
-            for url in category.roots + category.expansions.map(\.parent) {
+            var lockedExpansions = false
+            var urls = category.roots
+            for parent in category.expansions.map(\.parent) {
+                if asksConsent(parent) && !category.roots.isEmpty {
+                    lockedExpansions = true
+                } else {
+                    urls.append(parent)
+                }
+            }
+            for url in urls {
                 switch access(url) {
                 case .ok, .missing:
                     continue
@@ -90,8 +108,19 @@ public enum PlaceAccessChecker {
                     if result != .locked { result = .unreadable }
                 }
             }
-            return Place(id: category.id, access: result)
+            return Place(id: category.id, access: result, lockedExpansions: result == .readable && lockedExpansions)
         }
+    }
+
+    /// What a scan of `category` may open given its place: nothing unless the place reads as open,
+    /// and only the plain roots when its expansions are locked.
+    public static func scannableCategory(_ category: JunkCategory, place: Place?) -> JunkCategory? {
+        guard let place, place.access == .readable else { return nil }
+        guard place.lockedExpansions else { return category }
+        return JunkCategory(
+            id: category.id, title: category.title, selection: category.selection,
+            requiresAdmin: category.requiresAdmin, roots: category.roots, expansions: [],
+            itemFilter: category.itemFilter, measuredFilter: category.measuredFilter)
     }
 
     /// The folders macOS guards with their own consent prompt, for `check`: Downloads, Desktop and

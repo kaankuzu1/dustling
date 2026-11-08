@@ -40,7 +40,9 @@ final class AppModels {
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
     @ObservationIgnored private let environment: SystemEnvironment
     /// The categories the next junk scan may open (see `scanJunk()`).
-    @ObservationIgnored private let scanScope: ScanScope
+    @ObservationIgnored private let scanCatalog: ScanCatalog
+    /// What the last junk scan covered; places that opened since show as not scanned until a rescan.
+    private(set) var lastScanScope: HomeScanScope?
     /// Home loads its numbers once per launch; "Scan again" reloads them.
     private(set) var homeLoaded = false
     /// The uninstaller looks inside other apps' containers, which asks for consent without Full
@@ -71,15 +73,19 @@ final class AppModels {
             mover: TrashMover(backend: SystemTrashBackend(), protectedPaths: protectedPaths),
             journal: journal, logger: logger, sizer: DirectorySizer())
         let trash = TrashModel(
-            inspector: TrashInspector(environment: environment, journal: journal, logger: logger, sizer: DirectorySizer()),
+            makeInspector: { external in
+                TrashInspector(
+                    environment: environment, journal: journal, logger: logger, sizer: DirectorySizer(),
+                    includeExternalVolumes: external)
+            },
             journal: journal,
             onRunCompleted: {
                 health.refreshLastRun()
                 Task { await storage.refresh() }
             })
         self.trash = trash
-        let scope = ScanScope()
-        scanScope = scope
+        let scope = ScanCatalog()
+        scanCatalog = scope
         junk = JunkScanModel(
             scanner: JunkScanner(environment: environment, runningBundleIDs: { AppModels.runningBundleIDs() }),
             runner: runner, journal: journal, environment: environment, options: options,
@@ -128,9 +134,9 @@ final class AppModels {
     /// "Scan again": the junk scan, the Trash, startup items and (with Full Disk Access) the apps.
     func reloadHome() {
         scanJunk()
-        Task { await trash.refresh() }
+        refreshTrash()
         Task {
-            await startup.load()
+            await startup.load(unjudged: unjudgedProgramFolders)
             startupLoaded = true
         }
         Task { await storage.refresh() }
@@ -139,8 +145,57 @@ final class AppModels {
 
     /// Starts a junk scan of the places that read as open right now.
     func scanJunk() {
-        scanScope.categories = HomeMosaic.scannable(JunkCatalog.standard(environment), places: places.places)
+        guard !junk.isBusy else { return }
+        scanCatalog.categories = HomeMosaic.scannable(JunkCatalog.standard(environment), places: places.places)
+        lastScanScope = HomeScanScope.make(places: places.places)
         junk.scan()
+    }
+
+    /// Scans again when places opened that the last scan couldn't cover (Full Disk Access arrived),
+    /// unless a scan or cleanup is running or a cleanup summary is showing.
+    func rescanIfPlacesOpened() {
+        guard homeLoaded, let scope = lastScanScope, scope.isOutgrown(by: places.places) else { return }
+        switch junk.state {
+        case .ready, .idle, .problem: scanJunk()
+        case .scanning, .moving, .done: break
+        }
+    }
+
+    /// Re-reads the Trash; other volumes' Trash folders only with Full Disk Access.
+    func refreshTrash() {
+        let granted = health.fullDiskAccess == .granted
+        Task { await trash.refresh(fullDiskAccessGranted: granted) }
+    }
+
+    /// Folders whose programs aren't looked at when judging startup items: without Full Disk Access,
+    /// the consent folders and other volumes (looking could raise a prompt).
+    private var unjudgedProgramFolders: [URL] {
+        guard health.fullDiskAccess != .granted else { return [] }
+        return PlaceAccessChecker.consentFolders(environment) + [URL(filePath: "/Volumes")]
+    }
+
+    /// Home's numbers from the shared models.
+    var homeFigures: HomeFigures {
+        let phase: HomeFigures.Phase
+        switch junk.state {
+        case .idle: phase = .notScanned
+        case .scanning: phase = .scanning
+        case .ready, .problem: phase = .ready
+        case .moving: phase = .moving
+        case .done: phase = .done
+        }
+        let reading: HomeFigures.TrashReading
+        if let contents = trash.contents {
+            reading = contents.issues.isEmpty
+                ? .read(bytes: contents.size.bytes, externalSkipped: trash.externalVolumesSkipped)
+                : .unreadable(movedSinceLastEmpty: trash.inTrashBytesSinceLastEmpty)
+        } else {
+            reading = .unknown
+        }
+        return HomeFigures.make(HomeFigures.Input(
+            available: storage.info?.availableForImportantUsage, goal: goal, phase: phase,
+            tiles: junk.categories, selectedBytes: junk.selectedBytes, trash: reading,
+            places: places.places, scanScope: lastScanScope))
     }
 
     /// Loads the apps once Full Disk Access is on; never without it (see `uninstallerLoaded`).
@@ -201,7 +256,7 @@ final class AppModels {
         health.appBecameActive()
         Task { await storage.refresh() }
         // The Trash may have been emptied or filled in Finder meanwhile.
-        if homeLoaded { Task { await trash.refresh() } }
+        if homeLoaded { refreshTrash() }
         Task { await refreshPlaces() }
     }
 
@@ -229,7 +284,7 @@ final class AppModels {
 
 /// The categories the next junk scan may open, set on the main actor right before `scan()` and read
 /// by the scan model's catalog closure.
-final class ScanScope: Sendable {
+final class ScanCatalog: Sendable {
     private let lock = OSAllocatedUnfairLock<[JunkCategory]>(initialState: [])
 
     var categories: [JunkCategory] {
