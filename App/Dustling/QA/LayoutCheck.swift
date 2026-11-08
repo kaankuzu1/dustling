@@ -19,7 +19,7 @@ import SwiftUI
 
     /// The smallest window, the default, and a large one.
     static let sizes: [CGSize] = [
-        CGSize(width: DustlingTheme.Metrics.sidebarWidth + DustlingTheme.Metrics.contentMinWidth, height: 560),
+        RootView.minimumSize,
         DustlingTheme.Metrics.defaultWindow,
         CGSize(width: 1680, height: 1050),
     ]

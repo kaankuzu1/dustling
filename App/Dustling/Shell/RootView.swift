@@ -2,6 +2,12 @@ import SwiftUI
 
 /// The main window: the 236 pt sidebar and the selected screen (SCREENS-final, Shell).
 struct RootView: View {
+    /// The smallest window: the sidebar, the screen's minimum width, and 8 pt to spare. On macOS 26 the
+    /// screen starts about 4 pt past the sidebar (its leading safe area), so without the spare points
+    /// every screen's right edge was cut off at the smallest size.
+    static let minimumSize = CGSize(
+        width: DustlingTheme.Metrics.sidebarWidth + DustlingTheme.Metrics.contentMinWidth + 8, height: 560)
+
     @Environment(AppModels.self) private var models
     @Environment(\.openWindow) private var openWindow
     #if DEBUG
@@ -27,9 +33,7 @@ struct RootView: View {
         .font(DustlingTheme.Typography.body)
         .foregroundStyle(DustlingTheme.Palette.ink)
         .tint(DustlingTheme.Palette.accent)
-        .frame(
-            minWidth: DustlingTheme.Metrics.sidebarWidth + DustlingTheme.Metrics.contentMinWidth,
-            minHeight: 560)
+        .frame(minWidth: Self.minimumSize.width, minHeight: Self.minimumSize.height)
         // Full Disk Access changed (polling, activation): re-check which places are locked.
         .task(id: models.fullDiskAccessKey) { await models.refreshPlaces() }
         .task { models.onboarding.openAtLaunchIfNeeded(models: models, openWindow: openWindow) }
