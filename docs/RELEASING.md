@@ -55,6 +55,8 @@ scripts/build-dmg.sh
 
 It needs Xcode 26 or later and XcodeGen (`brew install xcodegen`), and writes `dist/Dustling.dmg` and `dist/Dustling.dmg.sha256`. The app is a universal binary (Apple silicon and Intel) with an ad hoc signature, the same as a release. `scripts/release-notes.sh 0.2.0` prints the notes a release would get.
 
+The install window is laid out by [`App/DMG/dmg-settings.py`](../App/DMG/dmg-settings.py) (icon positions, window size) over the picture in [`App/DMG/background.html`](../App/DMG/background.html). After changing the HTML, run `scripts/make-dmg-background.sh` (it needs Google Chrome) and commit the two PNGs it writes. Finder always shows a window with a background picture in light mode, so keep the picture light.
+
 Every pull request that touches the app, the package or these scripts also runs the Release workflow without publishing anything, so a broken build shows up before it reaches a tag. The disk image it builds is attached to the workflow run for 14 days.
 
 ## Signing (later)

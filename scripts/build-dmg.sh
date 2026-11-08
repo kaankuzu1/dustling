@@ -11,11 +11,13 @@
 # asks people to confirm the first time they open it (see docs/INSTALL.md).
 #
 # Output, in dist/:
-#   Dustling.dmg          Dustling.app and a link to /Applications. The name never changes, so
+#   Dustling.dmg          Dustling.app and a link to /Applications in a laid-out window (see
+#                         App/DMG). The name never changes, so
 #                         .../releases/latest/download/Dustling.dmg always serves the newest release.
 #   Dustling.dmg.sha256   its SHA-256, in the format `shasum -a 256 -c` reads.
 #
-# Needs Xcode 26 or later and XcodeGen (`brew install xcodegen`).
+# Needs Xcode 26 or later, XcodeGen (`brew install xcodegen`) and Python 3 (for dmgbuild, which the
+# script installs into .build/ itself).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,7 +27,7 @@ EXPECTED_VERSION=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) EXPECTED_VERSION="${2:?--version needs a value}"; shift 2 ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 64 ;;
   esac
 done
@@ -34,7 +36,7 @@ fail() { echo "error: $*" >&2; exit 1; }
 
 # The single place the version lives. Plain `key: value` or `key: "value"`.
 project_setting() {
-  sed -n "s/^[[:space:]]*$1:[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*$/\1/p" App/project.yml | head -n 1
+  sed -n "s/^[[:space:]]*$1:[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*$/\1/p" App/project.yml | sed -n 1p
 }
 
 VERSION="$(project_setting MARKETING_VERSION)"
@@ -55,7 +57,8 @@ APP_NAME="Dustling"
 DMG="$DIST/$APP_NAME.dmg"
 
 echo "==> Dustling $VERSION (build $BUILD_NUMBER)"
-xcodebuild -version | head -n 1
+XCODE_VERSION="$(xcodebuild -version)"  # not piped into head: with pipefail, SIGPIPE would stop the script
+echo "${XCODE_VERSION%%$'\n'*}"
 
 echo "==> Generating the Xcode project"
 command -v xcodegen >/dev/null || fail "XcodeGen is missing. Install it with: brew install xcodegen"
@@ -103,26 +106,66 @@ echo "    version $BUILT_VERSION, build $BUILT_NUMBER, architectures: $ARCHS_BUI
 
 echo "==> Packing $APP_NAME.dmg"
 STAGE="$(mktemp -d -t dustling-dmg)"
-trap 'rm -rf "$STAGE"' EXIT
+MOUNT=""
+cleanup() {
+  [[ -n "$MOUNT" ]] && hdiutil detach -quiet "$MOUNT" 2>/dev/null || true
+  rm -rf "$STAGE"
+}
+trap cleanup EXIT
 ditto "$APP" "$STAGE/$APP_NAME.app"
 # Finder info or File Provider tags from an iCloud-synced checkout would break the signature.
 xattr -cr "$STAGE/$APP_NAME.app"
 codesign --verify --deep --strict "$STAGE/$APP_NAME.app" || fail "the app's signature doesn't verify"
-ln -s /Applications "$STAGE/Applications"
+
+# dmgbuild lays out the window (background, icon positions, no toolbar) by writing Finder's
+# .DS_Store directly, so it works without a logged-in Finder, as on CI. It is pinned and installed
+# into .build/ the first time.
+DMGBUILD_VERSION="1.6.7"
+DMGBUILD="${DMGBUILD:-$ROOT/.build/dmgbuild-venv/bin/dmgbuild}"
+if [[ ! -x "$DMGBUILD" ]] || ! "$(dirname "$DMGBUILD")/python3" -c \
+     "import importlib.metadata as m, sys; sys.exit(m.version('dmgbuild') != '$DMGBUILD_VERSION')" 2>/dev/null; then
+  echo "    installing dmgbuild $DMGBUILD_VERSION into .build/dmgbuild-venv"
+  rm -rf "$ROOT/.build/dmgbuild-venv"
+  python3 -m venv "$ROOT/.build/dmgbuild-venv"
+  "$ROOT/.build/dmgbuild-venv/bin/pip" install --quiet --disable-pip-version-check "dmgbuild==$DMGBUILD_VERSION"
+  DMGBUILD="$ROOT/.build/dmgbuild-venv/bin/dmgbuild"
+fi
+
+VOLUME_ICON="$STAGE/$APP_NAME.app/Contents/Resources/AppIcon.icns"
+[[ -f "$VOLUME_ICON" ]] || fail "the app has no AppIcon.icns for the disk icon"
 
 mkdir -p "$DIST"
 rm -f "$DMG" "$DMG.sha256"
-# hdiutil sometimes fails with "Resource busy" on CI machines; a retry clears it.
+# hdiutil (which dmgbuild drives) sometimes fails with "Resource busy" on CI machines; a retry
+# clears it.
 for attempt in 1 2 3; do
-  if hdiutil create -quiet -volname "$APP_NAME" -srcfolder "$STAGE" -fs HFS+ \
-       -format UDZO -imagekey zlib-level=9 -ov "$DMG"; then
+  if "$DMGBUILD" -s "$ROOT/App/DMG/dmg-settings.py" \
+       -D app="$STAGE/$APP_NAME.app" \
+       -D icon="$VOLUME_ICON" \
+       -D background="$ROOT/App/DMG/background.png" \
+       "$APP_NAME" "$DMG" > "$STAGE/dmgbuild.log" 2>&1; then
     break
   fi
-  [[ $attempt -lt 3 ]] || fail "hdiutil couldn't create the disk image"
-  echo "    hdiutil failed, trying again ($attempt/3)"
+  if [[ $attempt -eq 3 ]]; then
+    tail -n 20 "$STAGE/dmgbuild.log" >&2
+    fail "dmgbuild couldn't create the disk image"
+  fi
+  echo "    dmgbuild failed, trying again ($attempt/3)"
+  rm -f "$DMG"
   sleep 5
 done
 hdiutil verify -quiet "$DMG" || fail "the disk image doesn't verify"
+
+echo "==> Checking the disk image"
+MOUNT="$(mktemp -d -t dustling-mount)"
+hdiutil attach -quiet -nobrowse -readonly -noautoopen -mountpoint "$MOUNT" "$DMG"
+codesign --verify --deep --strict "$MOUNT/$APP_NAME.app" || fail "the app in the disk image doesn't verify"
+[[ "$(readlink "$MOUNT/Applications")" == "/Applications" ]] || fail "the Applications link is missing"
+for f in .DS_Store .background.tiff .VolumeIcon.icns; do
+  [[ -e "$MOUNT/$f" ]] || fail "the disk image has no $f, so the window won't be laid out"
+done
+hdiutil detach -quiet "$MOUNT"
+MOUNT=""
 
 (cd "$DIST" && shasum -a 256 "$APP_NAME.dmg" > "$APP_NAME.dmg.sha256")
 

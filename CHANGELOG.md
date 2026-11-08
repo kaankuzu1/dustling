@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- The disk image now opens a proper install window: drag Dustling onto Applications, with a hint for updating an older copy and for the first open. The disk shows Dustling's icon.
+
 ### Fixed
 
 - Quit works even when a confirmation or sheet is open. If Dustling is moving files, it asks before stopping.
