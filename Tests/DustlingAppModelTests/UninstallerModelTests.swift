@@ -69,6 +69,31 @@ struct UninstallerModelTests {
         #expect(confirm.totalBytes > alpha.app.bytes)
     }
 
+    @Test func uninstallerFixtureNeverUninstallsOrQuits() async throws {
+        let (rig, app) = try alphaRig()
+        let running = FakeRunning()
+        let model = rig.uninstallerModel(running: running)
+        model.canTakeOutOfTrash = true
+        await model.load()
+        let alpha = try #require(model.apps.first)
+        model.showFixture(
+            apps: [alpha.app], leftovers: [alpha.app.url: model.leftovers(for: alpha.app).map(\.leftover)],
+            running: [alpha.app.url], selection: [alpha.app.url])
+        let confirmed = model.confirmation
+        #expect(confirmed.ready)
+        let spy = CountingQuitter()
+
+        let records = await model.uninstallSelected(confirmed: confirmed, quit: spy)
+
+        #expect(records.isEmpty)
+        #expect(spy.calls == 0)
+        #expect(FileManager.default.fileExists(atPath: app.path))
+        let record = RunRecord(startedAt: .now, kind: .uninstall(appName: "Alpha"), entries: [
+            JournalEntry(originalPath: app.path, bytes: 1, outcome: .movedToTrash(trashedPath: "/sample")),
+        ], restorable: true)
+        await #expect(throws: (any Error).self) { try await model.putBack(record) }
+    }
+
     @Test func runningAppThatWontQuitIsSkippedOthersProceed() async throws {
         let rig = try ModelRig()
         let alpha = try rig.makeApp("Alpha", bundleID: "com.test.alpha")
@@ -622,5 +647,16 @@ struct UninstallerModelTests {
         #expect(without.perApp[0].items + without.perApp[0].dataItems
             == withAccess.perApp[0].items + withAccess.perApp[0].dataItems - 1)
         #expect(ConfirmText.make(without).notes.contains("1 item needs Full Disk Access and stays where it is."))
+    }
+}
+
+/// Counts quit requests; never touches a real app.
+private final class CountingQuitter: AppQuitter, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var calls: Int { lock.withLock { count } }
+    func quit(_ app: InstalledApp) async -> Bool {
+        lock.withLock { count += 1 }
+        return true
     }
 }

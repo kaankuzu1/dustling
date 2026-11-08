@@ -423,6 +423,11 @@ public final class UninstallerModel {
     /// Refused when the confirmation was already used, or when Dustling can't take things back out of
     /// the Trash and the confirmation didn't say so (access was lost after the sheet opened).
     public func uninstallSelected(confirmed: ConfirmModel, quit: AppQuitter) async -> [RunRecord] {
+        #if DEBUG
+        // The screenshot fixture's apps are samples with plain display paths (which may name real
+        // apps): nothing is ever quit or moved for them, whatever the confirmation says.
+        guard fixtureRunning == nil else { return [] }
+        #endif
         guard !isUninstalling, !isRestoring, confirmed.ready else { return [] }
         guard !usedConfirmations.contains(confirmed.id) else {
             refusal = Self.usedRefusal
@@ -432,10 +437,6 @@ public final class UninstallerModel {
             refusal = Self.accessRefusal
             return []
         }
-        #if DEBUG
-        // The screenshot fixture's apps don't exist; nothing is ever moved for them.
-        guard fixtureRunning == nil else { return [] }
-        #endif
         refusal = nil
         usedConfirmations.insert(confirmed.id)
         isUninstalling = true

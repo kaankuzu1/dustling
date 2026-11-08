@@ -436,6 +436,8 @@ final class AppModels {
 
     /// The home folder, for shortening paths on screen.
     var homeDirectory: URL { environment.home }
+    /// The home folder's path without a trailing slash (`/Users/k`), for the path helpers.
+    var homePath: String { HistoryScreen.homeKey(environment.home.path(percentEncoded: false)) }
     /// Where run logs are written (`~/Library/Logs/Dustling`).
     var logsDirectory: URL { logger.directory }
 

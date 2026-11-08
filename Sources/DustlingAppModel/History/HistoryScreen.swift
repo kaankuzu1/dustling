@@ -323,7 +323,16 @@ public enum HistoryScreen {
         }
     }
 
+    /// The home folder's path without trailing slashes: a directory URL's path ends in "/"
+    /// (`/Users/k/`), which would never match `home + "/"`.
+    public static func homeKey(_ home: String) -> String {
+        var home = home
+        while home.count > 1 && home.hasSuffix("/") { home.removeLast() }
+        return home == "/" ? "" : home
+    }
+
     static func shortened(_ path: String, home: String) -> String {
+        let home = homeKey(home)
         guard !home.isEmpty else { return path }
         if path == home { return "~" }
         if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
@@ -465,6 +474,7 @@ public enum HistoryScreen {
     }
 
     private static func shortenedEverywhere(_ text: String, home: String) -> String {
+        let home = homeKey(home)
         guard !home.isEmpty else { return text }
         let escaped = NSRegularExpression.escapedPattern(for: home)
         guard let regex = try? NSRegularExpression(pattern: escaped + "(?=/|\\s|$)") else { return text }

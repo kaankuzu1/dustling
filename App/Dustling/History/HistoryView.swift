@@ -23,7 +23,7 @@ struct HistoryView: View {
     private var context: HistoryScreen.Context {
         HistoryScreen.Context(
             lastEmptyTrash: models.history.lastEmptyTrash, canTakeOutOfTrash: models.history.canTakeOutOfTrash,
-            home: models.homeDirectory.path(percentEncoded: false))
+            home: models.homePath)
     }
 
     private var selectedRun: RunRow? {

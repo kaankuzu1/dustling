@@ -102,7 +102,7 @@ struct StartupView: View {
         if !startup.issues.isEmpty {
             Banner(
                 title: "Some startup items couldn't be read.",
-                message: StartupScreen.issueSummary(startup.issues, home: models.homeDirectory.path(percentEncoded: false)),
+                message: StartupScreen.issueSummary(startup.issues, home: models.homePath),
                 leading: .icon(.warn))
         }
     }

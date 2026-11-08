@@ -43,22 +43,24 @@ extension AppModels {
                 label: label, scope: scope, plistURL: folder.appending(path: "\(label).plist"), program: program,
                 ownerAppName: nil, isEnabled: on, managedInSystemSettingsOnly: false)
         }
+        // Generic sample items (com.example.*), never startup items found on a real Mac.
         let items = [
-            item("com.google.GoogleUpdater.wake", .userAgent,
-                 program: "/Users/Shared/Dustling fixture/GoogleUpdater.app/Contents/MacOS/GoogleUpdater"),
-            item("com.microsoft.update.agent", .systemAgent,
-                 program: "/Library/Application Support/Dustling fixture/Microsoft AutoUpdate.app/Contents/MacOS/Microsoft AutoUpdate"),
-            item("us.zoom.updater.login.check", .userAgent,
-                 program: "/Library/Dustling fixture/Zoom updater.app/Contents/MacOS/Zoom updater", on: false),
-            item("com.logi.optionsplus.updater", .userAgent,
-                 program: "/Applications/Logi Options+.app/Contents/MacOS/Logi Options+ updater"),
-            item("com.docker.vmnetd", .systemDaemon, program: "/Library/PrivilegedHelperTools/com.docker.vmnetd"),
-            item("com.adobe.ARMDC.SMJobBlessHelper", .systemDaemon,
-                 program: "/Library/PrivilegedHelperTools/com.adobe.ARMDC.SMJobBlessHelper"),
+            item("com.example.cloudsync.updater", .userAgent,
+                 program: "/Applications/CloudSync.app/Contents/MacOS/CloudSync Updater"),
+            item("com.example.office.autoupdate", .systemAgent,
+                 program: "/Library/Application Support/Office Suite/AutoUpdate.app/Contents/MacOS/Office AutoUpdate"),
+            item("com.example.meetings.updater", .userAgent,
+                 program: "/Applications/Meetings.app/Contents/MacOS/Meetings updater", on: false),
+            item("com.example.mousetools.updater", .userAgent,
+                 program: "/Applications/Mouse Tools.app/Contents/MacOS/Mouse Tools updater"),
+            item("com.example.containers.vmnetd", .systemDaemon,
+                 program: "/Library/PrivilegedHelperTools/com.example.containers.vmnetd"),
+            item("com.example.pdfreader.helper", .systemDaemon,
+                 program: "/Library/PrivilegedHelperTools/com.example.pdfreader.helper"),
         ]
         let owners = [
-            items[0].id: "Google Chrome", items[1].id: "Microsoft Teams", items[2].id: "Zoom",
-            items[4].id: "Docker Desktop", items[5].id: "Adobe Acrobat Reader",
+            items[0].id: "CloudSync", items[1].id: "Office Suite", items[2].id: "Meetings",
+            items[4].id: "Containers", items[5].id: "PDF Reader",
         ]
         startup.showFixture(items: items, orphanIDs: [items[3].id], owners: owners)
         StartupHistoryFixture.opensRemoveSheet = state == "remove"
@@ -69,14 +71,14 @@ extension AppModels {
                                        outcome: .skipped(reason: "disabled"))],
                 restorable: false)
             startup.showFixtureResult(StartupChange(
-                record: record, result: StartupScreen.changeResult(record, name: "Zoom updater", action: .toggle),
-                action: .toggle, itemName: "Zoom updater"))
+                record: record, result: StartupScreen.changeResult(record, name: "Meetings updater", action: .toggle),
+                action: .toggle, itemName: "Meetings updater"))
         }
     }
 
     private func showHistoryFixture(_ state: String) {
         selection = .history
-        let home = homeDirectory.path(percentEncoded: false)
+        let home = homePath
         let trash = home + "/.Trash/"
         let gb = 1_000_000_000.0
         let calendar = Calendar.current
@@ -108,11 +110,11 @@ extension AppModels {
             JournalEntry(originalPath: "/Library/LaunchDaemons/com.docker.vmnetd.plist", bytes: 4_096, outcome: .needsAdmin),
         ], restorable: true)
         let turnedOff = RunRecord(startedAt: at(daysAgo: 1, 21, 20), kind: .startupChange, entries: [
-            JournalEntry(originalPath: home + "/Library/LaunchAgents/us.zoom.updater.login.check.plist", bytes: 0,
+            JournalEntry(originalPath: home + "/Library/LaunchAgents/com.example.meetings.updater.plist", bytes: 0,
                          outcome: .skipped(reason: "disabled")),
         ], restorable: false)
         let removed = RunRecord(startedAt: at(daysAgo: 1, 21, 12), kind: .startupChange, entries: [
-            moved("~/Library/LaunchAgents/com.logi.optionsplus.updater.plist", 0.000004),
+            moved("~/Library/LaunchAgents/com.example.mousetools.updater.plist", 0.000004),
         ], restorable: true)
         let empty = RunRecord(startedAt: at(daysAgo: 3, 9, 30), kind: .emptyTrash, entries: [
             JournalEntry(originalPath: trash + "Unity Hub.app", bytes: 3_900_000_000, outcome: .deleted),

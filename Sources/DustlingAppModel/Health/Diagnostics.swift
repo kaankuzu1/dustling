@@ -253,7 +253,7 @@ public enum DiagnosticsReport {
 
     /// Removes quoted runs, the home folder, the user name and every word that looks like a path.
     static func scrub(_ text: String, home: URL) -> String {
-        let homePath = home.path(percentEncoded: false)
+        let homePath = HistoryScreen.homeKey(home.path(percentEncoded: false))
         let user = home.lastPathComponent
         var out = text
         for (open, close) in [("\u{201C}", "\u{201D}"), ("\"", "\""), ("\u{2018}", "\u{2019}")] {
@@ -262,7 +262,7 @@ public enum DiagnosticsReport {
                 out.replaceSubrange(start.lowerBound..<end.upperBound, with: "[name]")
             }
         }
-        out = out.replacingOccurrences(of: homePath, with: "/[path]")
+        if !homePath.isEmpty { out = out.replacingOccurrences(of: homePath, with: "/[path]") }
         let words = out.split(separator: " ", omittingEmptySubsequences: false).map { word -> String in
             if word.contains("/") || word.hasPrefix("~") { return "[path]" + (word.hasSuffix(":") ? ":" : "") }
             return String(word)

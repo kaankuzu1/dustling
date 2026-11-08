@@ -16,6 +16,7 @@ struct StartupRowView: View {
     let onToggle: () -> Void
     let onRemove: () -> Void
 
+    @Environment(AppModels.self) private var models
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
@@ -53,7 +54,8 @@ struct StartupRowView: View {
         .background(row.isOrphaned ? Palette.warning.opacity(0.06) : Color.clear)
         .overlay(alignment: .bottom) { Hairline() }
         .contentShape(Rectangle())
-        .help(row.item.plistURL?.path(percentEncoded: false) ?? row.item.label)
+        .help(row.item.plistURL.map { HistoryScreen.displayPath($0.path(percentEncoded: false), home: models.homePath) }
+              ?? row.item.label)
         .contextMenu {
             Button("Remove…", action: onRemove)
                 .disabled(!canRemove || isLocked)
@@ -177,7 +179,7 @@ struct RemoveStartupItemSheet: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.item.plistURL.map {
-                    HistoryScreen.displayPath($0.path(percentEncoded: false), home: models.homeDirectory.path(percentEncoded: false))
+                    HistoryScreen.displayPath($0.path(percentEncoded: false), home: models.homePath)
                 } ?? row.item.label)
                     .font(DustlingTheme.Typography.path)
                     .foregroundStyle(Palette.ink2)
