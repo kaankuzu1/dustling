@@ -81,13 +81,35 @@ public struct RunRecord: Codable, Identifiable, Equatable, Sendable {
     public var kind: RunKind
     public var entries: [JournalEntry]
     public var restorable: Bool
+    /// True while a cleanup is running (the journal is saved after every item). A record still
+    /// marked this way after the process is gone was interrupted; see `CleanupRunner.recoverInterrupted`.
+    public var inProgress: Bool
 
-    public init(id: UUID = UUID(), startedAt: Date, kind: RunKind, entries: [JournalEntry], restorable: Bool) {
+    public init(
+        id: UUID = UUID(), startedAt: Date, kind: RunKind, entries: [JournalEntry], restorable: Bool,
+        inProgress: Bool = false
+    ) {
         self.id = id
         self.startedAt = startedAt
         self.kind = kind
         self.entries = entries
         self.restorable = restorable
+        self.inProgress = inProgress
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, startedAt, kind, entries, restorable, inProgress
+    }
+
+    /// Tolerates records written before `inProgress` existed.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        startedAt = try c.decode(Date.self, forKey: .startedAt)
+        kind = try c.decode(RunKind.self, forKey: .kind)
+        entries = try c.decode([JournalEntry].self, forKey: .entries)
+        restorable = try c.decode(Bool.self, forKey: .restorable)
+        inProgress = try c.decodeIfPresent(Bool.self, forKey: .inProgress) ?? false
     }
 
     public var bytesMovedToTrash: UInt64 {

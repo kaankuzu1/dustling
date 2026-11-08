@@ -16,21 +16,92 @@ public struct CleanupRunner: Sendable {
 
     /// `extraEntries` (e.g. launch-agent unload failures) are appended after the runner's own entries.
     /// Journal/log failures are appended to the returned record as `<history>` / `<log>` entries.
+    ///
+    /// The journal is saved (atomically) and the log appended after EVERY item, with the record marked
+    /// `inProgress` until the end, so a crash is recorded up to the last finished item
+    /// (`recoverInterrupted` clears the flag on the next launch). On cooperative cancellation
+    /// (`Task.isCancelled` is checked before each item) the items not attempted are recorded as
+    /// `.skipped(reason: "cleanup stopped")` and the run ends normally with `inProgress == false`.
+    /// `onItemStart` fires before each move, `onItem` after it.
     public func run(
         _ urls: [URL],
         kind: RunKind,
         allowedRoots: [URL],
         extraEntries: [JournalEntry] = [],
+        onItemStart: @Sendable (URL) -> Void = { _ in },
         onItem: @Sendable (URL, DeletionOutcome) -> Void
     ) async -> RunRecord {
-        let startedAt = Date()
-        var entries: [JournalEntry] = []
-        for url in urls {
+        var record = RunRecord(startedAt: Date(), kind: kind, entries: [], restorable: false, inProgress: true)
+        var historyFailed = false
+        var logFailed = false
+
+        func save() {
+            do { try journal.save(record) } catch {
+                // Record the failure once; later saves are still attempted.
+                if !historyFailed {
+                    historyFailed = true
+                    let entry = Self.failure("<history>", error)
+                    record.entries.append(entry)
+                    log(entry)
+                }
+            }
+        }
+        func log(_ entry: JournalEntry?) {
+            guard !logFailed else { return }
+            do {
+                if let entry { try logger.append(entry, to: record) } else { try logger.writeHeader(record) }
+            } catch {
+                logFailed = true
+                record.entries.append(Self.failure("<log>", error))
+            }
+        }
+        func add(_ entry: JournalEntry) {
+            record.entries.append(entry)
+            if case .movedToTrash = entry.outcome { record.restorable = true }
+            save()
+            log(entry)
+        }
+
+        log(nil)
+        save()
+        for (index, url) in urls.enumerated() {
+            if Task.isCancelled {
+                for rest in urls[index...] {
+                    add(JournalEntry(
+                        originalPath: rest.path(percentEncoded: false), bytes: 0,
+                        outcome: .skipped(reason: "cleanup stopped")))
+                }
+                break
+            }
+            onItemStart(url)
             let entry = attempt(url, allowedRoots: allowedRoots)
-            entries.append(entry)
+            add(entry)
             onItem(url, entry.outcome)
         }
-        return finish(entries + extraEntries, kind: kind, startedAt: startedAt)
+        for entry in extraEntries { add(entry) }
+
+        record.inProgress = false
+        save()
+        if !logFailed {
+            do { try logger.writeTotals(record) } catch {
+                logFailed = true
+                record.entries.append(Self.failure("<log>", error))
+                save()
+            }
+        }
+        return record
+    }
+
+    /// Marks runs left `inProgress` (the process died mid-cleanup) as finished and returns their ids.
+    /// Their entries are exactly the items that finished before the interruption.
+    public static func recoverInterrupted(journal: RunJournal) throws -> [UUID] {
+        var ids: [UUID] = []
+        for var run in try journal.all() where run.inProgress {
+            run.inProgress = false
+            try journal.save(run)
+            ids.append(run.id)
+        }
+        return ids
     }
 
     /// Measures and moves one item, without journaling. Callers that need to decide between items
