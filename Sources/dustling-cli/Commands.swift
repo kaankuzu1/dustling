@@ -7,11 +7,14 @@ enum Commands {
     private static let env = SystemEnvironment.current
     private static let commands = ProcessCommandRunner()
 
+    /// The CLI has no settings yet: defaults. Catalog, cleaning and uninstalling all derive from this one value.
+    private static let options = ScanOptions()
+
     private static var journal: RunJournal { RunJournal(directory: env.historyDirectory) }
 
     private static func makeRunner() -> CleanupRunner {
         CleanupRunner(
-            mover: TrashMover(backend: SystemTrashBackend(), protectedPaths: ProtectedPaths(environment: env)),
+            mover: TrashMover(backend: SystemTrashBackend(), protectedPaths: options.protectedPaths(environment: env)),
             journal: journal, logger: RunLogger(directory: env.logsDirectory), sizer: DirectorySizer())
     }
 
@@ -59,7 +62,7 @@ enum Commands {
 
     static func scan() async -> Int32 {
         print("Scanning...")
-        let results = await makeScanner().scan(JunkCatalog.standard(env)) { scan in
+        let results = await makeScanner().scan(JunkCatalog.standard(env, options: options)) { scan in
             printCategory(scan)
         }
         if results.contains(where: \.stopped) {
@@ -126,7 +129,7 @@ enum Commands {
         }
 
         print("Scanning...")
-        let results = await makeScanner().scan(JunkCatalog.standard(env)) { _ in }
+        let results = await makeScanner().scan(JunkCatalog.standard(env, options: options)) { _ in }
         if results.contains(where: \.stopped) {
             Format.printError("Scan stopped before it finished; nothing was cleaned.")
             return 1
@@ -314,7 +317,8 @@ enum Commands {
 
         do {
             let record = try await Uninstaller(
-                runner: makeRunner(), commands: commands, running: WorkspaceRunningApps(), environment: env
+                runner: makeRunner(), commands: commands, running: WorkspaceRunningApps(), environment: env,
+                protectedPaths: options.protectedPaths(environment: env)
             ).uninstall(app, leftovers: selected) { _, _ in }
             Format.printEntries(record)
             let code = Format.printTotals(record)
@@ -562,7 +566,8 @@ enum Commands {
             return 1
         }
         let inspector = TrashInspector(
-            environment: env, journal: journal, logger: RunLogger(directory: env.logsDirectory), sizer: DirectorySizer())
+            environment: env, journal: journal, logger: RunLogger(directory: env.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: options.includeExternalTrash)
         let contents = inspector.contents()
         let needsAccess = contents.issues.contains { if case .missingFullDiskAccess = $0 { true } else { false } }
         Format.printIssues(contents.issues)

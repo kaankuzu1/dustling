@@ -33,7 +33,49 @@ public enum JunkCatalog {
     private static let ignoredDownloadNames: Set<String> = [".DS_Store", ".localized"]
 
     /// Categories in claim order: an item belongs to the first category that claims it.
-    public static func standard(_ env: SystemEnvironment, now: Date = .now) -> [JunkCategory] {
+    public static func standard(
+        _ env: SystemEnvironment, now: Date = .now, options: ScanOptions = ScanOptions()
+    ) -> [JunkCategory] {
+        applying(options, to: base(env, now: now, includeExternalTrash: options.includeExternalTrash),
+                 environment: env, now: now)
+    }
+
+    /// Wraps every category's filter so excluded items (inside an exclusion, or containing one) and,
+    /// when asked, recently changed items never reach measuring. The Trash is exempt from the recency
+    /// rule: it is only ever emptied as a whole, so its list must match what emptying does.
+    private static func applying(
+        _ options: ScanOptions, to categories: [JunkCategory], environment: SystemEnvironment, now: Date
+    ) -> [JunkCategory] {
+        let guardPaths = options.protectedPaths(environment: environment)
+        let days = (options.skipChangedWithinDays ?? 0) > 0 ? options.skipChangedWithinDays : nil
+        guard days != nil || !options.exclusions.isEmpty else { return categories }
+        return categories.map { category in
+            let inner = category.itemFilter
+            let checksRecency = category.id != .trash
+            return JunkCategory(
+                id: category.id, title: category.title, selection: category.selection,
+                requiresAdmin: category.requiresAdmin, roots: category.roots, expansions: category.expansions,
+                itemFilter: { url in
+                    guard inner(url), guardPaths.exclusionReason(for: url) == nil else { return false }
+                    if checksRecency, let days, changedWithin(days: days, url, now: now) { return false }
+                    return true
+                },
+                measuredFilter: category.measuredFilter)
+        }
+    }
+
+    /// True when the item's own modification date is less than `days` days before `now` (or in the
+    /// future). Unreadable attributes count as not recent: the item then goes on to be measured, which
+    /// reports it if it really can't be read.
+    private static func changedWithin(days: Int, _ url: URL, now: Date) -> Bool {
+        var st = stat()
+        guard lstat(url.path(percentEncoded: false), &st) == 0 else { return false }
+        let modified = Date(timeIntervalSince1970:
+            TimeInterval(st.st_mtimespec.tv_sec) + TimeInterval(st.st_mtimespec.tv_nsec) / 1_000_000_000)
+        return now.timeIntervalSince(modified) < TimeInterval(days) * 24 * 60 * 60
+    }
+
+    private static func base(_ env: SystemEnvironment, now: Date, includeExternalTrash: Bool) -> [JunkCategory] {
         let lib = env.userLibrary
         let caches = lib.appending(path: "Caches")
         let downloads = env.home.appending(path: "Downloads")
@@ -72,7 +114,8 @@ public enum JunkCatalog {
             JunkCategory(
                 id: .trash, title: "Trash", selection: .emptyTrashOnly, requiresAdmin: false,
                 roots: [env.userTrash],
-                expansions: [RootExpansion(parent: env.volumesDirectory, subpath: ".Trashes/\(env.userID)")]),
+                expansions: includeExternalTrash
+                    ? [RootExpansion(parent: env.volumesDirectory, subpath: ".Trashes/\(env.userID)")] : []),
             JunkCategory(
                 id: .oldInstallers, title: "Old installers", selection: .review, requiresAdmin: false,
                 roots: [downloads],

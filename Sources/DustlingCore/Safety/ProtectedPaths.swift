@@ -21,8 +21,15 @@ public struct ProtectedPaths: Sendable {
     private let exactDenied: [[String]]
     private let home: [String]
     private let usersRoot: [String]
+    private let excluded: [[String]]
 
-    public init(environment: SystemEnvironment) {
+    static let excludedReason = "excluded in Settings"
+    static let containsExcludedReason = "contains a folder excluded in Settings"
+
+    /// `extraDenied` are the user's exclusions: anything equal to or inside one is denied, and so is
+    /// anything that contains one (moving a parent would take the excluded folder with it). Hard denies
+    /// are decided first, so an exclusion on a protected location changes nothing there.
+    public init(environment: SystemEnvironment, extraDenied: [URL] = []) {
         home = Self.caseKey(Self.resolve(environment.home))
         usersRoot = Self.key(Self.resolve(URL(filePath: "/Users")))
         let entries = Self.systemDenied.map { URL(filePath: $0) }
@@ -31,6 +38,17 @@ public struct ProtectedPaths: Sendable {
         exactDenied = Self.keys(for: Self.homeExactDenied.map {
             $0.isEmpty ? environment.home : environment.home.appending(path: $0)
         })
+        excluded = Self.keys(for: extraDenied)
+    }
+
+    /// Why `url` is off limits because of a user exclusion, or nil. Same resolution and fold as the
+    /// hard-deny list.
+    public func exclusionReason(for url: URL) -> String? {
+        guard !excluded.isEmpty else { return nil }
+        let path = Self.key(Self.resolve(url))
+        if excluded.contains(where: { Self.isEqualOrInside(path, $0) }) { return Self.excludedReason }
+        if excluded.contains(where: { Self.isStrictlyInside($0, path) }) { return Self.containsExcludedReason }
+        return nil
     }
 
     /// Each entry as resolved like a candidate, plus (for a symlinked entry) where it really lives.
@@ -55,6 +73,7 @@ public struct ProtectedPaths: Sendable {
         if Self.isStrictlyInside(path, usersRoot), !Self.isEqualOrInside(casePath, home) {
             return .denied(reason: "another user's files")
         }
+        if let reason = exclusionReason(for: url) { return .denied(reason: reason) }
         if allowedRoots.contains(where: { Self.isStrictlyInside(casePath, Self.caseKey(Self.resolve($0))) }) {
             return .allowed
         }
