@@ -17,6 +17,8 @@ public enum EmptyTrashResult: Sendable {
 public final class TrashModel {
     /// Nil until the first `refresh()`.
     public private(set) var contents: (size: SizeResult, issues: [ScanIssue])?
+    /// The top-level items the last refresh found, for the Empty Trash sheet. Empty until then.
+    public private(set) var items: [TrashItem] = []
     /// Bytes Dustling moved to the Trash that can still be put back (from the journal): the
     /// hatched "in Trash" cells of the mosaic. Drops as items are restored or the Trash is emptied.
     public private(set) var inTrashBytesSinceLastEmpty: UInt64 = 0
@@ -86,25 +88,30 @@ public final class TrashModel {
         let inspector = makeInspector(external)
         let journal = self.journal
         let found = await Blocking.run { () -> Snapshot in
-            let sized = inspector.sizeWithIssues()
-            return Snapshot(sized: sized, inTrash: Self.inTrashBytes(journal))
+            let found = inspector.contents()
+            return Snapshot(sized: (found.size, found.issues), items: found.items, inTrash: Self.inTrashBytes(journal))
         }
         guard mine == generation else { return }
         self.inspector = inspector
         externalVolumesSkipped = !external
         contents = found.sized
+        items = found.items
         inTrashBytesSinceLastEmpty = found.inTrash.bytes
         historyProblem = found.inTrash.problem
     }
 
-    /// Permanently deletes everything in the Trash. The UI confirms first; this is the only way the
-    /// app empties it. Refuses (nothing deleted) when `canEmpty` is false, when another empty is
-    /// running, and when the Trash was re-read just before deleting and is no longer what was
-    /// confirmed (unreadable, or a different size).
-    public func emptyTrash() async -> EmptyTrashResult {
+    /// Permanently deletes everything in the Trash. The UI confirms first and passes the size it
+    /// showed (`confirmedBytes`); this is the only way the app empties it. Refuses (nothing deleted)
+    /// when `canEmpty` is false, when another empty is running, when the size the user confirmed is
+    /// not the size last read, and when the Trash was re-read just before deleting and is no longer
+    /// what was confirmed (unreadable, or a different size).
+    public func emptyTrash(confirmedBytes confirmed: UInt64) async -> EmptyTrashResult {
         guard !isEmptying else { return .refused(reason: "The Trash is already being emptied") }
-        guard canEmpty, let confirmed = contents?.size.bytes else {
+        guard canEmpty, let shown = contents?.size.bytes else {
             return .refused(reason: disabledReason ?? "The Trash can't be emptied")
+        }
+        guard shown == confirmed else {
+            return .refused(reason: "The Trash changed since you looked at it. Check it again before emptying.")
         }
         isEmptying = true
         defer { isEmptying = false }
@@ -124,6 +131,7 @@ public final class TrashModel {
 
     private struct Snapshot: Sendable {
         let sized: (size: SizeResult, issues: [ScanIssue])
+        let items: [TrashItem]
         let inTrash: (bytes: UInt64, problem: String?)
     }
 

@@ -136,6 +136,22 @@ struct HealthModelTests {
         #expect(lost?.fix == .openFullDiskAccessSettings)
     }
 
+    /// Callers that act on the status (places, the Trash) must know whether this probe published it.
+    @Test func refreshReportsWhetherItPublished() async {
+        let gate = DispatchSemaphore(value: 0)
+        let script = ProbeScript { n in
+            if n == 1 { gate.wait(); return .granted }
+            return .denied
+        }
+        let model = HealthModel(probe: { script.probe() }, clock: ManualClock())
+        let slow = Task { await model.refresh() }
+        #expect(await eventually { script.callCount == 1 })
+        #expect(await model.refresh())
+        gate.signal()
+        #expect(await slow.value == false)
+        #expect(model.fullDiskAccess == .denied)
+    }
+
     @Test func newestProbeResultWinsOverSlowOlderOne() async {
         let gate = DispatchSemaphore(value: 0)
         let script = ProbeScript { n in
@@ -148,7 +164,7 @@ struct HealthModelTests {
         await model.refresh()
         #expect(model.fullDiskAccess == .granted)
         gate.signal()
-        await slow.value
+        _ = await slow.value
         #expect(model.fullDiskAccess == .granted)
     }
 
@@ -169,11 +185,11 @@ struct HealthModelTests {
         let newer = Task { await model.refresh() }
         #expect(await eventually { script.callCount == 2 })
         first.signal()
-        await older.value
+        _ = await older.value
         #expect(!model.hasPublishedStatus)
         #expect(model.fullDiskAccess == .unknown)
         second.signal()
-        await newer.value
+        _ = await newer.value
         #expect(model.hasPublishedStatus)
         #expect(model.fullDiskAccess == .denied)
     }

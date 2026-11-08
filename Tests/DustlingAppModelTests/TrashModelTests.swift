@@ -23,7 +23,7 @@ struct TrashModelTests {
         #expect(!model.canEmpty)
         #expect(model.contents?.issues.isEmpty == false)
         #expect(model.disabledReason == "Dustling can't see inside the Trash without Full Disk Access")
-        let result = await model.emptyTrash()
+        let result = await model.emptyTrash(confirmedBytes: model.shownBytes)
         guard case .refused = result else { Issue.record("expected refused"); return }
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755], ofItemAtPath: rig.environment.userTrash.path(percentEncoded: false))
@@ -56,7 +56,7 @@ struct TrashModelTests {
         let model = makeTrashModel(rig, onRunCompleted: { completed.bump() })
         await model.refresh()
 
-        guard case .emptied(let record) = await model.emptyTrash() else { Issue.record("expected emptied"); return }
+        guard case .emptied(let record) = await model.emptyTrash(confirmedBytes: model.shownBytes) else { Issue.record("expected emptied"); return }
 
         #expect(record.kind == .emptyTrash)
         #expect(record.entries.contains { $0.outcome == .deleted })
@@ -69,7 +69,7 @@ struct TrashModelTests {
     @Test func emptyTrashRefusesWhenItCannotBeEmptied() async throws {
         let rig = try ModelRig()
         let model = makeTrashModel(rig)   // never looked at the Trash
-        guard case .refused(let reason) = await model.emptyTrash() else { Issue.record("expected refused"); return }
+        guard case .refused(let reason) = await model.emptyTrash(confirmedBytes: model.shownBytes) else { Issue.record("expected refused"); return }
         #expect(!reason.isEmpty)
     }
 
@@ -79,8 +79,8 @@ struct TrashModelTests {
         let completed = Counter()
         let model = makeTrashModel(rig, onRunCompleted: { completed.bump() })
         await model.refresh()
-        async let first = model.emptyTrash()
-        async let second = model.emptyTrash()
+        async let first = model.emptyTrash(confirmedBytes: model.shownBytes)
+        async let second = model.emptyTrash(confirmedBytes: model.shownBytes)
         let results = await [first, second]
         let emptied = results.filter { if case .emptied = $0 { true } else { false } }
         #expect(emptied.count == 1)
@@ -94,12 +94,38 @@ struct TrashModelTests {
         await model.refresh()
         let fresh = try rig.file(rig.environment.userTrash.appending(path: "new.txt"), bytes: 8192)
 
-        guard case .refused = await model.emptyTrash() else { Issue.record("expected refused"); return }
+        guard case .refused = await model.emptyTrash(confirmedBytes: model.shownBytes) else { Issue.record("expected refused"); return }
 
         #expect(FileManager.default.fileExists(atPath: old.path))
         #expect(FileManager.default.fileExists(atPath: fresh.path))
         // The model re-read the Trash, so the UI can confirm the new size.
         #expect((model.contents?.size.bytes ?? 0) > 4096)
+    }
+
+    @Test func emptyTrashDeletesOnlyTheSizeTheSheetShowed() async throws {
+        let rig = try ModelRig()
+        let old = try rig.file(rig.environment.userTrash.appending(path: "old.txt"), bytes: 4096)
+        let model = makeTrashModel(rig)
+        await model.refresh()
+        let shown = try #require(model.contents?.size.bytes)
+
+        guard case .refused = await model.emptyTrash(confirmedBytes: shown + 1) else {
+            Issue.record("expected refused"); return
+        }
+        #expect(FileManager.default.fileExists(atPath: old.path))
+
+        guard case .emptied = await model.emptyTrash(confirmedBytes: shown) else { Issue.record("expected emptied"); return }
+        #expect(!FileManager.default.fileExists(atPath: old.path))
+    }
+
+    @Test func trashItemsAreListedForTheSheet() async throws {
+        let rig = try ModelRig()
+        try rig.file(rig.environment.userTrash.appending(path: "small.txt"), bytes: 100)
+        try rig.file(rig.environment.userTrash.appending(path: "big.bin"), bytes: 8192)
+        let model = makeTrashModel(rig)
+        #expect(model.items.isEmpty)
+        await model.refresh()
+        #expect(Set(model.items.map(\.url.lastPathComponent)) == ["small.txt", "big.bin"])
     }
 
     @Test func inTrashBytesFeedMosaicUntilEmptied() async throws {
@@ -135,7 +161,7 @@ struct TrashModelTests {
         #expect(model.inTrashBytesSinceLastEmpty == second.bytesMovedToTrash)
         #expect(model.inTrashBytesSinceLastEmpty > 0)
 
-        guard case .emptied = await model.emptyTrash() else { Issue.record("expected emptied"); return }
+        guard case .emptied = await model.emptyTrash(confirmedBytes: model.shownBytes) else { Issue.record("expected emptied"); return }
         #expect(model.inTrashBytesSinceLastEmpty == 0)
     }
 
@@ -163,4 +189,9 @@ struct TrashModelTests {
         #expect(!model.externalVolumesSkipped)
         #expect(try #require(model.contents?.size.bytes) > homeOnly)
     }
+}
+
+private extension TrashModel {
+    /// What the sheet would show and the user confirm.
+    var shownBytes: UInt64 { contents?.size.bytes ?? 0 }
 }

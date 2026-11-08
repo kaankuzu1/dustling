@@ -113,16 +113,20 @@ public final class HealthModel {
         return HealthLight(kind: .lastRun, state: .ok, detail: "The last cleanup finished without problems")
     }
 
-    /// Re-probes Full Disk Access (off the main actor) and re-reads the last run.
-    public func refresh() async {
+    /// Re-probes Full Disk Access (off the main actor) and re-reads the last run. Returns false when a
+    /// newer probe superseded this one: nothing was published, so callers must not act on the status
+    /// as if it were fresh.
+    @discardableResult
+    public func refresh() async -> Bool {
         let probe = self.probe
         generation += 1
         let mine = generation
         let status = await Blocking.run { probe() }
-        guard mine == generation else { return }
+        guard mine == generation else { return false }
         fullDiskAccess = status
         hasPublishedStatus = true
         refreshLastRun()
+        return true
     }
 
     /// Re-reads the last run without probing. Call this when a cleanup, restore or uninstall
@@ -153,7 +157,7 @@ public final class HealthModel {
     /// The user may have changed the setting in System Settings and come back.
     public func appBecameActive() {
         activeTask?.cancel()
-        activeTask = Task { [weak self] in await self?.refresh() }
+        activeTask = Task { [weak self] in _ = await self?.refresh() }
     }
 
     private static func problem(in run: RunRecord?) -> String? {

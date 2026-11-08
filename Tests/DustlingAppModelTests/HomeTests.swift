@@ -304,7 +304,7 @@ struct HomeScanScopeTests {
 
 struct HomeFiguresTests {
     private func input(
-        phase: HomeFigures.Phase = .ready, tiles: [CategoryTileModel] = [], selected: UInt64 = 0,
+        phase: HomeFigures.Phase = .ready, tiles: [CategoryTileModel] = [], selected: [JunkCategoryID: UInt64] = [:],
         trash: HomeFigures.TrashReading = .read(bytes: 0, externalSkipped: false), places: [Place]? = [],
         scope: HomeScanScope? = HomeScanScope(), available: Int64? = 10 * gb
     ) -> HomeFigures.Input {
@@ -316,7 +316,7 @@ struct HomeFiguresTests {
     @Test func readyCountsSafeJunkAndTrashInTheMeter() {
         let figures = HomeFigures.make(input(
             tiles: [tile(.userLogs, quarter), tile(.iosBackups, 2 * quarter, selected: false, selection: .review)],
-            selected: quarter, trash: .read(bytes: 1000, externalSkipped: false),
+            selected: [.userLogs: quarter], trash: .read(bytes: 1000, externalSkipped: false),
             places: [Place(id: .userLogs, access: .readable), Place(id: .iosBackups, access: .readable)],
             scope: HomeScanScope(full: [.userLogs, .iosBackups])))
         #expect(figures.safeJunk == quarter)
@@ -329,10 +329,10 @@ struct HomeFiguresTests {
 
     @Test func movingNibblesSelectedAndDoneMovesThemToTheTrash() {
         let tiles = [tile(.userLogs, quarter), tile(.userCaches, quarter, selected: false), tile(.xcodeJunk, quarter, stopped: true)]
-        let moving = HomeFigures.make(input(phase: .moving, tiles: tiles, selected: quarter))
+        let moving = HomeFigures.make(input(phase: .moving, tiles: tiles, selected: [.userLogs: quarter]))
         #expect(moving.nibbling == [.userLogs])
         #expect(moving.cleaned.isEmpty)
-        let done = HomeFigures.make(input(phase: .done, tiles: tiles, selected: quarter))
+        let done = HomeFigures.make(input(phase: .done, tiles: tiles, selected: [.userLogs: quarter]))
         #expect(done.cleaned == [.userLogs])
         #expect(done.nibbling.isEmpty)
         #expect(done.safeJunk == 0)
@@ -341,7 +341,7 @@ struct HomeFiguresTests {
     }
 
     @Test func notScannedYetHasNoTotals() {
-        let figures = HomeFigures.make(input(phase: .scanning, selected: quarter))
+        let figures = HomeFigures.make(input(phase: .scanning, selected: [.userLogs: quarter]))
         #expect(!figures.scanFinished)
         #expect(figures.reclaimable == nil)
         #expect(figures.afterCleanup == 10 * gb)
@@ -389,12 +389,23 @@ struct HomeFiguresTests {
     @Test func revokedPlaceIsOnlyALockedCellNotItsOldBytes() {
         // Scanned with access; access was revoked since.
         let figures = HomeFigures.make(input(
-            tiles: [tile(.userLogs, quarter), tile(.xcodeJunk, 4 * quarter)], selected: 0,
+            tiles: [tile(.userLogs, quarter), tile(.xcodeJunk, 4 * quarter)], selected: [:],
             places: [Place(id: .userLogs, access: .readable), Place(id: .xcodeJunk, access: .locked)],
             scope: HomeScanScope(full: [.userLogs, .xcodeJunk])))
         #expect(!figures.mosaic.cells.contains(.category(.xcodeJunk)))
         #expect(figures.mosaic.cells.filter { $0 == .locked }.count == 1)
         #expect(figures.reclaimable == quarter)
+    }
+
+    @Test func junkSelectedInARevokedPlaceIsLeftOutOfTheHeroAndMeter() {
+        // Both were selected when access was on; Xcode data can't be read now.
+        let figures = HomeFigures.make(input(
+            tiles: [tile(.userLogs, quarter), tile(.xcodeJunk, 4 * quarter)],
+            selected: [.userLogs: quarter, .xcodeJunk: 4 * quarter],
+            places: [Place(id: .userLogs, access: .readable), Place(id: .xcodeJunk, access: .locked)],
+            scope: HomeScanScope(full: [.userLogs, .xcodeJunk])))
+        #expect(figures.safeJunk == quarter)
+        #expect(figures.afterCleanup == 10 * gb + Int64(quarter))
     }
 }
 

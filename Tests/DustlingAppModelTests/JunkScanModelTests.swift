@@ -3,7 +3,9 @@ import Testing
 import DustlingCore
 @testable import DustlingAppModel
 
-@MainActor
+/// Serialized: the scanner and the cleanup runner do blocking file work inside async calls that run
+/// on the cooperative pool, and their cancellation needs the task, so they can't move to `Blocking`.
+@MainActor @Suite(.serialized)
 struct JunkScanModelTests {
     private func makeModel(
         _ rig: ModelRig, running: Set<String> = [], failing: Set<String> = [], preselectSafe: Bool = true,
@@ -244,6 +246,99 @@ struct JunkScanModelTests {
         let rig = try ModelRig()
         let model = makeModel(rig)
         await #expect(throws: (any Error).self) { _ = try await model.putEverythingBack() }
+    }
+}
+
+extension JunkScanModelTests {
+    @Test func selectedBytesAreKnownPerCategory() async throws {
+        let rig = try ModelRig()
+        try rig.file(rig.cachesDirectory.appending(path: "com.a.app/blob"), bytes: 4096)
+        try rig.file(rig.backupsDirectory.appending(path: "device1/data"), bytes: 8192)
+        let model = makeModel(rig)
+        await scanned(model)
+        let caches = try #require(model.categories.first { $0.id == .userCaches })
+        #expect(model.selectedBytesByCategory == [.userCaches: caches.bytes])
+        model.toggle(.iosBackups)
+        let backups = try #require(model.categories.first { $0.id == .iosBackups })
+        #expect(model.selectedBytesByCategory == [.userCaches: caches.bytes, .iosBackups: backups.bytes])
+        #expect(model.selectedBytes == caches.bytes + backups.bytes)
+    }
+
+    @Test func toggleClearsTheMessage() async throws {
+        let rig = try ModelRig()
+        try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        let model = makeModel(rig, preselectSafe: false)
+        await scanned(model)
+        await model.clean()
+        #expect(model.message != nil)
+        model.toggle(.userCaches)
+        #expect(model.message == nil)
+    }
+
+    @Test func putEverythingBackCantRunTwiceAtOnce() async throws {
+        let rig = try ModelRig()
+        let a = try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        let completed = Counter()
+        let model = makeModel(rig, onRunCompleted: { completed.bump() })
+        await scanned(model)
+        await model.clean()
+
+        async let first = try? model.putEverythingBack()
+        async let second = try? model.putEverythingBack()
+        let results = await [first, second]
+
+        let restored = results.compactMap { $0 }
+        #expect(restored.count == 1)
+        #expect(restored.first?.count == 1)
+        #expect(!model.isRestoring)
+        #expect(FileManager.default.fileExists(atPath: a.path))
+        #expect(completed.value == 2)   // the clean and one restore
+    }
+
+    @Test func withoutTrashAccessCleaningWarnsOrIsRefusedByPolicy() async throws {
+        #expect(CleanupGate.make(canTakeOutOfTrash: true, policy: .refuseToClean)
+            == CleanupGate(kind: .allowed, note: nil, undo: .putEverythingBack))
+        let warn = CleanupGate.make(canTakeOutOfTrash: false, policy: .warnBeforeCleaning)
+        #expect(warn.kind == .confirmFirst && warn.undo == .showInTrash)
+        #expect(warn.note == "Without Full Disk Access, Dustling can't put these back for you. "
+            + "You can still drag them out of the Trash in Finder.")
+
+        let rig = try ModelRig()
+        let a = try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        let model = makeModel(rig)
+        await scanned(model)
+        model.canTakeOutOfTrash = false
+        model.limitedCleanupPolicy = .refuseToClean
+        await model.clean()
+        guard case .ready = model.state else { Issue.record("expected ready"); return }
+        #expect(model.message == CleanupGate.refusedNote)
+        #expect(FileManager.default.fileExists(atPath: a.path))
+
+        model.limitedCleanupPolicy = .warnBeforeCleaning
+        await model.clean()   // the view asked first
+        guard case .done = model.state else { Issue.record("expected done"); return }
+        #expect(model.cleanupGate.undo == .showInTrash)
+    }
+
+    @Test func cleanTracksEachCategoryAndItsOutcomes() async throws {
+        let rig = try ModelRig()
+        try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        try rig.file(rig.cachesDirectory.appending(path: "boom.log"), bytes: 4096)
+        try rig.file(rig.cachesDirectory.appending(path: "com.open.app/blob"), bytes: 4096)
+        let model = makeModel(rig, running: ["com.open.app"], failing: ["boom.log"])
+        await scanned(model)
+        await model.clean()
+
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+        let progress = try #require(model.categoryProgress[.userCaches])
+        #expect(progress.done == progress.total)
+        #expect(progress.total == 2)   // the in-use item is never attempted
+        let outcome = try #require(model.categoryOutcomes[.userCaches])
+        #expect(outcome.movedBytes == record.bytesMovedToTrash)
+        #expect(outcome.movedCount == 1)
+        #expect(outcome.skippedCount == 1)
+        #expect(outcome.failedCount == 1)
+        #expect(model.categoryOutcomes[.iosBackups] == nil)
     }
 }
 

@@ -26,9 +26,14 @@ public struct RunLogger: Sendable {
         try append(Self.totalsLine(run) + "\n", on: run.startedAt)
     }
 
+    /// The log file a run started on `date` is written to.
+    public func file(for date: Date) -> URL {
+        directory.appending(path: "dustling-\(Self.dayStamp(date)).log")
+    }
+
     private func append(_ text: String, on date: Date) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let file = directory.appending(path: "dustling-\(Self.dayStamp(date)).log")
+        let file = file(for: date)
         if !FileManager.default.fileExists(atPath: file.path(percentEncoded: false)) {
             try Data().write(to: file)
         }

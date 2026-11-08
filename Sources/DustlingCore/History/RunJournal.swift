@@ -129,6 +129,29 @@ public struct RunJournal: Sendable {
         return changed
     }
 
+    /// Why moving an item out of the Trash failed, in plain words. macOS refuses to let an app without
+    /// Full Disk Access take anything out of the Trash, and Foundation's message then blames the
+    /// destination folder; say what really happened instead.
+    public static func restoreFailureReason(
+        _ error: Error, trashedPath: String, destinationWritable: Bool = true, home: String = NSHomeDirectory()
+    ) -> String {
+        // A destination that really can't be written to keeps Foundation's own message.
+        guard destinationWritable, isPermissionError(error) else { return error.localizedDescription }
+        let folder = URL(fileURLWithPath: trashedPath).deletingLastPathComponent().path
+        let homeTrash = URL(fileURLWithPath: home).appendingPathComponent(".Trash").path
+        let shown = folder == homeTrash ? "~/.Trash" : folder
+        return "Dustling can't take it out of the Trash (\(shown)) without Full Disk Access"
+    }
+
+    private static func isPermissionError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain,
+           [NSFileWriteNoPermissionError, NSFileReadNoPermissionError].contains(ns.code) { return true }
+        if ns.domain == NSPOSIXErrorDomain, [Int(EPERM), Int(EACCES)].contains(ns.code) { return true }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error { return isPermissionError(underlying) }
+        return false
+    }
+
     /// Moves trashed entries back. Never overwrites: an occupied original path is a `.conflict`. Only
     /// the item that was trashed is ever moved: if something else now sits at its Trash path, the
     /// entry is `.missingFromTrash` and permanently gone. Throws `.notRestorable` when nothing in the
@@ -173,7 +196,9 @@ public struct RunJournal: Sendable {
                 try fm.createDirectory(at: original.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fm.moveItem(at: URL(fileURLWithPath: trashed), to: original)
             } catch {
-                results.append(.failed(entry.originalPath, reason: error.localizedDescription))
+                results.append(.failed(entry.originalPath, reason: Self.restoreFailureReason(
+                    error, trashedPath: trashed,
+                    destinationWritable: fm.isWritableFile(atPath: original.deletingLastPathComponent().path))))
                 continue
             }
             run.entries[index].restored = true

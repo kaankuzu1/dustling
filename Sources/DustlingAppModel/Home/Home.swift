@@ -315,15 +315,15 @@ public struct HomeFigures: Equatable, Sendable {
         public var goal: UpdateGoal
         public var phase: Phase
         public var tiles: [CategoryTileModel]
-        /// `JunkScanModel.selectedBytes`.
-        public var selectedBytes: UInt64
+        /// `JunkScanModel.selectedBytesByCategory`: what a clean would move, per category.
+        public var selectedBytes: [JunkCategoryID: UInt64]
         public var trash: TrashReading
         public var places: [Place]?
         /// The scope of the last junk scan; nil before one.
         public var scanScope: HomeScanScope?
 
         public init(
-            available: Int64?, goal: UpdateGoal, phase: Phase, tiles: [CategoryTileModel], selectedBytes: UInt64,
+            available: Int64?, goal: UpdateGoal, phase: Phase, tiles: [CategoryTileModel], selectedBytes: [JunkCategoryID: UInt64],
             trash: TrashReading, places: [Place]?, scanScope: HomeScanScope?
         ) {
             self.available = available
@@ -396,7 +396,9 @@ public struct HomeFigures: Equatable, Sendable {
             places: input.places, trash: input.trash, scope: finished ? input.scanScope : nil)
         let lower = input.tiles.contains { $0.stopped } || locked > 0 || trashLower
         let reclaim = HomeMosaic.reclaimableBytes(tiles: input.tiles, excluding: cleaned, trashBytes: trashBytes)
-        let safe = input.phase == .done ? 0 : input.selectedBytes
+        // Junk selected in a place that can't be read now is not offered: it may not be there.
+        let selectedNow = input.selectedBytes.filter { !unreadableNow.contains($0.key) }.values.reduce(0, +)
+        let safe = input.phase == .done ? 0 : selectedNow
         let after = input.available.map { available in
             finished ? available + Int64(clamping: safe + (trashBytes ?? 0)) : available
         }

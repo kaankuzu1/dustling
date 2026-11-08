@@ -110,6 +110,9 @@ struct CleanupRunnerTests {
         let name = "dustling-\(f.string(from: Date())).log"
         let text = try String(contentsOf: sandbox.environment.logsDirectory.appending(path: name), encoding: .utf8)
         #expect(text.components(separatedBy: "run=").count == 3)
+        // The app's View log opens the same file.
+        let logger = RunLogger(directory: sandbox.environment.logsDirectory)
+        #expect(logger.file(for: Date()).lastPathComponent == name)
     }
 
     @Test func logFailureIsRecordedNotSwallowed() async throws {

@@ -14,6 +14,8 @@ struct MosaicView: View {
     let layout: MosaicLayout
     @Binding var hovered: HomeLink?
     var nibbling: Set<JunkCategoryID> = []
+    /// Categories drawn as unselected: their colour mixed 22% into `panel` (DESIGN-mosaic §2).
+    var unselected: Set<JunkCategoryID> = []
     let accessibilitySummary: String
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -122,6 +124,8 @@ struct MosaicView: View {
             var layer = canvas
             layer.opacity = opacity
             switch kind {
+            case .category(let id) where unselected.contains(id):
+                Self.fillUnselected(rect, color: Self.color(for: id), in: &layer)
             case .category(let id):
                 layer.fill(Path(rect), with: .color(Self.color(for: id)))
             case .inTrash:
@@ -143,6 +147,12 @@ struct MosaicView: View {
             return DustlingTheme.Palette.neutralCell
         }
         return series.color
+    }
+
+    /// An unselected cell: the category colour mixed 22% into `panel`.
+    static func fillUnselected(_ rect: CGRect, color: Color, in context: inout GraphicsContext) {
+        context.fill(Path(rect), with: .color(Palette.panel))
+        context.fill(Path(rect), with: .color(color.opacity(0.22)))
     }
 
     /// Stripes 2 pt wide every 5 pt at 135° (the mockups' `.lk` and `.tr` cells).

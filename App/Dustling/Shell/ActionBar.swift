@@ -5,12 +5,15 @@ import SwiftUI
 struct ActionBar<Buttons: View>: View {
     let title: String
     var caption: String?
+    /// While work runs: a spinner before the summary (a static label under Reduce Motion).
+    var busyLabel: String?
     @ViewBuilder var buttons: () -> Buttons
 
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
         HStack(spacing: 12) {
+            if let busyLabel { BusyIndicator(label: busyLabel) }
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 13.5).weight(.semibold))

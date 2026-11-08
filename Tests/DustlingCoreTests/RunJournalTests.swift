@@ -202,6 +202,19 @@ struct RunJournalTests {
         #expect(saved.restorable)
     }
 
+    @Test func permissionRefusalOutOfTheTrashNamesTheTrashAndFullDiskAccess() {
+        let denied = CocoaError(.fileWriteNoPermission, userInfo: [NSUnderlyingErrorKey: POSIXError(.EPERM)])
+        #expect(RunJournal.restoreFailureReason(denied, trashedPath: "/Users/k/.Trash/CoreSimulator", home: "/Users/k")
+            == "Dustling can't take it out of the Trash (~/.Trash) without Full Disk Access")
+        #expect(RunJournal.restoreFailureReason(POSIXError(.EACCES), trashedPath: "/Volumes/S/.Trashes/501/x", home: "/Users/k")
+            == "Dustling can't take it out of the Trash (/Volumes/S/.Trashes/501) without Full Disk Access")
+        #expect(RunJournal.restoreFailureReason(
+            denied, trashedPath: "/Users/k/.Trash/x", destinationWritable: false, home: "/Users/k") == denied.localizedDescription)
+        let other = POSIXError(.EIO)
+        #expect(RunJournal.restoreFailureReason(other, trashedPath: "/Users/k/.Trash/x", home: "/Users/k")
+            == other.localizedDescription)
+    }
+
     @Test func unreadableHistoryDirectoryThrows() throws {
         let s = try TestSandbox()
         let j = journal(s)

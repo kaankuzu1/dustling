@@ -39,6 +39,9 @@ final class AppModels {
 
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
     @ObservationIgnored private let environment: SystemEnvironment
+    @ObservationIgnored private let logger: RunLogger
+    /// The junk categories by name and kind, in catalog order, for the Junk scan screen's tiles.
+    @ObservationIgnored let junkCatalog: [JunkScreen.Entry]
     /// The categories the next junk scan may open (see `scanJunk()`).
     @ObservationIgnored private let scanCatalog: ScanCatalog
     /// What the last junk scan covered; places that opened since show as not scanned until a rescan.
@@ -67,6 +70,10 @@ final class AppModels {
         self.environment = environment
 
         let logger = RunLogger(directory: environment.logsDirectory)
+        self.logger = logger
+        junkCatalog = JunkCatalog.standard(environment).map {
+            JunkScreen.Entry(id: $0.id, title: $0.title, selection: $0.selection)
+        }
         let options = ScanOptions()
         let protectedPaths = options.protectedPaths(environment: environment)
         let runner = CleanupRunner(
@@ -95,6 +102,8 @@ final class AppModels {
                 Task { await trash.refresh() }
                 Task { await storage.refresh() }
             })
+        // Unknown until the first probe: assume Put back can't work.
+        junk.canTakeOutOfTrash = false
         let running = WorkspaceRunningApps()
         uninstaller = UninstallerModel(
             scout: AppScout(environment: environment),
@@ -177,7 +186,7 @@ final class AppModels {
         switch junk.state {
         case .idle: phase = .notScanned
         case .scanning: phase = .scanning
-        case .ready, .problem: phase = .ready
+        case .ready: phase = .ready
         case .moving: phase = .moving
         case .done: phase = .done
         }
@@ -191,8 +200,62 @@ final class AppModels {
         }
         return HomeFigures.make(HomeFigures.Input(
             available: storage.info?.availableForImportantUsage, goal: goal, phase: phase,
-            tiles: junk.categories, selectedBytes: junk.selectedBytes, trash: reading,
+            tiles: junk.categories, selectedBytes: junk.selectedBytesByCategory, trash: reading,
             places: places.places, scanScope: lastScanScope))
+    }
+
+    // MARK: Junk scan
+
+    /// The Junk scan screen's tiles from the scan, the places check and the cleanup.
+    var junkTiles: [JunkTile] {
+        let phase: JunkScreen.Phase
+        switch junk.state {
+        case .idle: phase = .notScanned
+        case .scanning: phase = .scanning
+        case .ready: phase = .ready
+        case .moving: phase = .moving
+        case .done: phase = .done
+        }
+        return JunkScreen.tiles(JunkScreen.Input(
+            catalog: junkCatalog, phase: phase, tiles: junk.categories, places: places.places, scope: lastScanScope,
+            progress: junk.categoryProgress, outcomes: junk.categoryOutcomes))
+    }
+
+    /// The home folder, for shortening paths on screen.
+    var homeDirectory: URL { environment.home }
+
+    /// Opens the log file the run was written to. Says so if it can't.
+    func openLog(for record: RunRecord) {
+        let file = logger.file(for: record.startedAt)
+        if FileManager.default.fileExists(atPath: file.path(percentEncoded: false)), NSWorkspace.shared.open(file) {
+            return
+        }
+        NSLog("Dustling: couldn't open the log at \(file.path(percentEncoded: false))")
+        let alert = NSAlert()
+        alert.messageText = "The log didn't open"
+        alert.informativeText = "Dustling writes its logs to \(logger.directory.path(percentEncoded: false)). "
+            + "Open the file for \(record.startedAt.formatted(date: .abbreviated, time: .omitted)) from there."
+        alert.runModal()
+    }
+
+    /// Opens the Trash in Finder, where the user can drag items back (Dustling can't read it without
+    /// Full Disk Access).
+    func showTrashInFinder() {
+        let trash = environment.home.appending(path: ".Trash", directoryHint: .isDirectory)
+        if !NSWorkspace.shared.open(trash) {
+            NSLog("Dustling: couldn't open the Trash in Finder")
+            let alert = NSAlert()
+            alert.messageText = "The Trash didn't open"
+            alert.informativeText = "Click the Trash in the Dock to open it in Finder."
+            alert.runModal()
+        }
+    }
+
+    /// The name of the app with this bundle ID, for "2 skipped because Mail is using them".
+    nonisolated static func appName(bundleID: String) -> String? {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
+        let name = FileManager.default.displayName(atPath: url.path(percentEncoded: false))
+        return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
     }
 
     /// Loads the apps once Full Disk Access is on; never without it (see `uninstallerLoaded`).
@@ -242,6 +305,8 @@ final class AppModels {
     /// Re-checks which places are locked. Waits for the first Full Disk Access probe, because
     /// without access the check must not open folders that would prompt for consent.
     func refreshPlaces() async {
+        // Without Full Disk Access macOS won't let Dustling take anything out of the Trash.
+        junk.canTakeOutOfTrash = health.fullDiskAccess == .granted
         guard hasProbedFullDiskAccess else { return }
         await places.refresh(fullDiskAccessGranted: health.fullDiskAccess == .granted)
     }
@@ -254,7 +319,9 @@ final class AppModels {
         Task {
             // Probe first: places and the Trash must be checked with the access macOS gives now, or
             // a revoked grant could still open other volumes' Trash folders once.
-            await health.refresh()
+            // A probe superseded by a newer one (onboarding polling) published nothing: that one's
+            // status is the fresh one, and the `.task(id: fullDiskAccessKey)` refreshes places then.
+            guard await health.refresh() else { return }
             await refreshPlaces()
             // The Trash may have been emptied or filled in Finder meanwhile.
             if homeLoaded { refreshTrash() }
