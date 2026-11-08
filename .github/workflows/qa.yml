@@ -1,0 +1,44 @@
+# Opens Dustling in every screen state at three window sizes and fails if a control is cut off or has
+# no name VoiceOver can read (scripts/qa-screens.sh). The pictures are kept with the run for 14 days.
+# docs/RELEASING.md, "QA pass", describes the rest of the checks.
+name: QA screens
+
+on:
+  pull_request:
+    paths:
+      - "App/**"
+      - "Sources/**"
+      - "Package.swift"
+      - "scripts/qa-screens.sh"
+      - ".github/workflows/qa.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screens:
+    name: Check every screen
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # Layout doesn't change with the appearance, so one is enough here; run both locally to look.
+      - name: Check every screen state
+        run: scripts/qa-screens.sh --looks dark
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-screens
+          path: dist/qa/
+          if-no-files-found: ignore
+          retention-days: 14
