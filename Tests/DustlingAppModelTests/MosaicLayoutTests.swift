@@ -60,6 +60,30 @@ struct MosaicLayoutTests {
         #expect(over.cells.count == 13)
     }
 
+    @Test func trashCategoryEntryIsIgnored() {
+        let layout = make(categories: [(.trash, UInt64(cell) * 3)], inTrash: UInt64(cell) * 3)
+        #expect(layout.cells.filter { $0 == .inTrash }.count == 3)
+        #expect(!layout.cells.contains(.category(.trash)))
+        #expect(layout.cells.count == 100)
+    }
+
+    @Test func zeroTotalIsEmpty() {
+        let layout = make(total: 0, available: 0)
+        #expect(layout.cells.isEmpty)
+        #expect(layout.columns == 0)
+    }
+
+    @Test func availableAboveTotalStillRenders() {
+        let layout = make(total: 10 * cell, available: 12 * cell)
+        #expect(layout.cells == Array(repeating: .free, count: 12))
+    }
+
+    @Test func equalCategoriesKeepInputOrder() {
+        let layout = make(total: 4 * cell, available: 0,
+                          categories: [(.userLogs, UInt64(cell)), (.xcodeJunk, UInt64(cell))])
+        #expect(layout.cells == [.category(.userLogs), .category(.xcodeJunk), .other, .other])
+    }
+
     @Test func categorySlotMapping() {
         #expect(CategorySeries.slot(for: .xcodeJunk) == 1)
         #expect(CategorySeries.slot(for: .systemCachesAndLogs) == 2)

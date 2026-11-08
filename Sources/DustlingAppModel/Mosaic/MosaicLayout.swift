@@ -26,7 +26,8 @@ public enum CategorySeries {
 /// decimal, on purpose: a cell is a visual unit, not a displayed size.
 public struct MosaicLayout: Equatable, Sendable {
     public var cells: [CellKind]
-    public var rows: Int = 4
+    public static let rowCount = 4
+    public var rows: Int = MosaicLayout.rowCount
     public var columns: Int
 
     /// Order: free, categories (largest first), inTrash, locked (one cell per place), other.
@@ -45,8 +46,9 @@ public struct MosaicLayout: Equatable, Sendable {
         let totalCells = ceilCells(UInt64(max(0, totalBytes)))
         var cells = Array(repeating: CellKind.free, count: ceilCells(UInt64(max(0, availableBytes))))
 
+        // The Trash is shown only through `inTrashBytes` (hatched); a .trash entry would double count.
         let ordered = categories.enumerated()
-            .filter { $0.element.1 > 0 }
+            .filter { $0.element.1 > 0 && $0.element.0 != .trash }
             .sorted { $0.element.1 != $1.element.1 ? $0.element.1 > $1.element.1 : $0.offset < $1.offset }
         for (_, entry) in ordered {
             cells += Array(repeating: .category(entry.0), count: ceilCells(entry.1))
@@ -56,7 +58,7 @@ public struct MosaicLayout: Equatable, Sendable {
         if totalCells > cells.count {
             cells += Array(repeating: .other, count: totalCells - cells.count)
         }
-        let rows = 4
+        let rows = rowCount
         return MosaicLayout(cells: cells, rows: rows, columns: (cells.count + rows - 1) / rows)
     }
 }

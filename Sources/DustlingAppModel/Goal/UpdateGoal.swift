@@ -25,9 +25,9 @@ public struct UpdateGoal: Codable, Equatable, Sendable {
         public let description: String
     }
 
-    /// Size in bytes of the largest pending macOS update, or nil if none is listed.
+    /// Size in bytes of the largest pending macOS update, or nil only when no macOS entry is listed.
     /// Runs `softwareupdate --list` (it contacts Apple), so call it only when the user clicks
-    /// "Check update size" (Ruling R32). Failure throws; no number is ever invented.
+    /// "Check update size" (Ruling R32). It blocks on the network, so call it off the main actor. Failure throws; no number is ever invented.
     public static func measure(commands: CommandRunning) throws -> Int64? {
         let result = try commands.run("/usr/sbin/softwareupdate", ["--list"])
         guard result.status == 0 else {
@@ -36,13 +36,15 @@ public struct UpdateGoal: Codable, Equatable, Sendable {
                 description: "softwareupdate exited with status \(result.status)" + (detail.isEmpty ? "" : ": \(detail)"))
         }
         var largest: Int64?
+        // softwareupdate prints its listing on stdout but some of it on stderr, so read both.
         for line in (result.stdout + "\n" + result.stderr).split(whereSeparator: \.isNewline) {
-            guard let title = field("Title:", in: line), title.hasPrefix("macOS"),
-                let size = field("Size:", in: line), size.hasSuffix("KiB"),
-                let kib = Int64(size.dropLast(3))
-            else { continue }
-            let (bytes, overflow) = kib.multipliedReportingOverflow(by: 1024)
-            if !overflow, bytes > (largest ?? 0) { largest = bytes }
+            guard let title = field("Title:", in: line), title.hasPrefix("macOS") else { continue }
+            // A macOS entry whose size can't be read must not look like "no update pending".
+            guard let size = field("Size:", in: line), size.hasSuffix("KiB"),
+                let kib = Int64(size.dropLast(3)), kib >= 0,
+                case let (bytes, overflow) = kib.multipliedReportingOverflow(by: 1024), !overflow
+            else { throw MeasureError(description: "couldn't read the update size") }
+            if bytes > (largest ?? 0) || largest == nil { largest = bytes }
         }
         return largest
     }

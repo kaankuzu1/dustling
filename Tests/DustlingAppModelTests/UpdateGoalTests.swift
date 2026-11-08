@@ -39,6 +39,16 @@ struct UpdateGoalTests {
         #expect(try UpdateGoal.measure(commands: runner) == nil)
     }
 
+    @Test func unreadableMacOSSizeThrowsInsteadOfNil() {
+        for line in [
+            "\tTitle: macOS Tahoe 26.2, Version: 26.2, Size: 7123456K, Recommended: YES,\n",
+            "\tTitle: macOS Tahoe 26.2, Version: 26.2, Recommended: YES,\n",
+        ] {
+            let runner = FakeRunner(result: .success(CommandResult(status: 0, stdout: line, stderr: "")))
+            #expect(throws: (any Error).self) { try UpdateGoal.measure(commands: runner) }
+        }
+    }
+
     @Test func nonZeroExitThrows() {
         let runner = FakeRunner(result: .success(CommandResult(status: 1, stdout: "", stderr: "boom")))
         #expect(throws: (any Error).self) { try UpdateGoal.measure(commands: runner) }
