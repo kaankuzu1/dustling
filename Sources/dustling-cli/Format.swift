@@ -70,6 +70,12 @@ enum Format {
         }
     }
 
+    /// A typed or journaled path in one comparable form: `~` expanded, made absolute, `.`/`..` removed,
+    /// no trailing slash.
+    static func normalizedPath(_ text: String) -> String {
+        path(URL(filePath: (text as NSString).expandingTildeInPath).standardizedFileURL)
+    }
+
     /// Path without the trailing slash directory URLs carry.
     static func path(_ url: URL) -> String {
         let text = url.path(percentEncoded: false)

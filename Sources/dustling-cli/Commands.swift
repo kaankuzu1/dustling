@@ -401,6 +401,10 @@ enum Commands {
 
     static func history() -> Int32 {
         let journal = self.journal
+        // Bring the "restorable" markers up to date first (the Trash may have been emptied since).
+        do { try journal.refreshRestorability() } catch {
+            Format.printWarning("Couldn't update which runs can be restored: \(error.localizedDescription)")
+        }
         let runs: [RunRecord]
         do { runs = try journal.all() } catch {
             Format.printError("Couldn't read history: \(error.localizedDescription)")
@@ -421,32 +425,42 @@ enum Commands {
         return 0
     }
 
+    private static let notRestorableMessage =
+        "This run can't be restored: its items were already put back or are no longer in the Trash."
+
     static func restore(_ args: [String]) -> Int32 {
         var prefix: String?
         var path: String?
+        var assumeYes = false
+        let usage = "Usage: dustling-cli restore <run-id-prefix> [--path <p>] [--yes]"
         var index = 0
         while index < args.count {
             if args[index] == "--path" {
                 index += 1
                 guard index < args.count else { Format.printError("--path needs a value."); return 1 }
                 path = args[index]
+            } else if args[index] == "--yes" {
+                assumeYes = true
             } else if args[index].hasPrefix("--") {
                 Format.printError("Unknown option: \(args[index])")
                 return 1
             } else if prefix == nil {
                 prefix = args[index].lowercased()
             } else {
-                Format.printError("Usage: dustling-cli restore <run-id-prefix> [--path <p>]")
+                Format.printError(usage)
                 return 1
             }
             index += 1
         }
         guard let prefix, !prefix.isEmpty else {
-            Format.printError("Usage: dustling-cli restore <run-id-prefix> [--path <p>]")
+            Format.printError(usage)
             return 1
         }
 
         let journal = self.journal
+        do { try journal.refreshRestorability() } catch {
+            Format.printWarning("Couldn't update which runs can be restored: \(error.localizedDescription)")
+        }
         let runs: [RunRecord]
         do { runs = try journal.all() } catch {
             Format.printError("Couldn't read history: \(error.localizedDescription)")
@@ -460,6 +474,44 @@ enum Commands {
             return 1
         }
 
+        // The entries in scope: all of the run's, or the ones with the given path.
+        var scope = run.entries.filter { !$0.originalPath.hasPrefix("<") }   // skip <history>/<log> markers
+        if let path {
+            let wanted = Format.normalizedPath(path)
+            scope = scope.filter { Format.normalizedPath($0.originalPath) == wanted }
+            guard !scope.isEmpty else {
+                Format.printError("No entry with that path in this run.")
+                return 1
+            }
+        }
+        let candidates = scope.filter { RunJournal.isRestorable($0) }
+        guard run.restorable, !candidates.isEmpty else {
+            Format.printError(path == nil
+                ? notRestorableMessage
+                : "That item can't be restored: it was already put back, never reached the Trash, "
+                    + "or is no longer in the Trash.")
+            return 1
+        }
+
+        // Show exactly what will be put back, and only restore what was shown.
+        print("These items will be put back where they were:")
+        for entry in candidates {
+            print("  \(Format.bytes(entry.bytes))  \(entry.originalPath)")
+        }
+        for entry in scope where !entry.restored && !RunJournal.isRestorable(entry) {
+            if case .movedToTrash = entry.outcome {
+                print("  can't be put back, no longer in the Trash: \(entry.originalPath)")
+            }
+        }
+        let total = candidates.reduce(UInt64(0)) { $0 + $1.bytes }
+        guard Format.confirm(
+            "Put back \(Format.plural(candidates.count, "item")) (\(Format.bytes(total))) from the Trash? [y/N]",
+            assumeYes: assumeYes)
+        else {
+            print("Cancelled.")
+            return 0
+        }
+
         func report(_ outcomes: [RestoreOutcome]) -> Int32 {
             var code: Int32 = 0
             for outcome in outcomes {
@@ -470,16 +522,19 @@ enum Commands {
                 case .failed(let p, let reason): print("  \(p): failed: \(reason)"); code = 2
                 }
             }
-            if outcomes.isEmpty { print("Nothing to restore in that run.") }
+            if outcomes.isEmpty { print("Nothing was restored.") }
             return code
         }
 
         do {
-            return report(try journal.restore(runID: run.id, paths: path.map { [$0] }))
+            return report(try journal.restore(runID: run.id, paths: Set(candidates.map(\.originalPath))))
         } catch RunJournalError.saveFailed(let outcomes, let underlying) {
             _ = report(outcomes)
             Format.printError("Items were restored, but the history couldn't be updated: \(underlying.localizedDescription)")
             return 2
+        } catch RunJournalError.notRestorable {
+            Format.printError(notRestorableMessage)
+            return 1
         } catch {
             Format.printError("Restore failed: \(error.localizedDescription)")
             return 1

@@ -13,7 +13,7 @@ Commands:
   startup                             List login items and background agents
   startup disable|enable <label>      Turn a startup item off or on (asks first)
   history                             List past runs
-  restore <run-id-prefix> [--path <p>]  Put a run's items back from the Trash
+  restore <run-id-prefix> [--path <p>]  Put a run's items back from the Trash (asks first)
   empty-trash                         Permanently delete everything in the Trash (asks first)
 
 Options:
