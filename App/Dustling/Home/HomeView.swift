@@ -54,6 +54,7 @@ struct HomeView: View {
             models.loadUninstallerIfAllowed()
             models.refreshTrash()
         }
+        .dismissedOnQuit($confirmingEmptyTrash)
         .sheet(isPresented: $confirmingEmptyTrash) {
             EmptyTrashSheet()
         }
@@ -108,25 +109,29 @@ private struct ReclaimablePanel: View {
     var body: some View {
         let figures = models.homeFigures
         VStack(alignment: .leading, spacing: 8) {
-            if figures.scanFinished {
-                (Text(figures.reclaimable.map(Bytes.format) ?? "")
-                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5).weight(.semibold))
-                    .foregroundStyle(Palette.ink)
-                 + Text("\(figures.isLowerBound ? " or more" : "") Dustling could reclaim. Each pixel is a quarter gigabyte.")
-                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
-                    .foregroundStyle(Palette.muted))
-                    .monospacedDigit()
+            // While the scan runs: the same caption with a placeholder size, and the mosaic's skeleton.
+            let finished = figures.scanFinished
+            (Text(finished ? figures.reclaimable.map(Bytes.format) ?? "" : "00.0 GB")
+                .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5).weight(.semibold))
+                .foregroundStyle(Palette.ink)
+             + Text("\(finished && figures.isLowerBound ? " or more" : "") Dustling could reclaim. Each pixel is a quarter gigabyte.")
+                .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
+                .foregroundStyle(Palette.muted))
+                .monospacedDigit()
+                .skeletonText()
+                .skeleton(!finished)
+            if finished {
                 MosaicView(
                     layout: figures.mosaic, hovered: $hovered, nibbling: figures.nibbling,
                     accessibilitySummary: figures.mosaicSummary)
             } else {
-                SkeletonBlock(width: 320, height: 12)
-                SkeletonBlock(height: 54, cornerRadius: 4, index: 1)
+                MosaicSkeleton(index: 1)
             }
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))
+        .skeletonSurfaceIsPanel()
     }
 }

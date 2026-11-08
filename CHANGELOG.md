@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- Quit works even when a confirmation or sheet is open. If Dustling is moving files, it asks before stopping.
+- Loading placeholders now line up with the content that replaces them on every screen, show up on panels in light and dark, and fill the space without spilling over.
+
 ## [0.1.0] - 2026-11-08
 
 The first release of Dustling: a free, open-source Mac cleaner that moves things to the Trash first and tells you what happened to every file.

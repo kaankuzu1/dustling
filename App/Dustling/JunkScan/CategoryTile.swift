@@ -15,8 +15,11 @@ struct CategoryTile: View {
 
     private typealias Palette = DustlingTheme.Palette
 
+    /// The place is still being scanned: the tile draws as its own skeleton.
+    private var isPending: Bool { tile.status == .pending }
+
     var body: some View {
-        if tile.status == .pending {
+        if isPending {
             skeleton
         } else {
             content
@@ -27,7 +30,8 @@ struct CategoryTile: View {
         RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous)
     }
 
-    private var content: some View {
+    /// The tile's layout, shared by the loaded tile and its skeleton.
+    private var layout: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 leading
@@ -36,19 +40,27 @@ struct CategoryTile: View {
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .skeletonText()
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             size
             MiniMosaicView(
-                mosaic: tile.cells, color: MosaicView.color(for: tile.id), nibbling: tile.status == .moved)
-            Text(tile.note)
+                mosaic: isPending ? Self.placeholderCells : tile.cells, color: MosaicView.color(for: tile.id),
+                nibbling: tile.status == .moved)
+                .skeletonBlock()
+            Text(isPending ? Self.placeholderNote : tile.note)
                 .font(DustlingTheme.Typography.caption)
                 .foregroundStyle(tile.status == .locked || tile.status == .unreadable ? Palette.warning : Palette.muted)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
+                .skeletonText()
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var content: some View {
+        layout
         .background(tile.isOutlined ? Palette.ground : Palette.panel, in: shape)
         .overlay { if tile.isOutlined { shape.strokeBorder(Palette.line, lineWidth: 1) } }
         // One element: the name, then the size and state ("4.2 GB, selected"), the note as the hint.
@@ -90,20 +102,22 @@ struct CategoryTile: View {
         case .moved, .cleaned:
             CheckMark()
         case .pending:
-            EmptyView()
+            // The skeleton's checkbox block, the size of the real one.
+            Toggle(isOn: .constant(false)) { EmptyView() }
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .skeletonBlock()
         }
     }
 
     // MARK: Size
 
     @ViewBuilder private var size: some View {
-        if let bytes = tile.bytes {
+        if isPending {
+            sizeText("00.00 GB").skeletonText()
+        } else if let bytes = tile.bytes {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(Bytes.format(bytes))
-                    .font(.custom(DustlingTheme.Typography.pixelFamily, size: 18))
-                    .foregroundStyle(Palette.ink)
-                    .monospacedDigit()
-                    .contentTransition(reduceMotion ? .identity : .numericText())
+                sizeText(Bytes.format(bytes))
                 if tile.isLowerBound {
                     Text("or more")
                         .font(DustlingTheme.Typography.caption)
@@ -119,20 +133,29 @@ struct CategoryTile: View {
         }
     }
 
+    private func sizeText(_ text: String) -> some View {
+        Text(text)
+            .font(.custom(DustlingTheme.Typography.pixelFamily, size: 18))
+            .foregroundStyle(Palette.ink)
+            .monospacedDigit()
+            .contentTransition(reduceMotion ? .identity : .numericText())
+    }
+
     // MARK: Skeleton
 
+    /// What a scanned tile usually shows: two rows of cells and a one-line note.
+    private static let placeholderCells = MiniMosaic(count: 2 * MiniMosaicView.columns, kind: .selected)
+    private static let placeholderNote = Placeholder.text(0, base: 24, spread: 0)
+
+    /// The tile's own layout in placeholder mode, outlined on `ground` so the `panel` blocks show.
+    /// The stagger follows the tile's place in the catalog.
     private var skeleton: some View {
-        let index = abs(tile.id.hashValue) % 4
-        return VStack(alignment: .leading, spacing: 8) {
-            SkeletonBlock(width: 140, height: 14, index: index)
-            SkeletonBlock(width: 80, height: 18, index: index)
-            SkeletonBlock(height: 30, index: index)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay { shape.strokeBorder(Palette.line, lineWidth: 1) }
-        .accessibilityElement()
-        .accessibilityLabel("\(tile.title): scanning")
+        layout
+            .background(Palette.ground, in: shape)
+            .overlay { shape.strokeBorder(Palette.line, lineWidth: 1) }
+            .skeleton(
+                true, index: JunkCategoryID.allCases.firstIndex(of: tile.id) ?? 0,
+                accessibilityLabel: "\(tile.title): scanning")
     }
 }
 
@@ -166,7 +189,7 @@ struct MiniMosaicView: View {
     @State private var nibbleStart: Date?
     @State private var nibbleFinished = false
 
-    private static let columns = 20
+    static let columns = 20
     private static let gap: CGFloat = 1
 
     private var cell: CGFloat {

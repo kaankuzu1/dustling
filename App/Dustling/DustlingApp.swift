@@ -3,6 +3,7 @@ import SwiftUI
 
 @main
 struct DustlingApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var models: AppModels
 
     init() {
@@ -10,6 +11,8 @@ struct DustlingApp: App {
         let models = AppModels()
         models.start()
         Appearance.apply(models.settings.appearance)
+        AppDelegate.models = models
+        ModalAlert.coordinator = models.quit
         _models = State(initialValue: models)
     }
 
@@ -21,6 +24,13 @@ struct DustlingApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(DustlingTheme.Metrics.defaultWindow)
         .windowResizability(.contentMinSize)
+        .commands {
+            // Replaces AppKit's Quit, which a window with a SwiftUI sheet refuses (QuitCoordinator).
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit Dustling") { Task { await models.quit.requestQuit() } }
+                    .keyboardShortcut("q")
+            }
+        }
 
         // First launch, limited mode's "Grant access" and Settings > Permissions open it
         // (`AppModels.openOnboarding(at:using:)`). Only the first scene opens at launch.

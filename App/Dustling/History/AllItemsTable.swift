@@ -9,12 +9,16 @@ struct AllItemsTable: View {
     @Environment(AppModels.self) private var models
     let context: HistoryScreen.Context
     @Binding var checked: Set<String>
+    /// The table's height, for how many skeleton rows fill it.
+    @State private var tableHeight: CGFloat = 0
 
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
         @Bindable var history = models.history
         let items = history.filteredItems
+        // Still reading: the table's own rows with placeholder items, and nothing to search yet.
+        let isLoading = history.isLoading && history.runs.isEmpty
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 HStack(spacing: 6) {
@@ -37,13 +41,29 @@ struct AllItemsTable: View {
                 .labelsHidden()
                 .fixedSize()
                 Spacer()
-                Text("\(items.count.formatted()) \(items.count == 1 ? "item" : "items")")
+                Text(isLoading ? "000 items" : "\(items.count.formatted()) \(items.count == 1 ? "item" : "items")")
                     .font(DustlingTheme.Typography.caption)
                     .foregroundStyle(Palette.muted)
                     .monospacedDigit()
+                    .skeletonText()
+                    .skeleton(isLoading)
             }
+            .disabled(isLoading)
             header
-            if items.isEmpty {
+            if isLoading {
+                let rows = SkeletonMetrics.rowCount(height: tableHeight, rowHeight: ItemRow.height)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(0..<rows, id: \.self) { index in
+                            ItemRow(item: .placeholder(index), context: context, isChecked: false, canCheck: false) {}
+                                .skeleton(true, index: index)
+                        }
+                    }
+                }
+                .scrollDisabled(true)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { tableHeight = $0 }
+            } else if items.isEmpty {
                 Text(history.search.isEmpty
                      ? (history.itemFilter == .restorable ? "Nothing can be put back right now." : "No items yet.")
                      : "No items match.")
@@ -95,6 +115,8 @@ private struct ItemRow: View {
 
     private typealias Palette = DustlingTheme.Palette
 
+    static let height: CGFloat = 38
+
     var body: some View {
         let status = HistoryScreen.itemStatus(
             item.entry, kind: item.runKind, runDate: item.runDate, restorable: item.restorable, context)
@@ -103,20 +125,24 @@ private struct ItemRow: View {
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .disabled(!canCheck)
+                .skeletonBlock()
                 .frame(width: 18)
             Text(HistoryScreen.displayPath(item.path, home: context.home))
                 .font(DustlingTheme.Typography.path)
                 .foregroundStyle(Palette.ink)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .skeletonText()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .help(item.path)
             Text(HistoryScreen.runColumn(item.runKind, item.runDate, context))
-                .frame(width: 170, alignment: .leading)
                 .lineLimit(1)
+                .skeletonText()
+                .frame(width: 170, alignment: .leading)
             Text(item.bytes > 0 ? Bytes.format(item.bytes) : "")
-                .frame(width: 80, alignment: .trailing)
                 .monospacedDigit()
+                .skeletonText()
+                .frame(width: 80, alignment: .trailing)
             Group {
                 switch status.tone {
                 case .success: Chip(text: status.text, kind: .success, icon: .check)
@@ -124,13 +150,14 @@ private struct ItemRow: View {
                 case .neutral: Chip(text: status.text)
                 }
             }
+            .skeletonBlock(cornerRadius: DustlingTheme.Metrics.chipHeight / 2)
             .frame(width: 170, alignment: .leading)
             .help(status.text)
         }
         .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
         .foregroundStyle(Palette.ink)
         .padding(.horizontal, 10)
-        .frame(height: 38)
+        .frame(height: Self.height)
         .overlay(alignment: .bottom) { Hairline() }
         .accessibilityElement(children: .combine)
     }

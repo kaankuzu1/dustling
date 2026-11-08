@@ -9,6 +9,9 @@ import Foundation
 /// - Full Disk Access reads as on (`limited`: off, with the consent places locked), in memory only.
 /// - The disk, the places check, the scan results and the Trash are samples. Nothing is read from
 ///   disk for them, and the junk and Trash models refuse to scan, clean, put back or empty anything.
+/// - `loading`: the disk and the places check never answer, so Home (and the onboarding's place
+///   count) stay in their loading skeletons. `loadingscan`: the disk is read but the scan has
+///   finished no place yet, so Home shows the hero with the scan's skeletons.
 /// - `done` shows the summary of a sample cleanup that was never run.
 /// - `emptytrash` and `reviewfiles` are `ready` with the Junk scan's Empty Trash or Review files sheet
 ///   open (the sheets list the sample items; Empty Trash refuses to delete anything).
@@ -22,6 +25,14 @@ enum HomeFixture {
     static var state: String? { UserDefaults.standard.string(forKey: argument) }
 
     static var isLimited: Bool { state == "limited" }
+
+    /// `loading`: the disk and the places check never answer.
+    static var neverAnswers: Bool { state == "loading" }
+
+    /// Blocks the calling (background) thread for good: a read that never finishes.
+    static func waitForever<T>() -> T {
+        while true { Thread.sleep(forTimeInterval: 3_600) }
+    }
 
     private static let gb: Double = 1_000_000_000
 
@@ -127,6 +138,13 @@ enum HomeFixture {
         ScanProgress(
             currentPath: home.appending(path: "Library/Caches/com.spotify.client/Data/index"),
             bytesFound: UInt64(19.4 * gb), categoriesDone: 3, categoriesTotal: total)
+    }
+
+    /// `loadingscan`: the scan has only just started.
+    static func startingProgress(home: URL, total: Int) -> ScanProgress {
+        ScanProgress(
+            currentPath: home.appending(path: "Library/Caches"), bytesFound: 0, categoriesDone: 0,
+            categoriesTotal: total)
     }
 }
 #endif

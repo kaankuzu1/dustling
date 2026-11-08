@@ -22,6 +22,12 @@ public struct RunLogger: Sendable {
         try append(Self.entryLine(entry) + "\n", on: run.startedAt)
     }
 
+    /// Several entries in one write (a stopped run's remaining items).
+    public func append(_ entries: [JournalEntry], to run: RunRecord) throws {
+        guard !entries.isEmpty else { return }
+        try append(entries.map { Self.entryLine($0) + "\n" }.joined(), on: run.startedAt)
+    }
+
     public func writeTotals(_ run: RunRecord) throws {
         try append(Self.totalsLine(run) + "\n", on: run.startedAt)
     }

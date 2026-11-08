@@ -39,7 +39,11 @@ struct MosaicView: View {
     }
 
     private func metrics(for width: CGFloat) -> Metrics {
-        let columns = max(1, layout.columns)
+        Self.metrics(columns: layout.columns, width: width)
+    }
+
+    private static func metrics(columns: Int, width: CGFloat) -> Metrics {
+        let columns = max(1, columns)
         var gap = DustlingTheme.Metrics.mosaicGap
         var cell = ((width - gap * CGFloat(columns - 1)) / CGFloat(columns)).rounded(.down)
         if cell < 4 {
@@ -50,9 +54,21 @@ struct MosaicView: View {
         return Metrics(cell: min(cell, Self.maxCell), gap: gap)
     }
 
+    /// The loading skeleton's column count: about 40 GB at a quarter gigabyte a cell, four rows.
+    static let placeholderColumns = 40
+
+    /// The size the mosaic takes at `width` with `rows` rows of `columns` columns. Cells stop growing
+    /// at `maxCell`, so a small mosaic is narrower than `width`.
+    static func size(rows: Int, columns: Int, width: CGFloat) -> CGSize {
+        let metrics = metrics(columns: columns, width: width)
+        return CGSize(
+            width: max(0, CGFloat(max(1, columns)) * metrics.pitch - metrics.gap),
+            height: max(0, CGFloat(rows) * metrics.pitch - metrics.gap))
+    }
+
     var body: some View {
         let metrics = metrics(for: width)
-        let height = CGFloat(layout.rows) * metrics.pitch - metrics.gap
+        let height = Self.size(rows: layout.rows, columns: layout.columns, width: width).height
         let nibbleCells = nibbleOrder()
         TimelineView(.animation(paused: reduceMotion || nibbling.isEmpty || nibbleFinished)) { context in
             let elapsed = nibbleStart.map { context.date.timeIntervalSince($0) } ?? 0
@@ -60,7 +76,7 @@ struct MosaicView: View {
                 draw(in: &canvas, metrics: metrics, nibbleOrder: nibbleCells, elapsed: elapsed)
             }
         }
-        .frame(height: max(0, height))
+        .frame(height: height)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             GeometryReader { proxy in
@@ -169,5 +185,20 @@ struct MosaicView: View {
             x += step
         }
         layer.stroke(stripes, with: .color(color), lineWidth: 2)
+    }
+}
+
+/// The mosaic's loading skeleton: one block the size the mosaic takes at this width, with the
+/// mosaic's own cell metrics and rows (`MosaicView.placeholderColumns` columns), leading-aligned
+/// like the mosaic.
+struct MosaicSkeleton: View {
+    var index = 0
+    @State private var width: CGFloat = 0
+
+    var body: some View {
+        let size = MosaicView.size(rows: MosaicLayout.rowCount, columns: MosaicView.placeholderColumns, width: width)
+        SkeletonBlock(width: size.width, height: size.height, cornerRadius: SkeletonMetrics.textRadius, index: index)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self, of: \.size.width) { width = $0 }
     }
 }

@@ -295,6 +295,58 @@ struct CleanupRunnerTests {
         #expect(try await CleanupRunner.recoverInterruptedInBackground(journal: journal, quietFor: 0).isEmpty)
     }
 
+    @Test func recoveryWithoutOtherWritersSkipsTheQuietPeriod() async throws {
+        let sandbox = try TestSandbox()
+        let journal = RunJournal(directory: sandbox.environment.historyDirectory)
+        let stuck = RunRecord(startedAt: Date(), kind: .junkClean, entries: [], restorable: false, inProgress: true)
+        try journal.save(stuck)
+        #expect(CleanupRunner.recoveryQuietPeriod(otherWritersRunning: true) == CleanupRunner.recoveryQuietPeriod)
+        #expect(CleanupRunner.recoveryQuietPeriod(otherWritersRunning: false) == 0)
+        // Another writer runs: a run written just now may be its live run, so it is left alone.
+        #expect(try await CleanupRunner.recoverInterruptedInBackground(journal: journal, otherWritersRunning: { true }).isEmpty)
+        #expect(try journal.all().first { $0.id == stuck.id }?.inProgress == true)
+        // No other writer: nothing can still be writing it, so it is finished off at once.
+        #expect(try await CleanupRunner.recoverInterruptedInBackground(journal: journal, otherWritersRunning: { false }) == [stuck.id])
+        #expect(try journal.all().first { $0.id == stuck.id }?.inProgress == false)
+    }
+
+    @Test func writerProcessesSeesOtherProcessesButNeverItself() {
+        // p_comm keeps at most MAXCOMLEN (16) characters.
+        let me = String(ProcessInfo.processInfo.processName.prefix(Int(MAXCOMLEN)))
+        // launchd and the like are visible; the test process itself is left out.
+        #expect(!WriterProcesses.runningNames(excluding: getpid()).isEmpty)
+        #expect(WriterProcesses.runningNames(excluding: 0).contains(me))
+        #expect(!WriterProcesses.othersRunning(excluding: getpid(), names: ["no-such-process-\(UUID().uuidString.prefix(8))"]))
+    }
+
+    @Test func stoppingRecordsThousandsOfRemainingAndExtraItemsInOneSave() throws {
+        let sandbox = try TestSandbox()
+        let runner = makeRunner(sandbox)
+        let home = sandbox.environment.home
+        let urls = (0..<5_000).map { home.appending(path: "Library/Caches/item-\($0)") }
+        let started = ContinuousClock.now
+        // Stopped before the first item: every item is recorded as stopped.
+        // Plus the caller's extra entries (in use, unmovable), also written in one batch.
+        let extra = (0..<1_000).map { JournalEntry(originalPath: "/in-use/\($0)", bytes: 1, outcome: .skipped(reason: "in use")) }
+        let record = runner.runBlocking(
+            urls, kind: .junkClean, allowedRoots: [home], extraEntries: extra,
+            isCancelled: { true }, onItemStart: { _ in }, onItem: { _, _ in })
+        let elapsed = started.duration(to: .now)
+        #expect(elapsed < .seconds(3), "took \(elapsed)")
+        #expect(record.entries.count == 6_000)
+        #expect(Array(record.entries.suffix(1_000)) == extra)
+        #expect(record.entries.prefix(5_000).allSatisfy {
+            if case .skipped(reason: "cleanup stopped") = $0.outcome { true } else { false }
+        })
+        #expect(!record.inProgress)
+        let saved = try #require(try RunJournal(directory: sandbox.environment.historyDirectory).all().first { $0.id == record.id })
+        #expect(saved.entries.count == 6_000)
+        #expect(!saved.inProgress)
+        let lines = try logText(sandbox).split(separator: "\n")
+        #expect(lines.count == 6_002)
+        #expect(lines.last?.contains("6000 skipped") == true)
+    }
+
     @Test func oldRecordsWithoutInProgressDecodeAsFinished() throws {
         let json = """
         {"id":"\(UUID().uuidString)","startedAt":"2026-01-01T00:00:00Z","kind":{"junkClean":{}},\

@@ -99,8 +99,11 @@ struct ExclusionsSection: View {
         panel.allowsMultipleSelection = true
         panel.prompt = "Exclude"
         panel.message = "Choose folders Dustling should never scan or move."
-        guard panel.runModal() == .OK else { return }
-        add(panel.urls)
+        // A sheet on the Settings window, so Quit can dismiss it.
+        ModalAlert.show(panel) { response in
+            guard response == .OK else { return }
+            add(panel.urls)
+        }
     }
 
     private func add(_ urls: [URL]) {

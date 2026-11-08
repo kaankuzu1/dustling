@@ -11,19 +11,36 @@ struct RunsTimeline: View {
     let onShowLog: (UUID) -> Void
     let onRestore: (UUID) -> Void
     let onShowInTrash: () -> Void
+    /// The loading skeleton: `entries` are placeholders and every run draws in placeholder mode.
+    var isPlaceholder = false
 
     private typealias Palette = DustlingTheme.Palette
 
+    /// A run's dot-and-time line, the gap and the 54 pt row: the skeleton counts runs by it.
+    static let groupHeight: CGFloat = 80
+    static let groupSpacing: CGFloat = 14
+    static let verticalPadding: CGFloat = 14
+
+    /// The tab's loading skeleton: as many placeholder runs as fit in `height`.
+    static func placeholder(height: CGFloat) -> RunsTimeline {
+        let count = SkeletonMetrics.rowCount(
+            height: height - 2 * verticalPadding, rowHeight: groupHeight, spacing: groupSpacing)
+        return RunsTimeline(
+            entries: (0..<count).map { .run(.placeholder($0)) }, selectedRunID: nil, isRestoring: false,
+            onSelect: { _ in }, onShowLog: { _ in }, onRestore: { _ in }, onShowInTrash: {}, isPlaceholder: true)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
-                ForEach(entries) { entry in
+            LazyVStack(alignment: .leading, spacing: Self.groupSpacing) {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                     switch entry {
                     case .run(let line):
                         RunGroup(
                             line: line, isSelected: line.id == selectedRunID, isRestoring: isRestoring,
                             onSelect: { onSelect(line.id) }, onShowLog: { onShowLog(line.id) },
                             onRestore: { onRestore(line.id) }, onShowInTrash: onShowInTrash)
+                        .skeleton(isPlaceholder, index: index)
                         .id(line.id)
                     case .trashEmptied(let text):
                         TrashEmptiedLine(text: text)
@@ -31,9 +48,13 @@ struct RunsTimeline: View {
                 }
             }
             .padding(.horizontal, DustlingTheme.Metrics.gutter)
-            .padding(.vertical, 14)
+            .padding(.vertical, Self.verticalPadding)
         }
-        .arrowKeyList(runIDs, current: selectedRunID, proxy: proxy, select: onSelect)
+        .scrollDisabled(isPlaceholder)
+        // Placeholder runs can't be focused or stepped through.
+        .arrowKeyList(
+            isPlaceholder ? [] : runIDs, current: selectedRunID, proxy: proxy, isEnabled: !isPlaceholder,
+            select: onSelect)
         }
     }
 
@@ -72,12 +93,14 @@ private struct RunGroup: View {
                 Circle()
                     .fill(line.dimmed ? Palette.line : line.tool.color)
                     .frame(width: 12, height: 12)
+                    .skeletonBlock(cornerRadius: 6)
                     .overlay(Circle().strokeBorder(Palette.ground, lineWidth: 3).padding(-3))
                 Text(line.when)
                     .font(DustlingTheme.Typography.rowTitle)
                     .foregroundStyle(Palette.ink)
                     .monospacedDigit()
                     .accessibilityAddTraits(.isHeader)
+                    .skeletonText()
             }
             .padding(.leading, 1)
             RunRowView(
@@ -111,23 +134,27 @@ struct RunRowView: View {
     var body: some View {
         HStack(spacing: 12) {
             ToolIcon(tool: line.tool)
+                .skeletonBlock(cornerRadius: DustlingTheme.Metrics.controlRadius)
             VStack(alignment: .leading, spacing: 1) {
                 Text(line.title)
                     .font(DustlingTheme.Typography.rowTitle)
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .skeletonText()
                 Text(line.caption)
                     .font(DustlingTheme.Typography.caption)
                     .foregroundStyle(Palette.muted)
                     .monospacedDigit()
                     .lineLimit(1)
+                    .skeletonText()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if let chip = line.chip { RunChip(chip: chip) }
             Text(line.size ?? "")
                 .font(DustlingTheme.Typography.size)
                 .foregroundStyle(Palette.ink)
+                .skeletonText()
                 .frame(width: 84, alignment: .trailing)
             Group {
                 switch line.action {

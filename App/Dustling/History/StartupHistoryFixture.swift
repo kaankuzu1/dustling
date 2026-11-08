@@ -5,8 +5,11 @@ import Foundation
 
 /// DEBUG only. Sample data from the approved mockups (`SU` and `RUNS` in screens.html) for screenshots
 /// of states this Mac can't show safely:
-/// - `-DustlingStartupFixture normal|remove|changed`
-/// - `-DustlingHistoryFixture runs|items|log|restored`
+/// - `-DustlingStartupFixture normal|remove|changed|loading`
+/// - `-DustlingHistoryFixture runs|items|log|restored|loading|loading-items|loading-log`
+///
+/// `loading` shows the screen still reading, with nothing found yet (the loading skeleton);
+/// `loading-items` and `loading-log` do so on History's other tabs.
 ///
 /// Nothing here reads or touches the disk: the models refuse to load, switch, remove or restore
 /// while a fixture is on.
@@ -28,6 +31,10 @@ extension AppModels {
 
     private func showStartupFixture(_ state: String) {
         selection = .startupItems
+        if state == "loading" {
+            startup.showFixtureLoading()
+            return
+        }
         let agents = homeDirectory.appending(path: "Library/LaunchAgents")
         func item(
             _ label: String, _ scope: StartupScope, program: String, on: Bool = true
@@ -78,6 +85,11 @@ extension AppModels {
 
     func showHistoryFixture(_ state: String) {
         selection = .history
+        if state.hasPrefix("loading") {
+            history.showFixtureLoading()
+            StartupHistoryFixture.historyTab = state == "loading-items" ? .allItems : state == "loading-log" ? .log : .runs
+            return
+        }
         let home = homePath
         let trash = home + "/.Trash/"
         let gb = 1_000_000_000.0

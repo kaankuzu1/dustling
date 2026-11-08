@@ -421,6 +421,14 @@ public final class StartupModel {
             owners: owners.mapValues { StartupScreen.Owner(name: $0, appURL: nil) })
     }
 
+    /// DEBUG screenshots only: still looking, with nothing found yet (the loading skeleton).
+    public func showFixtureLoading() {
+        isFixture = true
+        canTakeOutOfTrash = true
+        apply(items: [], issues: [], orphans: [], owners: [:])
+        isLoading = true
+    }
+
     /// DEBUG screenshots only: the result banner of a change that never ran.
     public func showFixtureResult(_ change: StartupChange?) {
         lastResult = change
