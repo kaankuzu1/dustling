@@ -27,26 +27,55 @@ struct PixelIconView: View {
         var pixel: CGFloat { self == .regular ? 2 : 1 }
     }
 
+    /// How the icon is colored.
+    enum Tint {
+        /// Always this color.
+        case color(Color)
+        /// The surrounding foreground style, like the text next to it. Use it inside button labels:
+        /// the icon then follows the button's state the way its title does (white on an active
+        /// primary button, the label color when the window is inactive, dimmed when disabled).
+        case foreground
+    }
+
     private let rows: [[Character]]
-    private let color: Color
+    private let tint: Tint
     private let size: Size
 
     init(_ icon: PixelIcon, color: Color = DustlingTheme.Palette.ink, size: Size = .regular) {
-        self.init(rows: icon.rows, color: color, size: size)
+        self.init(rows: icon.rows, tint: .color(color), size: size)
     }
 
     init(_ icon: ShellPixelIcon, color: Color = DustlingTheme.Palette.ink, size: Size = .regular) {
-        self.init(rows: icon.rows, color: color, size: size)
+        self.init(rows: icon.rows, tint: .color(color), size: size)
     }
 
-    private init(rows: [String], color: Color, size: Size) {
+    init(_ icon: PixelIcon, tint: Tint, size: Size = .regular) {
+        self.init(rows: icon.rows, tint: tint, size: size)
+    }
+
+    init(_ icon: ShellPixelIcon, tint: Tint, size: Size = .regular) {
+        self.init(rows: icon.rows, tint: tint, size: size)
+    }
+
+    private init(rows: [String], tint: Tint, size: Size) {
         self.rows = rows.map { Array($0) }
-        self.color = color
+        self.tint = tint
         self.size = size
     }
 
     var body: some View {
-        let color = self.color
-        PixelArt(rows: rows, pixel: size.pixel) { $0 == "X" ? color : nil }
+        switch tint {
+        case .color(let color):
+            PixelArt(rows: rows, pixel: size.pixel) { $0 == "X" ? color : nil }
+        case .foreground:
+            // The bitmap masks a fill in the current foreground style, so it renders exactly like
+            // the label text beside it in every button state.
+            let art = PixelArt(rows: rows, pixel: size.pixel) { $0 == "X" ? .black : nil }
+            Rectangle()
+                .fill(.foreground)
+                .frame(width: CGFloat(rows.first?.count ?? 0) * size.pixel, height: CGFloat(rows.count) * size.pixel)
+                .mask(art)
+                .accessibilityHidden(true)
+        }
     }
 }

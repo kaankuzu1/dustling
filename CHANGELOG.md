@@ -14,6 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Quit works even when a confirmation or sheet is open. If Dustling is moving files, it asks before stopping.
 - Loading placeholders now line up with the content that replaces them on every screen, show up on panels in light and dark, and fill the space without spilling over.
+- Icons on buttons such as Move to Trash and Empty Trash stay visible in light mode when Dustling isn't the active app, and dim with their button when it can't be used.
 
 ## [0.1.0] - 2026-11-08
 

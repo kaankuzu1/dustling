@@ -225,7 +225,7 @@ struct UninstallerView: View {
             ActionBar(title: "No apps listed", caption: "Needs Full Disk Access to look for leftovers") {
                 Button(action: {}) {
                     HStack(spacing: 6) {
-                        PixelIconView(.trash, color: Palette.muted)
+                        PixelIconView(.trash, tint: .foreground)
                         Text("Move to Trash")
                     }
                 }
@@ -244,7 +244,7 @@ struct UninstallerView: View {
                     confirming = model.confirmation
                 }) {
                     HStack(spacing: 6) {
-                        PixelIconView(.trash, color: confirm.ready ? Palette.onAccent : Palette.muted)
+                        PixelIconView(.trash, tint: .foreground)
                         Text("Move to Trash")
                     }
                 }
