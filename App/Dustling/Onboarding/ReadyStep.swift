@@ -47,6 +47,9 @@ struct ReadyStep: View {
             Button("Start scanning") {
                 models.onboarding.complete(.ready)
                 start()
+                // A fresh scan, as the button says: the one from launch may be minutes old by now.
+                // Nothing happens if that one is still running.
+                models.scanJunk()
             }
                 .dustlingPrimary()
                 .keyboardShortcut(.defaultAction)
