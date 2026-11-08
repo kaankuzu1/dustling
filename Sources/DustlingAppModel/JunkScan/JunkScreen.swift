@@ -126,6 +126,7 @@ public enum JunkScreen {
     public static let unreadableNote = "Couldn't scan, Dustling can't open this folder"
     public static let notScannedNote = "Not scanned yet. Scan again to include it"
     public static let stoppedNote = "Scan stopped, so there may be more"
+    public static let stoppedBeforeNote = "Scan stopped before this place. Scan again to include it."
 
     /// The tiles in catalog order. The Trash is never a tile here: the screen draws it from `TrashModel`.
     /// The summary shows only the categories the cleanup worked on.
@@ -178,6 +179,10 @@ public enum JunkScreen {
             let partial = place?.lockedExpansions == true && input.scope?.partial.contains(entry.id) == true
             let cells = MiniMosaic(count: MiniMosaic.cells(bytes: tile.bytes), kind: tile.isSelected ? .selected : .unselected)
             if tile.stopped {
+                // Stopped before anything here was measured: unknown, never 0 bytes.
+                if tile.itemCount == 0 && tile.bytes == 0 {
+                    return make(.stopped, lower: true, note: stoppedBeforeNote, cells: lockedCell)
+                }
                 return make(.stopped, bytes: tile.bytes, lower: true, note: stoppedNote, cells: cells)
             }
             if tile.needsHelper {
@@ -229,10 +234,11 @@ public enum JunkScreen {
     }
 
     /// A section's size: what its tiles hold (or, in the summary, what moved), "or more" when any tile
-    /// is partial or wasn't read.
-    public static func sectionTotal(_ tiles: [JunkTile], _ section: Section) -> (bytes: UInt64, isLowerBound: Bool) {
+    /// is partial or wasn't read. nil when no tile in the section has a known size.
+    public static func sectionTotal(_ tiles: [JunkTile], _ section: Section) -> (bytes: UInt64?, isLowerBound: Bool) {
         let mine = tiles.filter { $0.section == section }
-        let bytes = mine.reduce(0) { $0 + ($1.bytes ?? 0) }
+        let known = mine.compactMap(\.bytes)
+        let bytes: UInt64? = known.isEmpty ? nil : known.reduce(0, +)
         let lower = mine.contains {
             $0.isLowerBound || [.locked, .unreadable, .notScannedYet, .pending].contains($0.status)
         }
@@ -326,6 +332,13 @@ public struct JunkSummary: Equatable, Sendable {
         return JunkSummary(
             movedBytes: record.bytesMovedToTrash, movedCount: moved,
             sentence: parts.joined(separator: ", ") + ".", reasons: reasons)
+    }
+
+    /// The headline after Put everything back, from what really came back.
+    public static func restoreHeadline(_ outcomes: [RestoreOutcome]) -> String {
+        let restored = outcomes.filter { if case .restored = $0 { true } else { false } }.count
+        if restored == 0 { return "Nothing was put back" }
+        return restored == outcomes.count ? "Everything was put back" : "Some items were put back"
     }
 
     /// What Put everything back did, in one sentence.

@@ -19,9 +19,9 @@ struct SummaryView: View {
     var body: some View {
         let summary = JunkSummary.make(record) { AppModels.appName(bundleID: $0) }
         HStack(alignment: .top, spacing: 18) {
-            MoteView(models.junk.didPutBack ? .idle : .happy, pixel: 3)
+            MoteView(models.junk.restoreOutcomes == nil ? .happy : .idle, pixel: 3)
             VStack(alignment: .leading, spacing: 8) {
-                if let outcomes = models.junk.restoreOutcomes, models.junk.didPutBack {
+                if let outcomes = models.junk.restoreOutcomes {
                     putBack(outcomes)
                 } else {
                     moved(summary)
@@ -68,7 +68,7 @@ struct SummaryView: View {
 
     private func putBack(_ outcomes: [RestoreOutcome]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Put back")
+            Text(JunkSummary.restoreHeadline(outcomes))
                 .font(DustlingTheme.Typography.figure)
                 .foregroundStyle(Palette.ink)
             Text(JunkSummary.restoreLine(outcomes))
@@ -126,7 +126,7 @@ struct SummaryView: View {
                 }
             }
             .dustlingPrimary()
-            .disabled(!trash.canEmpty || trash.isEmptying)
+            .disabled(!trash.canEmpty || trash.isEmptying || junk.isRestoring)
             .help(trash.disabledReason ?? "Shows what is in the Trash and asks before deleting it")
 
             switch junk.cleanupGate.undo {

@@ -151,6 +151,33 @@ public struct CleanupGate: Equatable, Sendable {
     }
 }
 
+/// Places a cleanup must leave alone because they can't be read now (access was revoked after the
+/// scan). Their items are recorded as skipped and never touched.
+public struct CleanupSkip: Equatable, Sendable {
+    /// Categories whose place doesn't read as open now.
+    public var categories: Set<JunkCategoryID>
+    /// Folders whose contents are off limits now (e.g. other apps' containers without Full Disk Access).
+    public var folders: [URL]
+
+    public static let none = CleanupSkip(categories: [], folders: [])
+    public static let reason = "needs Full Disk Access"
+
+    public init(categories: Set<JunkCategoryID>, folders: [URL]) {
+        self.categories = categories
+        self.folders = folders
+    }
+
+    func skips(_ item: JunkItem) -> Bool {
+        if categories.contains(item.category) { return true }
+        let path = item.url.standardizedFileURL.path(percentEncoded: false)
+        return folders.contains { folder in
+            var base = folder.standardizedFileURL.path(percentEncoded: false)
+            if !base.hasSuffix("/") { base += "/" }
+            return path.hasPrefix(base)
+        }
+    }
+}
+
 public enum JunkScanModelError: Error, Equatable, LocalizedError, Sendable {
     case noCleanupToUndo
     case alreadyPutBack
@@ -197,7 +224,8 @@ public final class JunkScanModel {
     /// When the last scan finished (completed or stopped); nil before the first.
     public private(set) var lastScanFinishedAt: Date?
     /// False while Dustling can't take items back out of the Trash (Full Disk Access is off).
-    public var canTakeOutOfTrash = true
+    /// Unknown until the app reports it, so it starts false.
+    public var canTakeOutOfTrash = false
     /// What happens to a cleanup while `canTakeOutOfTrash` is false.
     public var limitedCleanupPolicy: LimitedCleanupPolicy = .warnBeforeCleaning
     /// Applied at the next scan (the "Preselect safe categories" setting).
@@ -264,9 +292,10 @@ public final class JunkScanModel {
     }
 
     public var isBusy: Bool {
+        if isRestoring { return true }
         switch state {
-        case .scanning, .moving: true
-        default: false
+        case .scanning, .moving: return true
+        default: return false
         }
     }
 
@@ -372,11 +401,20 @@ public final class JunkScanModel {
 
     /// Moves the selected categories to the Trash. The allowed roots are the category folders the
     /// scan really resolved (the same rule as `dustling-cli clean`), never the items' own parents.
-    public func clean() async {
-        guard case .ready = state else { return }
-        if cleanupGate.kind == .refused {
+    ///
+    /// `skipping`: places that can't be read now; their items are recorded as skipped. With the gate
+    /// at `confirmFirst`, nothing happens unless the user confirmed (`confirmedLimited`).
+    public func clean(skipping: CleanupSkip = .none, confirmedLimited: Bool = false) async {
+        guard case .ready = state, !isRestoring else { return }
+        switch cleanupGate.kind {
+        case .refused:
             message = cleanupGate.note
             return
+        case .confirmFirst where !confirmedLimited:
+            message = cleanupGate.note
+            return
+        case .allowed, .confirmFirst:
+            break
         }
 
         var urls: [URL] = []
@@ -394,7 +432,10 @@ public final class JunkScanModel {
             for item in scan.items {
                 let path = item.url.path(percentEncoded: false)
                 categoryOf[path] = tile.id
-                if let owner = item.inUseByBundleID {
+                if skipping.skips(item) {
+                    extra.append(JournalEntry(
+                        originalPath: path, bytes: item.bytes, outcome: .skipped(reason: CleanupSkip.reason)))
+                } else if let owner = item.inUseByBundleID {
                     extra.append(JournalEntry(
                         originalPath: path, bytes: item.bytes, outcome: .skipped(reason: "in use by \(owner)")))
                 } else if scan.category.requiresAdmin {
@@ -472,8 +513,12 @@ public final class JunkScanModel {
         defer { isRestoring = false }
         do {
             let outcomes = try await Blocking.run { try journal.restore(runID: id, paths: paths) }
-            restoreOutcomes = outcomes
-            didPutBack = true
+            // Only onto the summary of this same run.
+            if case .done(let shown) = state, shown.id == id {
+                restoreOutcomes = outcomes
+                // Once something came back the run is put back; if nothing did, it can be tried again.
+                didPutBack = outcomes.contains { if case .restored = $0 { true } else { false } }
+            }
             onRunCompleted()
             return outcomes
         } catch {

@@ -138,7 +138,7 @@ struct TrashModelTests {
             environment: rig.environment, options: rig.options, categories: { categories })
         junk.scan()
         await junk.awaitScan()
-        await junk.clean()
+        await junk.clean(confirmedLimited: true)
         guard case .done(let record) = junk.state else { Issue.record("expected done"); return }
         #expect(record.bytesMovedToTrash > 0)
 
@@ -155,7 +155,7 @@ struct TrashModelTests {
         // Clean again: counted again, until the Trash is emptied.
         junk.scan()
         await junk.awaitScan()
-        await junk.clean()
+        await junk.clean(confirmedLimited: true)
         guard case .done(let second) = junk.state else { Issue.record("expected done"); return }
         await model.refresh()
         #expect(model.inTrashBytesSinceLastEmpty == second.bytesMovedToTrash)

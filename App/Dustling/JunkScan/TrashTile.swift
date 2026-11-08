@@ -32,7 +32,7 @@ struct TrashTile: View {
                 .fixedSize(horizontal: false, vertical: true)
             Button("Empty Trash…") { confirmingEmptyTrash = true }
                 .controlSize(.small)
-                .disabled(!trash.canEmpty || trash.isEmptying)
+                .disabled(!trash.canEmpty || trash.isEmptying || models.junk.isRestoring)
                 .help(trash.disabledReason ?? "Shows what is in the Trash and asks before deleting it")
         }
         .padding(12)

@@ -83,6 +83,28 @@ struct JunkScreenTilesTests {
         #expect(total.bytes == quarter && total.isLowerBound)
     }
 
+    @Test func stoppedBeforeAnythingWasMeasuredIsUnknownNeverZero() {
+        let tiles = JunkScreen.tiles(input(
+            tiles: [tile(.userCaches, 0, selected: false, stopped: true, items: 0),
+                    tile(.iosBackups, 0, selected: false, stopped: true, selection: .review, items: 0)],
+            places: [Place(id: .userCaches, access: .readable), Place(id: .iosBackups, access: .readable)]))
+        #expect(tiles[0].status == .stopped)
+        #expect(tiles[0].bytes == nil)
+        #expect(tiles[0].note == "Scan stopped before this place. Scan again to include it.")
+        #expect(tiles[0].cells == MiniMosaic(count: 1, kind: .locked))
+        let safe = JunkScreen.sectionTotal(tiles, .safe)
+        #expect(safe.bytes == nil && safe.isLowerBound)
+    }
+
+    @Test func sectionTotalIsUnknownWhenNoTileHasASize() {
+        let tiles = JunkScreen.tiles(input(
+            tiles: [tile(.userCaches, quarter)],
+            places: [Place(id: .userCaches, access: .readable), Place(id: .iosBackups, access: .locked),
+                     Place(id: .mailDownloads, access: .locked)]))
+        #expect(JunkScreen.sectionTotal(tiles, .review).bytes == nil)
+        #expect(JunkScreen.sectionTotal(tiles, .safe).bytes == quarter)
+    }
+
     @Test func placesThatOpenedAfterTheScanAreNotScannedYet() {
         let places = [Place(id: .userCaches, access: .readable), Place(id: .xcodeJunk, access: .readable)]
         let tiles = JunkScreen.tiles(input(
@@ -210,6 +232,12 @@ struct JunkSummaryTests {
         #expect(summary.reasons.map(\.text) == [
             "1 skipped because com.x.y is using it", "1 skipped: cleanup stopped", "1 needs the cleanup helper",
         ])
+    }
+
+    @Test func restoreHeadlineFollowsWhatCameBack() {
+        #expect(JunkSummary.restoreHeadline([.restored("/a")]) == "Everything was put back")
+        #expect(JunkSummary.restoreHeadline([.restored("/a"), .conflict("/b")]) == "Some items were put back")
+        #expect(JunkSummary.restoreHeadline([.failed("/a", reason: "x")]) == "Nothing was put back")
     }
 
     @Test func restoreLineSaysWhatCameBack() {

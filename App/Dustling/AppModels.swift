@@ -221,6 +221,24 @@ final class AppModels {
             progress: junk.categoryProgress, outcomes: junk.categoryOutcomes))
     }
 
+    /// Moves the selected junk to the Trash, leaving alone places that can't be read now (access may
+    /// have been revoked since the scan). `confirmedLimited`: the user confirmed the limited-mode note.
+    func cleanJunk(confirmedLimited: Bool = false) async {
+        await junk.clean(skipping: cleanupSkip, confirmedLimited: confirmedLimited)
+    }
+
+    /// Places whose access isn't readable now, plus the container part of places that are only
+    /// partly open.
+    var cleanupSkip: CleanupSkip {
+        let places = places.places ?? []
+        let closed = Set(places.filter { $0.access != .readable }.map(\.id))
+        let partly = Set(places.filter { $0.access == .readable && $0.lockedExpansions }.map(\.id))
+        let folders = JunkCatalog.standard(environment)
+            .filter { partly.contains($0.id) }
+            .flatMap { $0.expansions.map(\.parent) }
+        return CleanupSkip(categories: closed, folders: folders)
+    }
+
     /// The home folder, for shortening paths on screen.
     var homeDirectory: URL { environment.home }
 

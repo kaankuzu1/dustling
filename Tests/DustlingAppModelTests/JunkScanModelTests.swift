@@ -145,7 +145,7 @@ struct JunkScanModelTests {
         await scanned(model)
         #expect(model.selectedBytes > movedBytes)   // what the scan hoped for is more than what happens
 
-        await model.clean()
+        await model.clean(confirmedLimited: true)
 
         guard case .done(let record) = model.state else { Issue.record("expected done"); return }
         let summary = try #require(model.summary)
@@ -173,7 +173,7 @@ struct JunkScanModelTests {
             environment: rig.environment, options: rig.options, categories: { categories })
         await scanned(model)
 
-        let cleaning = Task { await model.clean() }
+        let cleaning = Task { await model.clean(confirmedLimited: true) }
         #expect(await waitUntil { gate.hasEntered })   // "a" is moved, "b" is being moved
         #expect(await waitUntil {
             if case .moving(let done, let total, let bytes) = model.state { return done == 1 && total == 3 && bytes > 0 }
@@ -189,7 +189,7 @@ struct JunkScanModelTests {
         let rig = try ModelRig()
         let model = makeModel(rig, preselectSafe: false)
         await scanned(model)
-        await model.clean()
+        await model.clean(confirmedLimited: true)
         guard case .ready = model.state else { Issue.record("expected ready"); return }
         #expect(model.message == "Nothing is selected to move to the Trash.")
     }
@@ -224,7 +224,7 @@ struct JunkScanModelTests {
         let model = makeModel(
             rig, running: ["com.open.app"], failing: ["boom.log"], onRunCompleted: { completed.bump() })
         await scanned(model)
-        await model.clean()
+        await model.clean(confirmedLimited: true)
         #expect(!FileManager.default.fileExists(atPath: a.path))
 
         let outcomes = try await model.putEverythingBack()
@@ -269,7 +269,7 @@ extension JunkScanModelTests {
         try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
         let model = makeModel(rig, preselectSafe: false)
         await scanned(model)
-        await model.clean()
+        await model.clean(confirmedLimited: true)
         #expect(model.message != nil)
         model.toggle(.userCaches)
         #expect(model.message == nil)
@@ -281,7 +281,7 @@ extension JunkScanModelTests {
         let completed = Counter()
         let model = makeModel(rig, onRunCompleted: { completed.bump() })
         await scanned(model)
-        await model.clean()
+        await model.clean(confirmedLimited: true)
 
         async let first = try? model.putEverythingBack()
         async let second = try? model.putEverythingBack()
@@ -309,15 +309,98 @@ extension JunkScanModelTests {
         await scanned(model)
         model.canTakeOutOfTrash = false
         model.limitedCleanupPolicy = .refuseToClean
-        await model.clean()
+        await model.clean(confirmedLimited: true)
         guard case .ready = model.state else { Issue.record("expected ready"); return }
         #expect(model.message == CleanupGate.refusedNote)
         #expect(FileManager.default.fileExists(atPath: a.path))
 
         model.limitedCleanupPolicy = .warnBeforeCleaning
-        await model.clean()   // the view asked first
+        await model.clean(confirmedLimited: true)   // the view asked first
         guard case .done = model.state else { Issue.record("expected done"); return }
         #expect(model.cleanupGate.undo == .showInTrash)
+    }
+
+    @Test func cleanSkipsPlacesLockedSinceScan() async throws {
+        let rig = try ModelRig()
+        let a = try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        let backup = try rig.file(rig.backupsDirectory.appending(path: "device1/data"), bytes: 8192)
+        let model = makeModel(rig)
+        model.canTakeOutOfTrash = true
+        await scanned(model)
+        model.toggle(.iosBackups)
+
+        // The backups place was locked after the scan.
+        await model.clean(skipping: CleanupSkip(categories: [.iosBackups], folders: []))
+
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+        let skipped = record.entries.filter { $0.outcome == .skipped(reason: "needs Full Disk Access") }
+        #expect(skipped.count == 1)
+        #expect(skipped.first?.originalPath.hasSuffix("MobileSync/Backup/device1/") == true)
+        #expect(FileManager.default.fileExists(atPath: backup.path))
+        #expect(!FileManager.default.fileExists(atPath: a.path))
+
+        // A folder that is off limits now (e.g. other apps' containers) is left alone too.
+        let rig2 = try ModelRig()
+        let b = try rig2.file(rig2.cachesDirectory.appending(path: "b.log"), bytes: 4096)
+        let model2 = makeModel(rig2)
+        model2.canTakeOutOfTrash = true
+        await scanned(model2)
+        await model2.clean(skipping: CleanupSkip(categories: [], folders: [rig2.cachesDirectory]))
+        guard case .done(let record2) = model2.state else { Issue.record("expected done"); return }
+        #expect(record2.entries.allSatisfy { $0.outcome == .skipped(reason: "needs Full Disk Access") })
+        #expect(record2.bytesMovedToTrash == 0)
+        #expect(FileManager.default.fileExists(atPath: b.path))
+    }
+
+    @Test func unconfirmedCleanWithoutTrashAccessDoesNothing() async throws {
+        let rig = try ModelRig()
+        let a = try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        let model = makeModel(rig)
+        #expect(!model.canTakeOutOfTrash)   // unknown until the app says so
+        await scanned(model)
+        await model.clean()
+        guard case .ready = model.state else { Issue.record("expected ready"); return }
+        #expect(model.message == CleanupGate.limitedNote)
+        #expect(FileManager.default.fileExists(atPath: a.path))
+    }
+
+    @Test func putBackIsBusyWorkAndBlocksScanAndClean() async throws {
+        let rig = try ModelRig()
+        try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        let model = makeModel(rig)
+        model.canTakeOutOfTrash = true
+        await scanned(model)
+        await model.clean()
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+
+        let restoring = Task { try await model.putEverythingBack() }
+        await Task.yield()
+        #expect(model.isRestoring)
+        #expect(model.isBusy)
+        model.scan()   // ignored while putting back
+        guard case .done(let still) = model.state, still.id == record.id else { Issue.record("scan ran"); return }
+        _ = try await restoring.value
+        #expect(!model.isBusy)
+        #expect(model.didPutBack)
+        #expect(model.restoreOutcomes?.count == 1)
+    }
+
+    @Test func nothingRestoredKeepsPutBackAvailable() async throws {
+        let rig = try ModelRig()
+        let a = try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        let model = makeModel(rig)
+        model.canTakeOutOfTrash = true
+        await scanned(model)
+        await model.clean()
+        guard case .done = model.state else { Issue.record("expected done"); return }
+        try rig.file(a, bytes: 10)   // something new sits where it was
+
+        let outcomes = try await model.putEverythingBack()
+
+        #expect(outcomes.allSatisfy { if case .restored = $0 { false } else { true } })
+        #expect(!model.didPutBack)
+        #expect(model.restoreOutcomes == outcomes)
+        #expect(JunkSummary.restoreHeadline(outcomes) == "Nothing was put back")
     }
 
     @Test func cleanTracksEachCategoryAndItsOutcomes() async throws {
@@ -327,7 +410,7 @@ extension JunkScanModelTests {
         try rig.file(rig.cachesDirectory.appending(path: "com.open.app/blob"), bytes: 4096)
         let model = makeModel(rig, running: ["com.open.app"], failing: ["boom.log"])
         await scanned(model)
-        await model.clean()
+        await model.clean(confirmedLimited: true)
 
         guard case .done(let record) = model.state else { Issue.record("expected done"); return }
         let progress = try #require(model.categoryProgress[.userCaches])

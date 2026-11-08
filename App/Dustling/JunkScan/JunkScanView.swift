@@ -108,7 +108,7 @@ private struct SectionHeader: View {
     let icon: PixelIcon
     let title: String
     let caption: String
-    let total: (bytes: UInt64, isLowerBound: Bool)
+    let total: (bytes: UInt64?, isLowerBound: Bool)
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -124,7 +124,7 @@ private struct SectionHeader: View {
                 .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
                 .foregroundStyle(Palette.muted)
             Spacer(minLength: 8)
-            Text(Bytes.format(total.bytes) + (total.isLowerBound ? " or more" : ""))
+            Text(total.bytes.map { Bytes.format($0) + (total.isLowerBound ? " or more" : "") } ?? "Size unknown")
                 .font(DustlingTheme.Typography.size)
                 .foregroundStyle(Palette.ink)
                 .contentTransition(.numericText())
@@ -187,7 +187,8 @@ private struct SelectionHeader: View {
     /// Free space first, then the categories (largest first), then one hatched cell per locked place.
     private func layout(_ figures: HomeFigures) -> MosaicLayout {
         let shown = models.junkTiles.filter { $0.bytes != nil && $0.status != .cleaned }
-        let locked = models.junkTiles.filter { [.locked, .unreadable, .notScannedYet].contains($0.status) }.count
+        // One hatched cell per place with no known size: locked, unreadable, or not reached by the scan.
+        let locked = models.junkTiles.filter { $0.bytes == nil && $0.status != .pending }.count
         return MosaicLayout.make(
             totalBytes: 0, availableBytes: figures.available ?? 0,
             categories: shown.map { ($0.id, $0.bytes ?? 0) }, inTrashBytes: 0, lockedPlaces: locked)
@@ -228,7 +229,7 @@ private struct JunkActionBar: View {
         if models.junk.cleanupGate.kind == .confirmFirst {
             confirmingLimitedClean = true
         } else {
-            Task { await models.junk.clean() }
+            Task { await models.cleanJunk() }
         }
     }
 
@@ -267,7 +268,7 @@ private struct JunkActionBar: View {
                 isPresented: $confirmingLimitedClean
             ) {
                 Button("Cancel", role: .cancel) {}
-                Button("Move to Trash") { Task { await models.junk.clean() } }
+                Button("Move to Trash") { Task { await models.cleanJunk(confirmedLimited: true) } }
             } message: {
                 Text(gate.note ?? "")
             }
@@ -281,8 +282,9 @@ private struct JunkActionBar: View {
             }
         case .done(let record):
             ActionBar(
-                title: junk.didPutBack ? "Put back" : "\(Bytes.format(record.bytesMovedToTrash)) in the Trash",
-                caption: junk.didPutBack
+                title: junk.restoreOutcomes.map(JunkSummary.restoreHeadline)
+                    ?? "\(Bytes.format(record.bytesMovedToTrash)) in the Trash",
+                caption: junk.restoreOutcomes != nil
                     ? "Scan again to see what can go now."
                     : "Available space grows when you empty the Trash."
             ) {
@@ -292,9 +294,10 @@ private struct JunkActionBar: View {
                         Text("Scan again")
                     }
                 }
+                .disabled(junk.isBusy)
                 Button("Empty Trash…") { confirmingEmptyTrash = true }
                     .dustlingPrimary()
-                    .disabled(!models.trash.canEmpty || models.trash.isEmptying)
+                    .disabled(!models.trash.canEmpty || models.trash.isEmptying || junk.isRestoring)
                     .help(models.trash.disabledReason ?? "Shows what is in the Trash and asks before deleting it")
             }
         }
