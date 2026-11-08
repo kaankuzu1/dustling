@@ -68,8 +68,11 @@ public struct LeftoverFinder: Sendable {
                  admin: Bool = false, mustExist: Bool = true, note: String? = nil) {
             let key = url.standardizedFileURL
             guard !seen.contains(key) else { return }
-            // Defense in depth (R13): a leftover is always a direct child of a declared location.
-            guard locationPaths.contains(url.deletingLastPathComponent().standardizedFileURL.path) else { return }
+            // Defense in depth (R13): a leftover is always a direct child of a declared location, and
+            // never a declared location itself.
+            guard locationPaths.contains(url.deletingLastPathComponent().standardizedFileURL.path),
+                  !locationPaths.contains(key.path)
+            else { return }
             var bytes: UInt64 = 0
             if mustExist {
                 guard listing(url.deletingLastPathComponent()) != nil, exists(url) else { return }

@@ -321,5 +321,29 @@ struct UninstallerTests {
             Issue.record("game data should move: \(record.entries[1].outcome)"); return
         }
     }
+    @Test func aDeclaredLocationItselfIsNeverALeftover() async throws {
+        let sandbox = try TestSandbox()
+        let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")
+        let steam = "home/Library/Application Support/Steam/steamapps"
+        let common = try sandbox.file("\(steam)/common/Portal/p.dat").deletingLastPathComponent().deletingLastPathComponent()
+        let steamapps = common.deletingLastPathComponent()
+        let byHost = try sandbox.file("home/Library/Preferences/ByHost/com.other.X.plist").deletingLastPathComponent()
+        let agents = try sandbox.file("home/Library/LaunchAgents/com.other.plist").deletingLastPathComponent()
+        let fake = FakeCommandRunner()
+        let record = try await makeUninstaller(sandbox, commands: fake).uninstall(
+            installedApp(appURL),
+            leftovers: [
+                leftover(common, kind: .steamGameData),
+                leftover(steamapps, kind: .steamGameData),
+                leftover(byHost, kind: .preferences),
+                leftover(agents, kind: .launchAgent),
+            ]
+        ) { _, _ in }
+        guard case .movedToTrash = record.entries[0].outcome else { Issue.record("app should move"); return }
+        let outside = DeletionOutcome.skipped(reason: "outside the cleanup area")
+        #expect(record.entries.dropFirst().map(\.outcome) == [outside, outside, outside, outside])
+        #expect(fake.calls.isEmpty)
+        for url in [common, steamapps, byHost, agents] { #expect(FileManager.default.fileExists(atPath: url.path)) }
+    }
 }
 

@@ -48,7 +48,8 @@ public struct Uninstaller: Sendable {
     }
 
     /// `leftovers` is the set the user selected; it is not re-filtered here, but each one must be a
-    /// direct child of a declared leftover location or it is skipped as outside the cleanup area.
+    /// direct child of a declared leftover location (and not a declared location itself) or it is
+    /// skipped as outside the cleanup area.
     public func uninstall(
         _ app: InstalledApp,
         leftovers: [Leftover],
@@ -76,6 +77,11 @@ public struct Uninstaller: Sendable {
         }
 
         let locationPaths = Set(locations.map { Self.key($0) })
+        /// A leftover is a direct child of a declared location and never a declared location itself
+        /// (e.g. steamapps/common or Preferences/ByHost, whose parents are declared locations too).
+        func isLeftoverShaped(_ url: URL) -> Bool {
+            locationPaths.contains(Self.key(url.deletingLastPathComponent())) && !locationPaths.contains(Self.key(url))
+        }
         let userLeftovers = leftovers.filter { !$0.requiresAdmin }
         let adminLeftovers = leftovers.filter { $0.requiresAdmin }
 
@@ -85,13 +91,13 @@ public struct Uninstaller: Sendable {
         for agent in userLeftovers where agent.kind == .launchAgent {
             // Only agents that really live in ~/Library/LaunchAgents are ever booted out.
             guard guardPaths.verdict(for: agent.url, allowedRoots: [agentsDirectory]) == .allowed,
-                  locationPaths.contains(Self.key(agent.url.deletingLastPathComponent()))
+                  isLeftoverShaped(agent.url)
             else { continue }
             if let failure = unload(agent.url) { extra.append(failure) }
         }
         for leftover in userLeftovers {
             let entry: JournalEntry
-            if locationPaths.contains(Self.key(leftover.url.deletingLastPathComponent())) {
+            if isLeftoverShaped(leftover.url) {
                 entry = runner.attempt(leftover.url, allowedRoots: roots)
             } else {
                 entry = JournalEntry(
