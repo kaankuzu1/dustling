@@ -61,7 +61,8 @@ struct UninstallReviewSheet: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Done") {
-                    models.uninstaller.applyReview(excluding: excluded)
+                    let shown = Set(base?.sections.flatMap(\.rows).map(\.url) ?? [])
+                    models.uninstaller.applyReview(excluding: excluded, rows: shown)
                     dismiss()
                 }
                 .dustlingPrimary()
@@ -137,6 +138,10 @@ private struct ReviewRow: View {
                     Text(reason)
                         .font(DustlingTheme.Typography.caption)
                         .foregroundStyle(Palette.warning)
+                } else if isIncluded, let warning = row.dataWarning {
+                    DataWarningBlock(text: warning)
+                        .lineLimit(nil)
+                        .padding(.top, 4)
                 } else if row.isApp && excluded.contains(row.url) {
                     Text("This app stays, with all its files")
                         .font(DustlingTheme.Typography.caption)
@@ -154,6 +159,8 @@ private struct ReviewRow: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 6)
         .frame(minHeight: DustlingTheme.Metrics.rowMinHeight)
+        // A ticked data row gets the same warning tint as in the leftovers list.
+        .background(isIncluded && row.dataWarning != nil ? Palette.warning.opacity(0.07) : Color.clear)
         .accessibilityElement(children: .contain)
     }
 }

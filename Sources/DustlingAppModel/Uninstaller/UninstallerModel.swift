@@ -511,13 +511,15 @@ public final class UninstallerModel {
             let isLink = row.app.linkTarget != nil
             var rows = [UninstallReview.Row(
                 url: row.app.url, title: isLink ? "Shortcut" : "Application", isApp: true,
-                bytes: isLink ? 0 : row.app.bytes, badges: [], disabledReason: nil, isIncluded: true)]
+                bytes: isLink ? 0 : row.app.bytes, badges: [], disabledReason: nil, isIncluded: true,
+                dataWarning: nil)]
             for leftover in leftovers(for: row.app) {
                 let block = block(for: leftover)
                 rows.append(.init(
                     url: leftover.id, title: UninstallerScreen.kindName(leftover.leftover.kind), isApp: false,
                     bytes: leftover.leftover.bytes, badges: leftover.badges, disabledReason: block?.text,
-                    isIncluded: block == nil && leftover.checked))
+                    isIncluded: block == nil && leftover.checked,
+                    dataWarning: leftover.leftover.mayContainUserData ? Self.dataWarning(for: leftover.leftover) : nil))
             }
             return UninstallReview.Section(app: row.app, rows: rows)
         })
@@ -532,15 +534,17 @@ public final class UninstallerModel {
     }
 
     /// Done in Review all files: an unticked app is deselected; every other row that can be ticked
-    /// takes the draft's state. Rows that can't move stay as they are.
-    public func applyReview(excluding: Set<URL>) {
+    /// takes the draft's state. Only `rows` (what the sheet showed) change; rows that can't move, or
+    /// that appeared since the sheet opened, stay as they are.
+    public func applyReview(excluding: Set<URL>, rows shown: Set<URL>) {
         guard !isUninstalling, !isRestoring else { return }
-        for row in selectedApps {
+        for row in selectedApps where shown.contains(row.app.url) {
             if excluding.contains(row.app.url) {
                 selection.remove(row.app.url)
                 continue
             }
-            for leftover in leftovers(for: row.app) where !leftover.isDisabled && block(for: leftover.leftover) == nil {
+            for leftover in leftovers(for: row.app)
+            where shown.contains(leftover.id) && !leftover.isDisabled && block(for: leftover.leftover) == nil {
                 let on = !excluding.contains(leftover.id)
                 if on != leftover.checked { setChecked(on, leftover: leftover.leftover, in: row.app) }
             }
@@ -589,8 +593,10 @@ public final class UninstallerModel {
             _ = await Self.quitWithTimeout(app, quit: quit, timeout: quitTimeout)
             if running.isRunning(app) { return recordStillRunning(app, leftovers: leftovers) }
         }
-        let skipped = leftovers.filter(mustSkip)
-        let moving = leftovers.filter { !mustSkip($0) }
+        // The one rule: only what it calls "needs Full Disk Access" is held back here; helper-only
+        // items go to the core, which records them as needing admin.
+        let skipped = leftovers.filter { block(for: $0) == .needsFullDiskAccess }
+        let moving = leftovers.filter { block(for: $0) != .needsFullDiskAccess }
         progress?.begin(app.url)
         for leftover in skipped { progress?.record(leftover.url, .skipped(reason: Self.needsAccessReason), in: app.url) }
         let uninstaller = self.uninstaller

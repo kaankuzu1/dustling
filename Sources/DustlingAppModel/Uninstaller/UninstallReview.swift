@@ -13,7 +13,7 @@ public enum LeftoverBlock: Equatable, Sendable {
     public var text: String {
         switch self {
         case .excluded(let reason): UninstallerScreen.sentence(reason)
-        case .needsHelper: "Needs the cleanup helper"
+        case .needsHelper: UninstallerScreen.helperNote
         case .needsFullDiskAccess: "Needs Full Disk Access"
         }
     }
@@ -33,6 +33,8 @@ public struct UninstallReview: Equatable, Sendable {
         public let disabledReason: String?
         /// Ticked when the sheet opened.
         public let isIncluded: Bool
+        /// "This is your data. …", shown while a data row is ticked.
+        public let dataWarning: String?
         public var id: URL { url }
     }
 
