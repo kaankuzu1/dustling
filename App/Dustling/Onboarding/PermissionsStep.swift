@@ -28,7 +28,10 @@ struct PermissionsStep: View {
                 }
             }
             HStack(spacing: 12) {
-                Button("Continue") { models.onboarding.step = .ready }
+                Button("Continue") {
+                    models.onboarding.complete(.permissions)
+                    models.onboarding.step = .ready
+                }
                     .dustlingPrimary()
                     .keyboardShortcut(.defaultAction)
                 Button("Skip for now", action: skip)

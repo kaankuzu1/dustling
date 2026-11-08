@@ -7,15 +7,18 @@ struct WelcomeStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // The mockup draws Mote 72 pt wide; integer scales give 64 or 80, so 64 (4 pt per pixel).
-            MoteView(.idle, pixel: 4)
+            // 96 pt (6 pt per pixel): the integer scale Kaan chose for the mockups' 72 pt Mote.
+            MoteView(.idle, pixel: 6)
             StepHeadline(
                 title: "Let Dustling look in your Library",
                 caption: "Open source, nothing leaves your Mac, and everything goes to the Trash first.",
                 small: false, captionSize: 14)
             TrustColumns()
             HStack(spacing: 12) {
-                Button("Get started") { models.onboarding.step = .fullDiskAccess }
+                Button("Get started") {
+                    models.onboarding.complete(.welcome)
+                    models.onboarding.step = .fullDiskAccess
+                }
                     .dustlingPrimary()
                     .keyboardShortcut(.defaultAction)
                 Text("Takes about a minute.")

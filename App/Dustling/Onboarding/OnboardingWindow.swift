@@ -4,12 +4,7 @@ import DustlingCore
 import Observation
 import SwiftUI
 
-/// The four steps of the onboarding flow, in order (SCREENS-final §1).
-enum OnboardingStep: Int, CaseIterable, Identifiable {
-    case welcome, fullDiskAccess, permissions, ready
-
-    var id: Self { self }
-
+extension OnboardingStep {
     /// The step list labels. "Cleanup helper" instead of "Helper and notifications": the notifications
     /// row is left out of v1 (Ruling R33), and O03 in the approved mockups labels this step so.
     var title: String {
@@ -20,46 +15,21 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
         case .ready: return "Ready"
         }
     }
-
-    var next: OnboardingStep? { OnboardingStep(rawValue: rawValue + 1) }
 }
 
-/// The onboarding window's current step and the persisted flag that keeps it from opening again.
-@MainActor @Observable
-final class OnboardingState {
-    static let completedKey = "onboardingCompleted"
-
-    var step: OnboardingStep = .welcome
-    /// True once the user finished, skipped or closed the onboarding. Stored in UserDefaults.
-    private(set) var isCompleted: Bool
-
-    @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private var didHandleLaunch = false
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        isCompleted = defaults.bool(forKey: Self.completedKey)
-    }
-
-    func markCompleted() {
-        guard !isCompleted else { return }
-        isCompleted = true
-        defaults.set(true, forKey: Self.completedKey)
-    }
-
+extension OnboardingState {
     /// Opens the onboarding once per launch when it was never completed. In Debug builds,
     /// `-DustlingOnboardingStep N` (1 to 4) opens it at step N regardless, for screenshots.
     func openAtLaunchIfNeeded(models: AppModels, openWindow: OpenWindowAction) {
-        guard !didHandleLaunch else { return }
-        didHandleLaunch = true
+        let shouldOpen = takeLaunchRequest()
         #if DEBUG
-        let forced = defaults.integer(forKey: "DustlingOnboardingStep")
+        let forced = UserDefaults.standard.integer(forKey: "DustlingOnboardingStep")
         if let step = OnboardingStep(rawValue: forced - 1) {
             models.openOnboarding(at: step, using: openWindow)
             return
         }
         #endif
-        if !isCompleted {
+        if shouldOpen {
             models.openOnboarding(at: .welcome, using: openWindow)
         }
     }
@@ -86,7 +56,10 @@ struct OnboardingWindow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            StepList(current: models.onboarding.step) { models.onboarding.step = $0 }
+            StepList(
+                current: models.onboarding.step,
+                isDone: { models.onboarding.isDone($0, fullDiskAccessGranted: models.health.fullDiskAccess == .granted) }
+            ) { models.onboarding.step = $0 }
                 .frame(width: 270)
             // Centred vertically like the mockup; scrolls instead of clipping in a short window.
             GeometryReader { proxy in
@@ -109,7 +82,7 @@ struct OnboardingWindow: View {
             // Closing the window any way (finished, skipped or the close button) ends polling and
             // leaves Dustling in limited mode if access is still off; Home says so in a banner.
             models.health.stopPolling()
-            models.onboarding.markCompleted()
+            models.onboarding.windowClosed()
         }
         .task(id: models.fullDiskAccessKey) { await models.refreshPlaces() }
     }
@@ -143,6 +116,7 @@ private struct StepContent: View {
 /// The left column: lockup, the four steps and the footer line.
 private struct StepList: View {
     let current: OnboardingStep
+    let isDone: (OnboardingStep) -> Bool
     let select: (OnboardingStep) -> Void
     private typealias Palette = DustlingTheme.Palette
 
@@ -158,7 +132,7 @@ private struct StepList: View {
             .accessibilityLabel("Dustling")
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(OnboardingStep.allCases) { step in
-                    StepRow(step: step, current: current) { select(step) }
+                    StepRow(step: step, current: current, isDone: step != current && isDone(step)) { select(step) }
                 }
             }
             .accessibilityElement(children: .contain)
@@ -180,13 +154,14 @@ private struct StepList: View {
 }
 
 /// One step: a 20 pt dot (ring, accent ring when current, green with a check when done) and the label.
+/// Only steps actually completed get the check; a skipped step keeps the plain ring.
 private struct StepRow: View {
     let step: OnboardingStep
     let current: OnboardingStep
+    let isDone: Bool
     let action: () -> Void
     private typealias Palette = DustlingTheme.Palette
 
-    private var isDone: Bool { step.rawValue < current.rawValue }
     private var isCurrent: Bool { step == current }
 
     var body: some View {

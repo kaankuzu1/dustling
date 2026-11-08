@@ -23,30 +23,33 @@ struct ReadyStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // 64 pt: the nearest integer scale to the mockups' 72 pt Mote.
-            MoteView(seesEverything ? .happy : .worried, pixel: 4)
+            // 96 pt (6 pt per pixel): the integer scale Kaan chose for the mockups' 72 pt Mote.
+            MoteView(seesEverything ? .happy : .worried, pixel: 6)
             if models.places.places == nil {
-                SkeletonBlock(width: 420, height: 30)
+                SkeletonBlock(width: 420, height: 22)
                     .accessibilityElement()
                     .accessibilityLabel("Checking which places Dustling can see")
             } else if seesEverything {
                 StepHeadline(
                     title: "Dustling can see everything now",
                     caption: "All \(models.places.total) places are open.",
-                    small: false, captionSize: 14)
+                    small: true)
             } else if locked.isEmpty {
                 // Nothing needs Full Disk Access; some places can't be read for another reason.
                 StepHeadline(
                     title: "Dustling can see \(models.places.readableCount) of \(models.places.total) places",
                     caption: models.places.unreadableSentence,
-                    small: false, captionSize: 14)
+                    small: true)
             } else {
                 StepHeadline(
                     title: LimitedModeBanner.title(lockedCount: locked.count),
                     caption: lockedCaption,
-                    small: false, captionSize: 14)
+                    small: true)
             }
-            Button("Start scanning", action: start)
+            Button("Start scanning") {
+                models.onboarding.complete(.ready)
+                start()
+            }
                 .dustlingPrimary()
                 .keyboardShortcut(.defaultAction)
         }

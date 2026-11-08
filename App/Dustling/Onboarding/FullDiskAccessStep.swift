@@ -22,7 +22,10 @@ struct FullDiskAccessStep: View {
                     title: "Full Disk Access is on.",
                     message: "Dustling checked by reading a protected folder.",
                     tone: .success, leading: .icon(.check))
-                Button("Continue") { models.onboarding.step = .permissions }
+                Button("Continue") {
+                    models.onboarding.complete(.fullDiskAccess)
+                    models.onboarding.step = .permissions
+                }
                     .dustlingPrimary()
                     .keyboardShortcut(.defaultAction)
             } else {
