@@ -202,7 +202,7 @@ Design notes live in [`docs/superpowers`](docs/superpowers):
 ## Roadmap
 
 - [x] **Core engine and command-line tool.** Junk scan, uninstaller, startup items, History and Restore, health check.
-- [x] **The Mac app.** A SwiftUI interface with Dustling's "Mosaic" design: a mosaic view of your storage, live scanning, per-item progress and a guided Full Disk Access setup. Motion respects Reduce Motion, and every control works with VoiceOver and the keyboard.
+- [x] **The Mac app.** A SwiftUI interface with Dustling's "Mosaic" design: a mosaic view of your storage, live scanning, per-item progress and a guided Full Disk Access setup. Motion respects Reduce Motion, and the app supports VoiceOver and keyboard navigation.
 - [ ] **Admin helper.** A small privileged helper (via `SMAppService`) for system caches, launch daemons and package receipts. It repairs itself if macOS unregisters it.
 - [ ] **Releases.** A signed, notarized `.dmg` on GitHub Releases, a Homebrew cask, and a website at dustling.app.
 

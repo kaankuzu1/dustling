@@ -117,8 +117,37 @@ struct AppIconView: View {
     }
 
     @MainActor static func icon(for url: URL) -> NSImage {
+        #if DEBUG
+        // The screenshot fixture's apps are samples: draw a generic tile, never a real app's icon.
+        if usesFixtureIcons { return fixtureIcon(name: url.deletingPathExtension().lastPathComponent) }
+        #endif
         let path = url.path(percentEncoded: false)
         if FileManager.default.fileExists(atPath: path) { return NSWorkspace.shared.icon(forFile: path) }
         return NSWorkspace.shared.icon(for: .applicationBundle)
     }
+
+    #if DEBUG
+    /// Set by the Uninstaller screenshot fixture.
+    @MainActor static var usesFixtureIcons = false
+
+    /// A rounded tile in a colour picked from the name, with its first letter.
+    @MainActor static func fixtureIcon(name: String) -> NSImage {
+        let palette: [NSColor] = [.systemIndigo, .systemTeal, .systemOrange, .systemPink, .systemGreen, .systemBlue, .systemPurple]
+        let index = name.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0xFFFF } % palette.count
+        let size = NSSize(width: 64, height: 64)
+        return NSImage(size: size, flipped: false) { rect in
+            let tile = rect.insetBy(dx: 5, dy: 5)
+            palette[index].setFill()
+            NSBezierPath(roundedRect: tile, xRadius: 13, yRadius: 13).fill()
+            let letter = String(name.prefix(1)) as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 28, weight: .semibold), .foregroundColor: NSColor.white,
+            ]
+            let textSize = letter.size(withAttributes: attributes)
+            letter.draw(at: NSPoint(x: tile.midX - textSize.width / 2, y: tile.midY - textSize.height / 2),
+                        withAttributes: attributes)
+            return true
+        }
+    }
+    #endif
 }

@@ -219,7 +219,7 @@ public struct AppScout: Sendable {
             url: url,
             displayName: string("CFBundleDisplayName") ?? string("CFBundleName") ?? fileName,
             bundleID: string("CFBundleIdentifier"),
-            teamID: teamIdentifier(of: source),
+            teamID: canReadSignature(of: source) ? teamIdentifier(of: source) : nil,
             executableName: executable,
             steamAppID: executable.flatMap { steamAppID(executable: $0, in: source) },
             bytes: measuresSizes ? sizer.measure(linkTarget ?? url).bytes : 0,
@@ -248,6 +248,14 @@ public struct AppScout: Sendable {
               let match = text.firstMatch(of: /steam:\/\/run\/(\d+)/)
         else { return nil }
         return String(match.1)
+    }
+
+    /// Reading the signature opens files inside the bundle. With folders to skip, only when `Contents`
+    /// is a real folder (no link that could lead into a skipped folder); `bundle` is already resolved.
+    func canReadSignature(of bundle: URL) -> Bool {
+        guard !skipping.isEmpty else { return true }
+        let contents = bundle.appending(path: "Contents").path(percentEncoded: false)
+        return realPath(URL(filePath: contents)) == contents
     }
 
     private func teamIdentifier(of url: URL) -> String? {

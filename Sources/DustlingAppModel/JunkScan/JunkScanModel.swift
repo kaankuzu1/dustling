@@ -457,6 +457,10 @@ public final class JunkScanModel {
     /// the scan is counted once (as a holder), never also in `selectedBytes`. Without a running-apps
     /// provider it can only add protection, for the apps in `running`.
     public func openAppHolders(running: [RunningApp]) -> [OpenAppHolder] {
+        #if DEBUG
+        // The fixture's owners are sample data: never offer to close a real app for them.
+        guard !isFixture else { return [] }
+        #endif
         if let live = runningBundleIDs?() {
             recheckInUse(running: live.union(running.map(\.bundleID)))
         } else {
@@ -501,6 +505,11 @@ public final class JunkScanModel {
     public func quitAndCleanFlow(
         _ run: CloseAppsRun, quitter: AppQuitter, timeout: Duration = CloseApps.timeout, promised: UInt64
     ) async -> CloseApps.FlowResult {
+        #if DEBUG
+        guard !isFixture else {
+            return .askAgain(now: selectedBytes, line: "This is a screenshot sample, so no app was closed.")
+        }
+        #endif
         await run.quitAll(using: quitter, timeout: timeout)
         let offered = Set(run.holders.map(\.bundleID))
         // Without a provider nothing can be verified: trust only the quitter's own answers, so an app

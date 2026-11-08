@@ -369,18 +369,33 @@ extension JunkScanModelTests {
         let model = makeModel(rig)
         model.canTakeOutOfTrash = true
         await scanned(model)
-        let scans = model.categories.isEmpty ? [] : [CategoryScan(
-            category: rig.categories(cachesFilter: { _ in true })[0],
-            items: [JunkItem(url: file, bytes: 4096, category: model.categories[0].id, inUseByBundleID: nil, ownerBundleID: nil)],
+        try #require(!model.categories.isEmpty)
+        let category = try #require(rig.categories(cachesFilter: { _ in true }).first { $0.id == model.categories[0].id })
+        // Owned by a "running" app, as the fixture's Safari and Spotify caches are.
+        let scans = [CategoryScan(
+            category: category,
+            items: [JunkItem(url: file, bytes: 4096, category: category.id, inUseByBundleID: nil, ownerBundleID: "com.example.open")],
             bytes: 4096, issues: [], stopped: false)]
         model.showFixture(scans, phase: .ready)
         #expect(model.isFixture)
+        #expect(model.categories.contains { $0.isSelected })
         await model.clean()
         guard case .ready = model.state else { Issue.record("fixture cleaned"); return }
         #expect(FileManager.default.fileExists(atPath: file.path))
         model.scan()
         guard case .ready = model.state else { Issue.record("fixture scanned"); return }
         await #expect(throws: JunkScanModelError.self) { try await model.putEverythingBack() }
+
+        // Never offers to close a real app, and never asks one to quit.
+        let open = RunningApp(bundleID: "com.example.open", name: "Open", bundleURL: URL(filePath: "/Applications/Open.app"))
+        #expect(model.openAppHolders(running: [open]).isEmpty)
+        let spy = SpyQuitter()
+        let run = CloseAppsRun(holders: [OpenAppHolder(
+            bundleID: "com.example.open", name: "Open", bundleURL: open.bundleURL, bytes: 4096, itemCount: 1)])
+        let result = await model.quitAndCleanFlow(run, quitter: spy, promised: 4096)
+        #expect(spy.calls == 0)
+        if case .cleaned = result { Issue.record("fixture cleaned after quitting") }
+        #expect(FileManager.default.fileExists(atPath: file.path))
     }
 
     @Test func putBackIsBusyWorkAndBlocksScanAndClean() async throws {
@@ -452,4 +467,15 @@ final class Counter: @unchecked Sendable {
     var totals: [Int] { lock.withLock { seen } }
     func bump() { lock.withLock { n += 1 } }
     func record(_ total: Int) { lock.withLock { seen.append(total) } }
+}
+
+/// Counts quit requests; never touches a real app.
+private final class SpyQuitter: AppQuitter, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var calls: Int { lock.withLock { count } }
+    func quit(_ app: InstalledApp) async -> Bool {
+        lock.withLock { count += 1 }
+        return true
+    }
 }

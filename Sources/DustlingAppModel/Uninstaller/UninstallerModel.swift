@@ -608,13 +608,12 @@ public final class UninstallerModel {
             }
         }
         do {
-            return try await Task.detached(priority: .userInitiated) {
-                try await uninstaller.uninstall(
-                    app, leftovers: moving, skipped: skipped, skipReason: Self.needsAccessReason
-                ) { url, outcome in
-                    sink.tick(url, outcome)
-                }
-            }.value
+            // The uninstaller does its file work on its own GCD queue.
+            return try await uninstaller.uninstall(
+                app, leftovers: moving, skipped: skipped, skipReason: Self.needsAccessReason
+            ) { url, outcome in
+                sink.tick(url, outcome)
+            }
         } catch {
             // The app opened between the check and the move.
             return recordStillRunning(app, leftovers: leftovers, error: error)

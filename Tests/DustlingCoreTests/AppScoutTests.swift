@@ -130,6 +130,22 @@ import Testing
         #expect(skipping.discover().first?.steamAppID == "400")
     }
 
+    @Test func signatureIsNotReadThroughALinkedContentsFolder() throws {
+        let sandbox = try TestSandbox()
+        let documents = sandbox.environment.home.appending(path: "Documents")
+        let hidden = try sandbox.app("home/Documents/Real.app", bundleID: "real")
+        let app = try sandbox.directory("Applications/Linked.app")
+        try FileManager.default.createSymbolicLink(
+            at: app.appending(path: "Contents"), withDestinationURL: hidden.appending(path: "Contents"))
+        let plain = try sandbox.app("Applications/Plain.app", bundleID: "plain")
+        let scout = AppScout(environment: sandbox.environment, measuresSizes: false, skipping: [documents])
+        // As the scout hands it over: every link resolved (the sandbox sits behind /var -> /private/var).
+        let real = { (url: URL) in URL(filePath: String(cString: realpath(url.path, nil))) }
+        #expect(!scout.canReadSignature(of: real(app)))
+        #expect(scout.canReadSignature(of: real(plain)))
+        #expect(AppScout(environment: sandbox.environment, measuresSizes: false).canReadSignature(of: app))
+    }
+
     @Test func executableNameWithASlashIsIgnored() throws {
         let sandbox = try TestSandbox()
         let script = try sandbox.file("elsewhere/run.sh")

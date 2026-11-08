@@ -5,8 +5,8 @@ import Foundation
 
 /// DEBUG only. `-DustlingUninstallerFixture list|detail|review|confirm|confirm-limited|removing|done` shows the
 /// Uninstaller with the approved mockup's sample apps for screenshots. Nothing here reads or touches
-/// the disk: the apps live under a folder that doesn't exist, and the model refuses to load,
-/// uninstall or put back anything while the fixture is on.
+/// the disk: the apps carry plain display paths that are never read (generated icons, no sizes or
+/// signatures), and the model refuses to load, uninstall or put back anything while the fixture is on.
 extension AppModels {
     static let fixtureArgument = "DustlingUninstallerFixture"
 
@@ -17,6 +17,7 @@ extension AppModels {
 
     func showUninstallerFixture(_ state: String) {
         uninstallerFixture = true
+        AppIconView.usesFixtureIcons = true
         selection = .uninstaller
         let fixture = UninstallerFixtureData(home: homeDirectory)
         fixtureTrashAccess = state != "confirm-limited"
@@ -73,7 +74,9 @@ private struct UninstallerFixtureData {
 
     init(home: URL) {
         self.home = home
-        let folder = URL(filePath: "/Applications/Dustling screenshot fixture", directoryHint: .isDirectory)
+        // Plain display paths. Nothing reads them: the model refuses to load, uninstall or put back
+        // while the fixture is on, and the icons are generated, never read from these bundles.
+        let folder = URL(filePath: "/Applications", directoryHint: .isDirectory)
         let day = 86_400.0
         func app(_ name: String, _ id: String?, _ gb: Double, daysAgo: Double, steam: String? = nil) -> InstalledApp {
             InstalledApp(
