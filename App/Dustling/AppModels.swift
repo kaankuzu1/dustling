@@ -213,7 +213,7 @@ final class AppModels {
         quit = QuitCoordinator(
             policy: TerminationPolicy(
                 busy: { owner.models?.busyWork ?? [] },
-                confirm: { AppModels.confirmQuit($0) },
+                confirm: { await AppModels.confirmQuit($0) },
                 stop: { owner.models?.stopWorkForQuit() }),
             attachedSheetCount: { NSApp.windows.filter { $0.attachedSheet != nil }.count },
             terminate: { NSApp.terminate(nil) })
@@ -647,8 +647,18 @@ final class AppModels {
 
     // MARK: Quit
 
+    #if DEBUG
+    /// `-DustlingQuitBusyFixture cleanup|uninstall|…` (a `BusyWork` name): Quit acts as if that job
+    /// were running, for testing the question and logout. Nothing runs; "stopping" ends it after 1 s.
+    @ObservationIgnored private var quitBusyFixture: BusyWork? =
+        UserDefaults.standard.string(forKey: "DustlingQuitBusyFixture").flatMap(BusyWork.init(rawValue:))
+    #endif
+
     /// Work that changes files and is running now. A scan only reads, so quitting just ends it.
     var busyWork: [BusyWork] {
+        #if DEBUG
+        if let quitBusyFixture { return [quitBusyFixture] }
+        #endif
         var work: [BusyWork] = []
         if case .moving = junk.state { work.append(.cleanup) }
         if uninstaller.isUninstalling { work.append(.uninstall) }
@@ -662,6 +672,16 @@ final class AppModels {
     /// Stops what can stop: a scan or cleanup records the rest as "cleanup stopped", an uninstall
     /// finishes the app it is on. A startup change, retry, restore or Empty Trash is waited for.
     func stopWorkForQuit() {
+        #if DEBUG
+        if quitBusyFixture != nil {
+            // The pretend job "stops" a second later; nothing real runs or stops.
+            Task {
+                try? await Task.sleep(for: .seconds(1))
+                quitBusyFixture = nil
+            }
+            return
+        }
+        #endif
         junk.stop()
         uninstaller.stop()
         updateCheck.cancel()
@@ -669,22 +689,16 @@ final class AppModels {
     }
 
     /// "Stop and quit?" (or "Quit when it's done?") with what is running and what quitting does to
-    /// it. "Keep working" is the default and answers Return and Escape. True to quit.
-    private static func confirmQuit(_ work: [BusyWork]) -> Bool {
+    /// it, as a sheet that never blocks the main actor, so a logout can still answer it. "Keep
+    /// working" is the default and answers Return and Escape. True to quit.
+    private static func confirmQuit(_ work: [BusyWork]) async -> Bool {
         let text = TerminationPolicy.question(for: work)
         let alert = NSAlert()
         alert.messageText = text.title
         alert.informativeText = text.detail
         alert.addButton(withTitle: text.keep)
         alert.addButton(withTitle: text.quit).keyEquivalent = ""
-        // NSAlert gives Escape only to a button titled Cancel; send it to "Keep working" too.
-        let escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard event.keyCode == 53, event.window === alert.window else { return event }
-            NSApp.stopModal(withCode: .alertFirstButtonReturn)
-            return nil
-        }
-        defer { escape.map(NSEvent.removeMonitor) }
-        return alert.runModal() == .alertSecondButtonReturn
+        return await ModalAlert.ask(alert, escape: .alertFirstButtonReturn) == .alertSecondButtonReturn
     }
 
     /// The newest run in the history journal, for the last-run health light. An unreadable journal

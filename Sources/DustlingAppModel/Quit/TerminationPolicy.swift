@@ -57,25 +57,35 @@ public enum BusyWork: String, CaseIterable, Sendable, Hashable {
 /// What happens to work that changes files when Dustling quits. Nothing busy: quit at once.
 /// Otherwise a user quit asks once (logout, restart and shutdown never ask); then the work is
 /// stopped where it can stop (a cleanup ends after its current item, an uninstall after its
-/// current app) and the rest is waited for, at most `cap` as a last resort.
+/// current app) and the rest is waited for, at most `cap` (`systemCap` for logout, restart and
+/// shutdown, under loginwindow's own timeout) as a last resort.
+///
+/// The question never blocks the main actor (`confirm` is async, a sheet), so a logout that
+/// arrives while it is open can answer it as "quit" (`answerQuestion(quit:)`).
 ///
 /// Every run is journaled after each item, so even a run cut off by the cap is recorded up to its
 /// last item and finished off at the next launch.
 @MainActor
 public final class TerminationPolicy {
     private let busy: @MainActor () -> [BusyWork]
-    private let confirm: @MainActor ([BusyWork]) -> Bool
+    private let confirm: @MainActor ([BusyWork]) async -> Bool
     private let stop: @MainActor () -> Void
     private let clock: any Clock<Duration>
     private let cap: Duration
+    private let systemCap: Duration
     private let pollInterval: Duration
+    /// The open question's answer, while it is open.
+    private var pendingAnswer: CheckedContinuation<Bool, Never>?
+    /// The wait's limit now; a logout during a user quit's wait shortens it to `systemCap`.
+    private var currentCap: Duration
 
     public init(
         busy: @escaping @MainActor () -> [BusyWork],
-        confirm: @escaping @MainActor ([BusyWork]) -> Bool,
+        confirm: @escaping @MainActor ([BusyWork]) async -> Bool,
         stop: @escaping @MainActor () -> Void,
         clock: some Clock<Duration> = ContinuousClock(),
         cap: Duration = .seconds(30),
+        systemCap: Duration = .seconds(20),
         pollInterval: Duration = .milliseconds(50)
     ) {
         self.busy = busy
@@ -83,10 +93,15 @@ public final class TerminationPolicy {
         self.stop = stop
         self.clock = clock
         self.cap = cap
+        self.systemCap = systemCap
         self.pollInterval = pollInterval
+        currentCap = cap
     }
 
     public var hasBusyWork: Bool { !busy().isEmpty }
+
+    /// True while the question is open.
+    public var isAsking: Bool { pendingAnswer != nil }
 
     /// The question's text and buttons for `work`.
     public static func question(for work: [BusyWork]) -> (title: String, detail: String, quit: String, keep: String) {
@@ -98,17 +113,38 @@ public final class TerminationPolicy {
             "Keep working")
     }
 
+    /// Answers the open question as if the user had (logout: `quit: true`). Later answers, such as
+    /// the dismissed sheet's own, are ignored.
+    public func answerQuestion(quit: Bool) {
+        guard let answer = pendingAnswer else { return }
+        pendingAnswer = nil
+        answer.resume(returning: quit)
+    }
+
+    /// Logout, restart or shutdown arrived during a user quit: wait no longer than `systemCap`.
+    public func hurry() {
+        currentCap = min(currentCap, systemCap)
+    }
+
     /// Readies the app to quit. False when the user chose to keep working (nothing was stopped).
     public func prepare(_ reason: QuitReason) async -> Bool {
         let work = busy()
         guard !work.isEmpty else { return true }
-        if reason == .user, !confirm(work) { return false }
+        if reason == .user, !(await ask(work)) { return false }
+        currentCap = reason == .system ? systemCap : cap
         stop()
         var waited = Duration.zero
-        while hasBusyWork && waited < cap {
+        while hasBusyWork && waited < currentCap {
             do { try await clock.sleep(for: pollInterval) } catch { break }
             waited += pollInterval
         }
         return true
+    }
+
+    private func ask(_ work: [BusyWork]) async -> Bool {
+        await withCheckedContinuation { continuation in
+            pendingAnswer = continuation
+            Task { answerQuestion(quit: await confirm(work)) }
+        }
     }
 }

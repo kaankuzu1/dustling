@@ -61,15 +61,16 @@ struct QuitCoordinatorTests {
         // Sheets still attached: it waits.
         #expect(await soon { clock.sleeperCount > 0 })
         #expect(terminated == 0 && answers.isEmpty)
-        // A second Quit meanwhile is answered at once and terminates nothing.
+        // A second Quit meanwhile joins this one: answered with it, never terminating on its own.
         var second: [Bool] = []
         await quit.requestQuit { second.append($0) }
-        #expect(second == [true] && terminated == 0)
+        #expect(second.isEmpty && terminated == 0)
         // The sheets go away: it answers, then terminates, once.
         sheets.value = 0
         clock.advance(by: .milliseconds(20))
         #expect(await task.value)
         #expect(answers == [true])
+        #expect(second == [true])
         #expect(terminated == 1)
         #expect(!quit.isQuitting)
     }
@@ -111,6 +112,51 @@ struct QuitCoordinatorTests {
         #expect(answers == [false])
         #expect(dismissed == 0 && quit.presentationCount == 1)
         #expect(stopped == 0 && terminated == 0)
+    }
+
+    @Test func aLogoutWhileTheQuestionIsOpenAnswersItAsQuitAndAnswersBothOnce() async {
+        let busy = Box<[BusyWork]>([.cleanup])
+        let question = Box<CheckedContinuation<Bool, Never>?>(nil)
+        var stopped = 0
+        var terminated = 0
+        var dismissedQuestion = 0
+        var userAnswers: [Bool] = []
+        var logoutAnswers: [Bool] = []
+        let clock = ManualClock()
+        let quit = Box<QuitCoordinator?>(nil)
+        let policy = TerminationPolicy(
+            busy: { busy.value },
+            confirm: { _ in
+                // The question sheet: registered while open, answered only by the user or a dismiss.
+                await withCheckedContinuation { continuation in
+                    question.value = continuation
+                    quit.value?.register {
+                        dismissedQuestion += 1
+                        question.value?.resume(returning: false)
+                        question.value = nil
+                    }
+                }
+            },
+            stop: { stopped += 1 }, clock: clock)
+        let coordinator = QuitCoordinator(
+            policy: policy, attachedSheetCount: { 0 }, terminate: { terminated += 1 }, clock: clock)
+        quit.value = coordinator
+
+        let user = Task { await coordinator.requestQuit(.user) { userAnswers.append($0) } }
+        #expect(await soon { policy.isAsking && question.value != nil })
+        // Logout arrives while the question is open: it answers it as quit and dismisses it.
+        await coordinator.requestQuit(.system) { logoutAnswers.append($0) }
+        #expect(dismissedQuestion == 1)
+        #expect(!policy.isAsking)
+        #expect(await soon { stopped == 1 })
+        #expect(userAnswers.isEmpty && logoutAnswers.isEmpty && terminated == 0)
+        // The work ends: both requests are answered once, then the app terminates once.
+        busy.value = []
+        #expect(await advance(clock, by: .milliseconds(50), until: { terminated == 1 }))
+        #expect(await user.value)
+        #expect(userAnswers == [true])
+        #expect(logoutAnswers == [true])
+        #expect(terminated == 1)
     }
 
     @Test func unregisteredPresentationsAreNotDismissed() async {
@@ -194,6 +240,18 @@ struct TerminationPolicyTests {
         #expect(await advance(clock, by: .milliseconds(50), until: { done }))
         await task.value
         #expect(asked == 0)
+    }
+
+    @Test func logoutWaitsAtMostTheShorterSystemCap() async {
+        var done = false
+        let clock = ManualClock()
+        let policy = TerminationPolicy(
+            busy: { [.emptyTrash] }, confirm: { _ in true }, stop: {},
+            clock: clock, cap: .seconds(30), systemCap: .seconds(20), pollInterval: .milliseconds(500))
+        let task = Task { done = await policy.prepare(.system) }
+        #expect(await advance(clock, by: .milliseconds(500), until: { done }))
+        await task.value
+        #expect(clock.now.offset == .seconds(20))
     }
 
     @Test func givesUpAtTheCapAsALastResort() async {

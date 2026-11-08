@@ -84,11 +84,15 @@ public struct CleanupRunner: Sendable {
             save()
             log(entry)
         }
-        /// A stopped run's remaining items: one save and one log write for all of them, so stopping
-        /// a cleanup of thousands of items takes as long as one item, not thousands of saves.
-        func addSkipped(_ entries: [JournalEntry]) {
+        /// Entries that need no move (a stopped run's remaining items, the caller's extra in-use and
+        /// unmovable entries): one save and one log write for all of them, so stopping a cleanup of
+        /// thousands of items takes as long as one item, not thousands of saves.
+        func addBatch(_ entries: [JournalEntry]) {
             guard !entries.isEmpty else { return }
             record.entries.append(contentsOf: entries)
+            if entries.contains(where: { if case .movedToTrash = $0.outcome { true } else { false } }) {
+                record.restorable = true
+            }
             save()
             guard !logFailed else { return }
             do { try logger.append(entries, to: record) } catch {
@@ -101,7 +105,7 @@ public struct CleanupRunner: Sendable {
         save()
         for (index, url) in urls.enumerated() {
             if isCancelled() {
-                addSkipped(urls[index...].map {
+                addBatch(urls[index...].map {
                     JournalEntry(originalPath: $0.path(percentEncoded: false), bytes: 0, outcome: .skipped(reason: "cleanup stopped"))
                 })
                 break
@@ -111,7 +115,7 @@ public struct CleanupRunner: Sendable {
             add(entry)
             onItem(url, entry.outcome)
         }
-        for entry in extraEntries { add(entry) }
+        addBatch(extraEntries)
 
         record.inProgress = false
         save()

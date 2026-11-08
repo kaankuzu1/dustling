@@ -22,6 +22,8 @@ public final class QuitCoordinator {
     private let pollInterval: Duration
     /// True from `requestQuit` until it has finished. A second request meanwhile is answered at once.
     public private(set) var isQuitting = false
+    /// Requests that arrived during a quit, answered with it.
+    private var joining: [@MainActor (Bool) -> Void] = []
     /// True only while `terminate` runs, so `shouldTerminate()` lets that termination through.
     private var isTerminating = false
 
@@ -66,18 +68,28 @@ public final class QuitCoordinator {
 
     /// Quits: asks about running work (`.user` only) and stops it, dismisses everything, waits until
     /// no sheet is attached or `timeout` passes, then terminates. `answer` is called exactly once:
-    /// false when the user keeps working, true right before terminating (or at once when a quit is
-    /// already under way). Returns the same value.
+    /// false when the user keeps working, true right before terminating. Returns the same value.
+    ///
+    /// A request that arrives while a quit is under way joins it and gets the same answer. If it is
+    /// a logout, restart or shutdown, it answers an open question as "quit" and dismisses it, and the
+    /// wait for running work is shortened, so the Mac is never held up by the question.
     @discardableResult
-    public func requestQuit(_ reason: QuitReason = .user, answer: @MainActor (Bool) -> Void = { _ in }) async -> Bool {
+    public func requestQuit(_ reason: QuitReason = .user, answer: @escaping @MainActor (Bool) -> Void = { _ in }) async -> Bool {
         guard !isQuitting else {
-            answer(true)
+            joining.append(answer)
+            if reason == .system {
+                policy.hurry()
+                if policy.isAsking {
+                    policy.answerQuestion(quit: true)
+                    dismissAll()
+                }
+            }
             return true
         }
         isQuitting = true
         defer { isQuitting = false }
         guard await policy.prepare(reason) else {
-            answer(false)
+            finish(answer, false)
             return false
         }
         dismissAll()
@@ -86,11 +98,19 @@ public final class QuitCoordinator {
             do { try await clock.sleep(for: pollInterval) } catch { break }
             waited += pollInterval
         }
-        answer(true)
+        finish(answer, true)
         isTerminating = true
         defer { isTerminating = false }
         terminate()
         return true
+    }
+
+    /// Answers this request and every one that joined it, each exactly once.
+    private func finish(_ answer: @MainActor (Bool) -> Void, _ quitting: Bool) {
+        let others = joining
+        joining.removeAll()
+        answer(quitting)
+        for other in others { other(quitting) }
     }
 
     /// `applicationShouldTerminate`: true lets termination happen now. A termination that didn't

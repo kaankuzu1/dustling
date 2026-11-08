@@ -69,17 +69,45 @@ enum ModalAlert {
         return window
     }
 
-    static func show(_ alert: NSAlert, completion: @escaping @MainActor (NSApplication.ModalResponse) -> Void = { _ in }) {
-        guard let window = hostWindow else {
-            completion(alert.runModal())
-            return
+    /// Shows `alert` as a sheet on the main window (or the sheet on top of it); with no window, as
+    /// a free-standing window. Never `runModal`, so it never blocks the main actor or disables Quit.
+    /// `escape`: the response Escape gives (NSAlert gives Escape only to a button titled Cancel).
+    static func show(
+        _ alert: NSAlert, escape: NSApplication.ModalResponse? = nil,
+        completion: @escaping @MainActor (NSApplication.ModalResponse) -> Void = { _ in }
+    ) {
+        var end: (NSApplication.ModalResponse) -> Void = { _ in }
+        var token: UUID?
+        var monitor: Any?
+        let finish: @MainActor (NSApplication.ModalResponse) -> Void = { response in
+            if let token { coordinator?.unregister(token) }
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            token = nil
+            monitor = nil
+            completion(response)
         }
-        let token = coordinator?.register { window.endSheet(alert.window, returnCode: .cancel) }
-        alert.beginSheetModal(for: window) { response in
-            MainActor.assumeIsolated {
-                if let token { coordinator?.unregister(token) }
-                completion(response)
+        if let window = hostWindow {
+            end = { window.endSheet(alert.window, returnCode: $0) }
+            alert.beginSheetModal(for: window) { response in MainActor.assumeIsolated { finish(response) } }
+        } else {
+            let free = FreeStandingAlert(alert) { response in finish(response) }
+            end = { free.finish($0) }
+            free.show()
+        }
+        token = coordinator?.register { end(.cancel) }
+        if let escape {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.keyCode == 53, event.window === alert.window else { return event }
+                end(escape)
+                return nil
             }
+        }
+    }
+
+    /// Asks with `alert` (see `show`) and returns the button's response.
+    static func ask(_ alert: NSAlert, escape: NSApplication.ModalResponse? = nil) async -> NSApplication.ModalResponse {
+        await withCheckedContinuation { continuation in
+            show(alert, escape: escape) { continuation.resume(returning: $0) }
         }
     }
 
@@ -95,6 +123,47 @@ enum ModalAlert {
                 completion(response)
             }
         }
+    }
+}
+
+/// An NSAlert in its own window, not app-modal: its buttons answer through `finish`, like a sheet's.
+@MainActor
+private final class FreeStandingAlert: NSObject {
+    /// Shown alerts, kept alive until answered.
+    private static var shown: Set<FreeStandingAlert> = []
+    private let alert: NSAlert
+    private var completion: ((NSApplication.ModalResponse) -> Void)?
+
+    init(_ alert: NSAlert, completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        self.alert = alert
+        self.completion = completion
+        super.init()
+    }
+
+    func show() {
+        if alert.buttons.isEmpty { alert.addButton(withTitle: "OK") }
+        for (index, button) in alert.buttons.enumerated() {
+            button.tag = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue + index
+            button.target = self
+            button.action = #selector(pressed(_:))
+        }
+        alert.layout()
+        Self.shown.insert(self)
+        alert.window.center()
+        alert.window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
+    @objc private func pressed(_ button: NSButton) {
+        finish(NSApplication.ModalResponse(rawValue: button.tag))
+    }
+
+    func finish(_ response: NSApplication.ModalResponse) {
+        guard let completion else { return }
+        self.completion = nil
+        alert.window.orderOut(nil)
+        Self.shown.remove(self)
+        completion(response)
     }
 }
 
