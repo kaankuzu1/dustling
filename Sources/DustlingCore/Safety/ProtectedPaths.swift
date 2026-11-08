@@ -94,6 +94,8 @@ public struct ProtectedPaths: Sendable {
     ) -> [[String]] {
         var list: [[String]] = []
         let textual = textualUnder.map(textualComponents)
+        // Matched without case (APFS ignores it), so a hand-typed `~/downloads/x` stays text-only too.
+        let textualCase = textual.map(caseKey)
         func resolve(_ url: URL) -> [String] { Self.resolve(url, realpath: realpath) }
         func add(_ comps: [String]) {
             list.append(key(comps))
@@ -104,7 +106,8 @@ public struct ProtectedPaths: Sendable {
         }
         for entry in entries {
             let text = textualComponents(entry)
-            if let index = textual.firstIndex(where: { isEqualOrInside(text, $0) }) {
+            let textCase = caseKey(text)
+            if let index = textualCase.firstIndex(where: { isEqualOrInside(textCase, $0) }) {
                 // The consent folder itself may be resolved (that reads only its parent), so the key
                 // matches candidates whose parents were resolved; nothing inside it is looked at.
                 let folder = textualUnder[index]

@@ -272,6 +272,21 @@ import Testing
         #expect(!asked.isEmpty)
     }
 
+    @Test func consentFolderMatchIgnoresCase() throws {
+        let home = URL(filePath: "/Users/tester")
+        let downloads = home.appending(path: "Downloads")
+        var asked: [String] = []
+        // Typed by hand in a different case: still inside Downloads, so nothing inside it is resolved.
+        let keys = ProtectedPaths.keys(
+            for: [URL(filePath: "/Users/tester/downloads/x"), URL(filePath: "/USERS/Tester/DOWNLOADS")],
+            textualUnder: [downloads],
+            realpath: { asked.append($0); return nil })
+        #expect(!asked.contains { $0.lowercased().hasPrefix(downloads.path.lowercased() + "/") })
+        #expect(!asked.contains { $0.lowercased() == "/users/tester/downloads/x" })
+        #expect(keys.count == 4)
+        #expect(keys[0].suffix(2) == ["downloads", "x"])
+    }
+
     @Test func textualExclusionStillProtects() throws {
         let sb = try TestSandbox()
         let item = try sb.file("home/Library/Caches/com.keep/a", bytes: 1).deletingLastPathComponent()
