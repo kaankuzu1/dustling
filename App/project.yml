@@ -52,6 +52,13 @@ targets:
         SWIFT_EMIT_LOC_STRINGS: NO
         DEAD_CODE_STRIPPING: YES
         ENABLE_USER_SCRIPT_SANDBOXING: NO
+    preBuildScripts:
+      # Keep build products out of iCloud sync (see the post-build step below). Harmless elsewhere.
+      - name: Exclude build products from iCloud sync
+        script: |
+          mkdir -p "${BUILT_PRODUCTS_DIR}"
+          xattr -w 'com.apple.fileprovider.ignore#P' 1 "${BUILT_PRODUCTS_DIR}" || echo "note: couldn't mark ${BUILT_PRODUCTS_DIR} as not synced"
+        basedOnDependencyAnalysis: false
     postBuildScripts:
       # The repo may live in an iCloud-synced folder (Desktop or Documents). File Provider then tags
       # the .app with Finder info, and codesign refuses "resource fork, Finder information, or

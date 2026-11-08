@@ -37,7 +37,7 @@ struct DestinationView: View {
             PlaceholderContent(destination: destination)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if destination.isToolScreen {
-                ActionBar(title: "Nothing selected", caption: "This screen is built in a later step")
+                ActionBar(title: "Nothing selected", caption: "This screen is built in a later step.")
             }
         }
         .background(DustlingTheme.Palette.ground)

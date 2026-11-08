@@ -77,16 +77,36 @@ private struct StorageSummary: View {
 }
 
 /// A 6 pt meter, square-cornered and segmented 4 on / 1 off like the mockup's `.win.pix .w-meter`.
+/// Changes animate over 0.6 s (DESIGN-mosaic §9), instantly under Reduce Motion.
 private struct StorageMeter: View {
     /// nil while there is no reading: only the track shows, never a made-up value.
     let usedFraction: Double?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        MeterBar(fraction: usedFraction ?? 0, showsFill: usedFraction != nil)
+            .frame(height: 6)
+            .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.meter, reduceMotion: reduceMotion), value: usedFraction)
+    }
+}
+
+/// The meter's drawing. `Animatable`, so SwiftUI interpolates the fraction and redraws the Canvas.
+private struct MeterBar: View, Animatable {
+    var fraction: Double
+    let showsFill: Bool
+
+    nonisolated var animatableData: Double {
+        get { fraction }
+        set { fraction = newValue }
+    }
+
+    var body: some View {
+        let fraction = min(max(self.fraction, 0), 1)
+        let showsFill = self.showsFill
         Canvas { context, size in
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(SidebarTokens.meterTrack))
-            guard let usedFraction else { return }
-            let filled = (size.width * min(max(usedFraction, 0), 1)).rounded()
+            guard showsFill else { return }
+            let filled = (size.width * fraction).rounded()
             var x: CGFloat = 0
             while x < filled {
                 let w = min(4, filled - x)
@@ -94,8 +114,6 @@ private struct StorageMeter: View {
                 x += 5
             }
         }
-        .frame(height: 6)
-        .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.meter, reduceMotion: reduceMotion), value: usedFraction)
     }
 }
 

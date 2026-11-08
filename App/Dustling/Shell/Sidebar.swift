@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The sidebar destinations, in order (SCREENS-final, Shell).
@@ -48,20 +49,7 @@ struct Sidebar: View {
             BrandLockup()
                 .padding(.horizontal, 8)
                 .padding(.bottom, 16)
-            VStack(spacing: 2) {
-                ForEach(Destination.allCases) { destination in
-                    SidebarRow(
-                        title: destination.title,
-                        isSelected: selection == destination,
-                        icon: { destination.icon(color: DustlingTheme.Palette.sidebarIcon) }
-                    ) {
-                        selection = destination
-                    }
-                }
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Sections")
-            Spacer(minLength: 16)
+            DestinationList(selection: $selection)
             SidebarFooter(selection: $selection)
         }
         // 46 pt clears the window's traffic lights, as in the mockup (14 + 2 + 12 + 18).
@@ -109,45 +97,93 @@ struct AppIconTile: View {
     }
 }
 
-/// One 32 pt sidebar row: pixel icon, label, optional badge.
+/// The destinations as a native `List(selection:)`, so arrow keys, type-select and VoiceOver's list
+/// navigation work, drawn with the mockup's rows instead of the system highlight.
+private struct DestinationList: View {
+    @Binding var selection: Destination
+
+    var body: some View {
+        List(selection: Binding<Destination?>(
+            get: { selection },
+            set: { if let new = $0 { selection = new } }
+        )) {
+            ForEach(Destination.allCases) { destination in
+                SidebarRow(
+                    title: destination.title,
+                    isSelected: selection == destination,
+                    icon: { destination.icon(color: DustlingTheme.Palette.sidebarIcon) })
+                    .tag(destination)
+                    .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .background(PlainTableStyle())
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .scrollDisabled(true)
+        // The plain list still insets rows by 6 pt per side; the mockup's rows span the column.
+        .padding(.horizontal, -6)
+        .environment(\.defaultMinListRowHeight, 34)
+        .accessibilityLabel("Sections")
+    }
+}
+
+/// The rows draw the mockup's selection fill, so the backing `NSTableView` drops its own highlight
+/// and row padding. Selection itself (arrow keys, type-select, VoiceOver) is unchanged.
+private struct PlainTableStyle: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { Probe() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class Probe: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            var view = superview
+            while let current = view, !(current is NSTableView) { view = current.superview }
+            guard let table = view as? NSTableView else { return }
+            table.selectionHighlightStyle = .none
+            table.style = .fullWidth
+            table.intercellSpacing = .zero
+        }
+    }
+}
+
+/// One 32 pt sidebar row: pixel icon, label, optional badge. Selection and hover fills follow the mockup.
 struct SidebarRow<Icon: View>: View {
     let title: String
     var badge: String?
     var isSelected = false
     @ViewBuilder var icon: () -> Icon
-    let action: () -> Void
 
     @State private var isHovered = false
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 9) {
-                icon().frame(width: 18, height: 18)
-                Text(title)
-                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 13).weight(isSelected ? .medium : .regular))
-                    .foregroundStyle(isSelected ? SidebarTokens.selectedInk : Palette.sidebarInk)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 4)
-                if let badge {
-                    Text(badge)
-                        .font(.custom(DustlingTheme.Typography.sansFamily, size: 11.5))
-                        .foregroundStyle(Palette.sidebarMuted)
-                        .monospacedDigit()
-                }
-            }
-            .padding(.horizontal, 9)
-            .frame(height: 32)
-            .contentShape(Rectangle())
-            .background {
-                RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius, style: .continuous)
-                    .fill(Palette.sidebarSelection.opacity(isSelected ? 1 : isHovered ? 0.55 : 0))
+        HStack(spacing: 9) {
+            icon().frame(width: 18, height: 18)
+            Text(title)
+                .font(.custom(DustlingTheme.Typography.sansFamily, size: 13).weight(isSelected ? .medium : .regular))
+                .foregroundStyle(isSelected ? SidebarTokens.selectedInk : Palette.sidebarInk)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 4)
+            if let badge {
+                Text(badge)
+                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 11.5))
+                    .foregroundStyle(Palette.sidebarMuted)
+                    .monospacedDigit()
             }
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 9)
+        .frame(height: 32)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .background {
+            RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius, style: .continuous)
+                .fill(Palette.sidebarSelection.opacity(isSelected ? 1 : isHovered ? 0.55 : 0))
+        }
         .onHover { isHovered = $0 }
         .animation(DustlingTheme.Motion.hover, value: isHovered)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityElement(children: .combine)
     }
 }

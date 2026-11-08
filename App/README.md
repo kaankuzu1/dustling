@@ -17,9 +17,9 @@ You can also open `Dustling.xcodeproj` in Xcode after `xcodegen generate` and ru
 
 ## Signing
 
-The app is not sandboxed, because it needs Full Disk Access. It uses the hardened runtime.
+The app is not sandboxed, because it needs Full Disk Access. The project turns on the hardened runtime, but it only applies when you sign with a team: Xcode disables it for ad-hoc signing.
 
-- Without a team, builds are signed with "Sign to Run Locally" (ad hoc).
+- Without a team, builds are signed with "Sign to Run Locally" (ad hoc), without the hardened runtime.
 - To sign with your own team, create `App/Local.xcconfig` (it is git-ignored):
 
   ```
@@ -35,7 +35,7 @@ Open **System Settings > Privacy & Security > Full Disk Access** and switch Dust
 
 ## Repository in iCloud Drive
 
-If the repository sits in an iCloud-synced folder (Desktop or Documents), File Provider tags the built app with Finder information and `codesign` refuses to sign it. A build phase clears extended attributes from the app right before signing, so the build works there too.
+If the repository sits in an iCloud-synced folder (Desktop or Documents), File Provider tags the built app with Finder information and `codesign` refuses to sign it. Two build phases handle this: one marks the build products folder as not synced (`com.apple.fileprovider.ignore#P`), and one clears extended attributes from the app before signing.
 
 ## Layout
 
