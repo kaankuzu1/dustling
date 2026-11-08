@@ -34,16 +34,18 @@ public struct TrashMover: Sendable {
         }
         let isDirectory = (item.st_mode & S_IFMT) == S_IFDIR
         let facts = PermissionFacts(
-            parentWritableAndSearchable: access(parentPath, W_OK | X_OK) == 0,
+            parentAccess: Self.accessErrno(parentPath, W_OK | X_OK),
             parentIsSticky: (parent.st_mode & S_ISVTX) != 0,
             parentOwner: parent.st_uid,
             itemIsDirectory: isDirectory,
             // Only asked for real directories (lstat said so), so access() can't follow a link here.
-            itemWritable: !isDirectory || access(path, W_OK) == 0,
+            itemAccess: isDirectory ? Self.accessErrno(path, W_OK) : 0,
             itemOwner: item.st_uid,
             userID: geteuid())
-        if Self.needsAdmin(facts) {
-            return .needsAdmin
+        switch Self.decide(facts) {
+        case .allowed: break
+        case .needsAdmin: return .needsAdmin
+        case .failed(let reason): return .failed(reason: reason)
         }
         do {
             return .movedToTrash(trashedPath: try backend.trash(url).path(percentEncoded: false))
@@ -52,27 +54,45 @@ public struct TrashMover: Sendable {
         }
     }
 
-    /// What decides whether moving an item out of its folder needs admin rights.
+    /// What decides whether an item may be moved out of its folder. The access fields hold the errno of
+    /// `access(parent, W_OK|X_OK)` and (for directories) `access(item, W_OK)`, 0 when allowed.
     struct PermissionFacts: Equatable {
-        var parentWritableAndSearchable: Bool
+        var parentAccess: Int32
         var parentIsSticky: Bool
         var parentOwner: uid_t
         var itemIsDirectory: Bool
-        var itemWritable: Bool
+        var itemAccess: Int32
         var itemOwner: uid_t
         var userID: uid_t
     }
 
-    /// Needs admin when the folder can't be changed by the user, when a directory the user can't
-    /// write would have to move to another folder (its `..` entry changes), or when the folder is
-    /// sticky (like /tmp) and the user owns neither the folder nor the item.
-    static func needsAdmin(_ facts: PermissionFacts) -> Bool {
-        if !facts.parentWritableAndSearchable { return true }
-        if facts.itemIsDirectory && !facts.itemWritable { return true }
-        if facts.parentIsSticky && facts.parentOwner != facts.userID && facts.itemOwner != facts.userID {
-            return true
+    enum PermissionDecision: Equatable {
+        case allowed, needsAdmin
+        case failed(reason: String)
+    }
+
+    /// - EPERM from either access check is a privacy (TCC) denial on a folder the user owns: admin
+    ///   rights wouldn't help, Full Disk Access would, so it fails with that hint.
+    /// - EACCES is a real permission denial: needs admin when the folder can't be changed, or when a
+    ///   directory the user can't write would have to move to another folder (its `..` entry changes).
+    /// - Any other errno fails with its description.
+    /// - A sticky folder (like /tmp) needs admin when the user owns neither the folder nor the item.
+    static func decide(_ facts: PermissionFacts) -> PermissionDecision {
+        let itemAccess = facts.itemIsDirectory ? facts.itemAccess : 0
+        if facts.parentAccess == EPERM || itemAccess == EPERM { return .failed(reason: noAccessReason) }
+        for code in [facts.parentAccess, itemAccess] where code != 0 {
+            return code == EACCES ? .needsAdmin : .failed(reason: describe(code))
         }
-        return false
+        if facts.parentIsSticky && facts.parentOwner != facts.userID && facts.itemOwner != facts.userID {
+            return .needsAdmin
+        }
+        return .allowed
+    }
+
+    /// 0 when `access(path, mode)` succeeds, otherwise its errno (EPERM is a privacy denial on macOS,
+    /// EACCES a permission denial).
+    private static func accessErrno(_ path: String, _ mode: Int32) -> Int32 {
+        access(path, mode) == 0 ? 0 : errno
     }
 
     /// The C library's English description of an errno (not localized on macOS).

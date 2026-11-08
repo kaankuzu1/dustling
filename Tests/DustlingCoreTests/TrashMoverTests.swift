@@ -114,27 +114,44 @@ struct TrashMoverTests {
             == .skipped(reason: "already gone"))
     }
 
-    // MARK: - Needs-admin decision (stat data injected: other owners need root to set up)
+    // MARK: - Permission decision (stat data and access() errnos injected: other owners need root and
+    // TCC denials can't be set up in a sandbox)
 
     private func facts(
-        parentOK: Bool = true, sticky: Bool = false, parentOwner: uid_t = 501,
-        directory: Bool = false, itemWritable: Bool = true, itemOwner: uid_t = 501
+        parentAccess: Int32 = 0, sticky: Bool = false, parentOwner: uid_t = 501,
+        directory: Bool = false, itemAccess: Int32 = 0, itemOwner: uid_t = 501
     ) -> TrashMover.PermissionFacts {
         TrashMover.PermissionFacts(
-            parentWritableAndSearchable: parentOK, parentIsSticky: sticky, parentOwner: parentOwner,
-            itemIsDirectory: directory, itemWritable: itemWritable, itemOwner: itemOwner, userID: 501)
+            parentAccess: parentAccess, parentIsSticky: sticky, parentOwner: parentOwner,
+            itemIsDirectory: directory, itemAccess: itemAccess, itemOwner: itemOwner, userID: 501)
     }
 
+    private let noAccess = TrashMover.PermissionDecision.failed(reason: "no access (Full Disk Access may be needed)")
+
     @Test func needsAdminDecision() {
-        #expect(!TrashMover.needsAdmin(facts()))
-        #expect(TrashMover.needsAdmin(facts(parentOK: false)))
-        #expect(TrashMover.needsAdmin(facts(directory: true, itemWritable: false)))
-        #expect(!TrashMover.needsAdmin(facts(directory: false, itemWritable: false)))
+        #expect(TrashMover.decide(facts()) == .allowed)
+        #expect(TrashMover.decide(facts(parentAccess: EACCES)) == .needsAdmin)
+        #expect(TrashMover.decide(facts(directory: true, itemAccess: EACCES)) == .needsAdmin)
+        #expect(TrashMover.decide(facts(directory: false, itemAccess: EACCES)) == .allowed)
         // Sticky parent (like /tmp): someone else's item in someone else's folder can't be moved.
-        #expect(TrashMover.needsAdmin(facts(sticky: true, parentOwner: 0, itemOwner: 0)))
-        #expect(!TrashMover.needsAdmin(facts(sticky: true, parentOwner: 0, itemOwner: 501)))
-        #expect(!TrashMover.needsAdmin(facts(sticky: true, parentOwner: 501, itemOwner: 0)))
-        #expect(!TrashMover.needsAdmin(facts(sticky: false, parentOwner: 0, itemOwner: 0)))
+        #expect(TrashMover.decide(facts(sticky: true, parentOwner: 0, itemOwner: 0)) == .needsAdmin)
+        #expect(TrashMover.decide(facts(sticky: true, parentOwner: 0, itemOwner: 501)) == .allowed)
+        #expect(TrashMover.decide(facts(sticky: true, parentOwner: 501, itemOwner: 0)) == .allowed)
+        #expect(TrashMover.decide(facts(sticky: false, parentOwner: 0, itemOwner: 0)) == .allowed)
+    }
+
+    /// macOS access() says EPERM for TCC-protected folders the user owns (e.g. ~/Library/Caches/com.apple.Safari
+    /// without Full Disk Access): admin rights wouldn't help, Full Disk Access would.
+    @Test func privacyDenialIsNoAccessNotNeedsAdmin() {
+        #expect(TrashMover.decide(facts(directory: true, itemAccess: EPERM)) == noAccess)
+        #expect(TrashMover.decide(facts(parentAccess: EPERM)) == noAccess)
+        #expect(TrashMover.decide(facts(parentAccess: EACCES, directory: true, itemAccess: EPERM)) == noAccess)
+        #expect(TrashMover.decide(facts(parentAccess: EPERM, sticky: true, parentOwner: 0, itemOwner: 0)) == noAccess)
+    }
+
+    @Test func otherAccessErrorsFailWithTheirDescription() {
+        #expect(TrashMover.decide(facts(parentAccess: EROFS)) == .failed(reason: "Read-only file system"))
+        #expect(TrashMover.decide(facts(directory: true, itemAccess: EROFS)) == .failed(reason: "Read-only file system"))
     }
 
     @Test func backendErrorBecomesFailedWithReason() throws {
