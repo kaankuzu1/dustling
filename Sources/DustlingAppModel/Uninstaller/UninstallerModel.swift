@@ -322,7 +322,8 @@ public final class UninstallerModel {
         isUninstalling = false
         if loadPending {
             loadPending = false
-            await load()
+            // Not awaited: the records go back now, the recount follows in the background.
+            Task { await self.load() }
         }
         return records
     }

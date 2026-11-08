@@ -358,15 +358,18 @@ struct UninstallerModelTests {
         model.selection = model.apps.filter { $0.app.displayName == "Alpha" }.map(\.app.url).reduce(into: []) { $0.insert($1) }
         let confirmed = model.confirmation
         #expect(confirmed.ready)
-        // The load is still waiting on Beta when the uninstall starts; Beta is released while it runs.
-        let quitter = HookQuitter(running: running) { gate.open() }
+        // The load is still waiting on Beta when the uninstall starts, and stays held after it.
+        running.set(alpha, running: false)
 
-        let records = await model.uninstallSelected(confirmed: confirmed, quit: quitter)
-        await loading.value
+        let records = await model.uninstallSelected(confirmed: confirmed, quit: FakeQuitter(running: running))
 
+        // The results came back while the recount is still held at Beta.
         #expect(records.count == 1)
         #expect(model.apps.map(\.app.displayName) == ["Beta"])
-        #expect(model.apps.allSatisfy { !$0.isCounting })
+        #expect(model.apps.allSatisfy { $0.isCounting })
+        gate.open()
+        await loading.value
+        #expect(await waitUntil { model.apps.allSatisfy { !$0.isCounting } })
         #expect(model.apps.first?.leftoverCount == 0)
     }
 }
