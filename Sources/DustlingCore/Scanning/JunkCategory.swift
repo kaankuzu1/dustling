@@ -82,12 +82,18 @@ public struct JunkItem: Sendable, Identifiable {
     public let bytes: UInt64
     public let category: JunkCategoryID
     public let inUseByBundleID: String?
+    /// The app the item belongs to, running or not (from its folder name), so callers can tell later
+    /// whether it is in use. Falls back to `inUseByBundleID`.
+    public let ownerBundleID: String?
 
-    public init(url: URL, bytes: UInt64, category: JunkCategoryID, inUseByBundleID: String? = nil) {
+    public init(
+        url: URL, bytes: UInt64, category: JunkCategoryID, inUseByBundleID: String? = nil, ownerBundleID: String? = nil
+    ) {
         self.url = url
         self.bytes = bytes
         self.category = category
         self.inUseByBundleID = inUseByBundleID
+        self.ownerBundleID = ownerBundleID ?? inUseByBundleID
     }
 }
 

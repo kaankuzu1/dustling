@@ -62,15 +62,26 @@ public enum CloseApps {
         case .waiting: ""
         case .closing: "Closing…"
         case .closed: "Closed"
-        case .stillOpen: "Still open, its files were skipped"
+        case .stillOpen: "Still open, its files will stay"
         }
     }
 
-    /// Said when fewer files can move than the sheet offered, because some apps stayed open.
-    public static func changedLine(promised: UInt64, now: UInt64) -> String? {
+    /// Said when what can move isn't what the sheet offered: because apps stayed open, or because
+    /// files changed meanwhile.
+    public static func changedLine(promised: UInt64, now: UInt64, someStillOpen: Bool) -> String? {
         guard now != promised else { return nil }
-        return "Some apps stayed open, so their files stay where they are. "
-            + "\(Bytes.format(now)) will move instead of \(Bytes.format(promised))."
+        let figures = "\(Bytes.format(now)) will move instead of \(Bytes.format(promised))."
+        return someStillOpen && now < promised
+            ? "Some apps stayed open, so their files stay where they are. " + figures
+            : "What can move changed while the apps closed. " + figures
+    }
+
+    /// What the post-quit flow decided.
+    public enum FlowResult: Equatable, Sendable {
+        /// Every offered file can move: the cleanup ran.
+        case cleaned
+        /// What can move changed: show `line` and ask again with `now`.
+        case askAgain(now: UInt64, line: String)
     }
 }
 
@@ -109,10 +120,10 @@ public final class CloseAppsRun: Identifiable {
         }
     }
 
-    #if DEBUG
-    /// Screenshot fixture (DEBUG only): shows these statuses without asking any app to quit.
-    public func showFixture(_ statuses: [String: CloseApps.Status]) {
-        for (id, status) in statuses where self.statuses[id] != nil { self.statuses[id] = status }
+    /// After the re-check: an app that didn't answer in time but isn't running any more did close.
+    func settle(running: Set<String>) {
+        for holder in holders where statuses[holder.bundleID] == .stillOpen && !running.contains(holder.bundleID) {
+            statuses[holder.bundleID] = .closed
+        }
     }
-    #endif
 }

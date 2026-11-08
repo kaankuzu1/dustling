@@ -409,6 +409,10 @@ import Testing
         for (name, id) in expected { #expect(owners[name] == .some(id), "\(name)") }
         let idle = try await scan(sb, running: [])
         #expect((idle[.browserCaches]?.items ?? []).allSatisfy { $0.inUseByBundleID == nil })
+        // The owner is kept even when it isn't running, so in-use can be checked again later.
+        let idleOwners = Dictionary(uniqueKeysWithValues:
+            (idle[.browserCaches]?.items ?? []).map { ($0.url.lastPathComponent, $0.ownerBundleID) })
+        for (name, id) in expected { #expect(idleOwners[name] == .some(id), "\(name)") }
     }
 
     @Test func containerCachesBelongToTheContainersApp() async throws {

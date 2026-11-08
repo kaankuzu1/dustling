@@ -15,8 +15,8 @@ enum OpenApps {
         }
     }
 
-    /// Every running bundle ID, for the re-check after quitting (as the scan sees them).
-    @MainActor static func allBundleIDs() -> Set<String> {
+    /// Every running bundle ID, for in-use re-checks (as the scan sees them).
+    nonisolated static func allBundleIDs() -> Set<String> {
         Set(NSWorkspace.shared.runningApplications.filter { !$0.isTerminated }.compactMap(\.bundleIdentifier))
     }
 }
@@ -26,14 +26,22 @@ enum OpenApps {
 /// are free, and then cleans. If fewer files can move than offered, it says so and asks again.
 struct CloseAppsSheet: View {
     let run: CloseAppsRun
-    /// Screenshot fixtures show the sheet without the buttons doing anything.
-    var isFixture = false
+    #if DEBUG
+    /// Screenshot fixtures only: statuses to show, and buttons that do nothing.
+    var fixtureStatuses: [String: CloseApps.Status]?
+    private var isFixture: Bool { fixtureStatuses != nil }
+    #else
+    private var isFixture: Bool { false }
+    #endif
 
     @Environment(AppModels.self) private var models
     @Environment(\.dismiss) private var dismiss
     @State private var promised: UInt64 = 0
-    /// Set once the apps have finished and fewer files can move than were offered.
+    /// What moves without the apps' files.
+    @State private var withoutThem: UInt64 = 0
+    /// Set once the apps have finished and what can move isn't what was offered.
     @State private var changedTo: UInt64?
+    @State private var changedLine: String?
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -46,7 +54,7 @@ struct CloseAppsSheet: View {
                 .accessibilityAddTraits(.isHeader)
             VStack(spacing: 0) {
                 ForEach(run.holders) { holder in
-                    AppRow(holder: holder, status: run.statuses[holder.bundleID] ?? .waiting)
+                    AppRow(holder: holder, status: status(holder))
                 }
             }
             .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))
@@ -61,7 +69,7 @@ struct CloseAppsSheet: View {
                     .foregroundStyle(Palette.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let changedTo, let line = CloseApps.changedLine(promised: promised, now: changedTo) {
+            if let line = changedLine {
                 Text(line)
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
                     .foregroundStyle(Palette.warning)
@@ -81,7 +89,8 @@ struct CloseAppsSheet: View {
                     Button("Move \(Bytes.format(changedTo)) to Trash") { clean(closed: run.closedNames) }
                         .dustlingPrimary()
                 } else {
-                    Button("Clean without them") { clean(closed: []) }
+                    Button("Clean without them (\(Bytes.format(withoutThem)))") { clean(closed: []) }
+                        .monospacedDigit()
                         .disabled(run.isRunning)
                     Button("Quit apps and clean", action: quitAndClean)
                         .dustlingPrimary()
@@ -94,8 +103,16 @@ struct CloseAppsSheet: View {
         .background(Palette.ground)
         .interactiveDismissDisabled(run.isRunning)
         .onAppear {
-            promised = models.junk.selectedBytes + run.holders.reduce(0) { $0 + $1.bytes }
+            withoutThem = models.junk.selectedBytes
+            promised = withoutThem + run.holders.reduce(0) { $0 + $1.bytes }
         }
+    }
+
+    private func status(_ holder: OpenAppHolder) -> CloseApps.Status {
+        #if DEBUG
+        if let fixture = fixtureStatuses?[holder.bundleID] { return fixture }
+        #endif
+        return run.statuses[holder.bundleID] ?? .waiting
     }
 
     private func clean(closed: [String]) {
@@ -109,14 +126,14 @@ struct CloseAppsSheet: View {
     private func quitAndClean() {
         guard !isFixture else { return }
         Task {
-            await run.quitAll(using: WorkspaceAppQuitter())
-            models.junk.recheckInUse(stillRunning: OpenApps.allBundleIDs())
-            let now = models.junk.selectedBytes
-            if now == promised {
-                clean(closed: run.closedNames)
-            } else {
+            // Quits, re-checks only these apps, and cleans if exactly the offered amount can move.
+            switch await models.junk.quitAndCleanFlow(run, quitter: WorkspaceAppQuitter(), promised: promised) {
+            case .cleaned:
+                dismiss()
+            case .askAgain(let now, let line):
                 // Say so and ask again: the confirmed figure must be what is attempted.
                 changedTo = now
+                changedLine = line
             }
         }
     }

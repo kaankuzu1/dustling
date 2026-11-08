@@ -237,6 +237,11 @@ public final class JunkScanModel {
     public var canTakeOutOfTrash = false
     /// What happens to a cleanup while `canTakeOutOfTrash` is false.
     public var limitedCleanupPolicy: LimitedCleanupPolicy = .warnBeforeCleaning
+    /// Reads the bundle IDs running right now; `clean()` re-checks in-use with it before every cleanup.
+    /// nil: keep what the scan saw.
+    @ObservationIgnored public var runningBundleIDs: (@Sendable () -> Set<String>)?
+    /// Owner bundle ID → running, from the last re-check. Empty until one (the scan's view holds).
+    private var runningNow: [String: Bool] = [:]
     /// Apps closed before the last cleanup, by name, for the summary. A rescan clears them.
     public private(set) var closedApps: [String] = []
     /// True while the Review files sheet is open; the app holds off automatic rescans meanwhile, so
@@ -288,7 +293,10 @@ public final class JunkScanModel {
         for tile in categories {
             guard tile.isSelected, !tile.stopped, let scan = scans[tile.id] else { continue }
             result[tile.id] = scan.items
-                .filter { !excludedItems.contains($0.url) && Unmovable.check($0, category: scan.category, skipping: cleanupSkip) == nil }
+                .filter {
+                    !excludedItems.contains($0.url)
+                        && Unmovable.check($0, category: scan.category, skipping: cleanupSkip, inUseBy: inUseOwner($0)) == nil
+                }
                 .reduce(0) { $0 + $1.bytes }
         }
         return result
@@ -330,6 +338,7 @@ public final class JunkScanModel {
         didPutBack = false
         excludedItems = []
         closedApps = []
+        runningNow = [:]
         categoryProgress = [:]
         categoryOutcomes = [:]
         state = .scanning(ScanProgress(
@@ -403,7 +412,7 @@ public final class JunkScanModel {
                 : (category.id == .iosBackups ? "Your data, never selected for you" : nil),
             bytes: scan.bytes, itemCount: scan.items.count, selection: category.selection,
             isSelected: (scan.stopped || category.requiresAdmin) ? false : (selected ?? initial), stopped: scan.stopped,
-            issues: scan.issues, inUseCount: scan.items.filter { $0.inUseByBundleID != nil }.count,
+            issues: scan.issues, inUseCount: scan.items.filter { inUseOwner($0) != nil }.count,
             needsHelper: category.requiresAdmin,
             excludedCount: scan.items.filter { excludedItems.contains($0.url) }.count,
             excludedBytes: scan.items.filter { excludedItems.contains($0.url) }.reduce(0) { $0 + $1.bytes })
@@ -411,15 +420,26 @@ public final class JunkScanModel {
 
     // MARK: open apps
 
-    /// The regular apps in `running` that hold selected, movable-but-for-them files, largest first.
+    /// The running app that owns `item` right now, if any. Before any re-check this is what the scan
+    /// saw; after one, the live running set decides, both ways: in use while the owner runs, free
+    /// when it doesn't.
+    func inUseOwner(_ item: JunkItem) -> String? {
+        guard let owner = item.ownerBundleID else { return nil }
+        if let running = runningNow[owner] { return running ? owner : nil }
+        return item.inUseByBundleID
+    }
+
+    /// The regular apps in `running` that hold selected files which would move if the app closed
+    /// (never files that would be skipped anyway), largest first.
     public func openAppHolders(running: [RunningApp]) -> [OpenAppHolder] {
         let apps = Dictionary(running.map { ($0.bundleID, $0) }, uniquingKeysWith: { first, _ in first })
         var totals: [String: (bytes: UInt64, count: Int)] = [:]
         for tile in categories where tile.isSelected && !tile.stopped {
             guard let scan = scans[tile.id] else { continue }
             for item in scan.items where !excludedItems.contains(item.url) {
-                guard case .inUse(let id) = Unmovable.check(item, category: scan.category, skipping: cleanupSkip),
-                      apps[id] != nil else { continue }
+                guard let id = item.ownerBundleID, apps[id] != nil,
+                      Unmovable.check(item, category: scan.category, skipping: cleanupSkip, inUseBy: nil) == nil
+                else { continue }
                 totals[id, default: (0, 0)].bytes += item.bytes
                 totals[id, default: (0, 0)].count += 1
             }
@@ -432,19 +452,33 @@ public final class JunkScanModel {
         .sorted { $0.bytes != $1.bytes ? $0.bytes > $1.bytes : $0.name < $1.name }
     }
 
-    /// After apps were asked to quit: items whose owner isn't running any more are free to move.
-    /// Items of apps in `stillRunning` stay in use.
-    public func recheckInUse(stillRunning: Set<String>) {
-        guard case .ready = state else { return }
-        for (id, scan) in scans {
-            let items = scan.items.map { item -> JunkItem in
-                guard let owner = item.inUseByBundleID, !stillRunning.contains(owner) else { return item }
-                return JunkItem(url: item.url, bytes: item.bytes, category: item.category, inUseByBundleID: nil)
-            }
-            scans[id] = CategoryScan(
-                category: scan.category, items: items, bytes: scan.bytes, issues: scan.issues, stopped: scan.stopped)
+    /// Decides in-use again from `running`, for every owner (or only `owners`). An owner that runs is
+    /// in use; one that doesn't is free. `clean()` does this itself right before every cleanup.
+    public func recheckInUse(running: Set<String>, only owners: Set<String>? = nil) {
+        let all = Set(scans.values.flatMap { $0.items.compactMap(\.ownerBundleID) })
+        for owner in owners.map({ $0.intersection(all) }) ?? all {
+            runningNow[owner] = running.contains(owner)
         }
         rebuildTiles()
+    }
+
+    /// After "Quit apps and clean": asks the apps to quit, re-checks only those apps, and cleans when
+    /// exactly the offered amount can move. Otherwise it says what changed and waits for the user.
+    public func quitAndCleanFlow(
+        _ run: CloseAppsRun, quitter: AppQuitter, timeout: Duration = CloseApps.timeout, promised: UInt64
+    ) async -> CloseApps.FlowResult {
+        await run.quitAll(using: quitter, timeout: timeout)
+        let running = runningBundleIDs?() ?? []
+        recheckInUse(running: running, only: Set(run.holders.map(\.bundleID)))
+        run.settle(running: running)
+        let now = selectedBytes
+        guard now == promised else {
+            let stillOpen = run.statuses.values.contains(.stillOpen)
+            return .askAgain(
+                now: now, line: CloseApps.changedLine(promised: promised, now: now, someStillOpen: stillOpen) ?? "")
+        }
+        await clean(confirmedLimited: true, closedApps: run.closedNames)
+        return .cleaned
     }
 
     // MARK: review files
@@ -458,7 +492,8 @@ public final class JunkScanModel {
         let sections = categories.compactMap { tile -> FileReview.Section? in
             guard tile.isSelected, !tile.stopped, let scan = scans[tile.id] else { return nil }
             let rows = scan.items.map { item -> FileReview.Row in
-                let reason = FileReview.disabledReason(item, category: scan.category, skipping: skipping, appName: appName)
+                let reason = FileReview.disabledReason(
+                    item, category: scan.category, skipping: skipping, inUseBy: inUseOwner(item), appName: appName)
                 return FileReview.Row(
                     url: item.url, name: item.url.lastPathComponent, bytes: item.bytes, disabledReason: reason,
                     isIncluded: reason == nil && !excluding.contains(item.url))
@@ -513,6 +548,8 @@ public final class JunkScanModel {
         case .allowed, .confirmFirst:
             break
         }
+        // Apps may have opened or closed since the last look: decide in-use from what runs now.
+        if let running = runningBundleIDs?() { recheckInUse(running: running) }
 
         var urls: [URL] = []
         var sizes: [URL: UInt64] = [:]
@@ -530,7 +567,7 @@ public final class JunkScanModel {
             for item in scan.items where !excludedItems.contains(item.url) {
                 let path = item.url.path(percentEncoded: false)
                 categoryOf[path] = tile.id
-                if let unmovable = Unmovable.check(item, category: scan.category, skipping: skipping) {
+                if let unmovable = Unmovable.check(item, category: scan.category, skipping: skipping, inUseBy: inUseOwner(item)) {
                     extra.append(JournalEntry(originalPath: path, bytes: item.bytes, outcome: unmovable.outcome))
                 } else {
                     let parent = item.url.deletingLastPathComponent()

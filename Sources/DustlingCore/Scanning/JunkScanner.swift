@@ -177,7 +177,7 @@ public struct JunkScanner: Sendable {
                     let owner = JunkCatalog.ownerBundleID(of: child)
                     items.append(JunkItem(
                         url: child, bytes: size.bytes, category: category.id,
-                        inUseByBundleID: running.contains(owner) ? owner : nil))
+                        inUseByBundleID: running.contains(owner) ? owner : nil, ownerBundleID: owner))
                 }
             }
 

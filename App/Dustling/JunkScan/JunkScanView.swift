@@ -42,6 +42,8 @@ struct JunkScanView: View {
         .background(Palette.ground)
         // The first visit scans like Home does (once per launch, never opening a locked place).
         .task(id: models.places.places) { models.loadHomeIfNeeded() }
+        // Every cleanup re-checks which apps run right now, so an app opened since stays protected.
+        .onAppear { models.junk.runningBundleIDs = { OpenApps.allBundleIDs() } }
         .sheet(isPresented: $confirmingEmptyTrash) { EmptyTrashSheet() }
     }
 

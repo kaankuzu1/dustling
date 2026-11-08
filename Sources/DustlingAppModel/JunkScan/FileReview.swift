@@ -50,9 +50,9 @@ public struct FileReview: Equatable, Sendable {
 
     /// Why an item can't move, in words for the sheet (`Unmovable.check` decides).
     static func disabledReason(
-        _ item: JunkItem, category: JunkCategory, skipping: CleanupSkip, appName: (String) -> String?
+        _ item: JunkItem, category: JunkCategory, skipping: CleanupSkip, inUseBy: String?, appName: (String) -> String?
     ) -> String? {
-        Unmovable.check(item, category: category, skipping: skipping)?.text(appName: appName)
+        Unmovable.check(item, category: category, skipping: skipping, inUseBy: inUseBy)?.text(appName: appName)
     }
 
     /// Only the selection totals for `excluding`, without rebuilding any rows (for live totals).
@@ -88,10 +88,13 @@ public enum Unmovable: Equatable, Sendable {
     /// It isn't directly inside one of the category's folders.
     case outsideCleanupArea
 
-    /// nil when the item can move.
-    public static func check(_ item: JunkItem, category: JunkCategory, skipping: CleanupSkip) -> Unmovable? {
+    /// nil when the item can move. `inUseBy`: the running app that owns it right now, if any (the
+    /// junk model decides this from a live running set; nil leaves in-use out of the check).
+    public static func check(
+        _ item: JunkItem, category: JunkCategory, skipping: CleanupSkip, inUseBy: String?
+    ) -> Unmovable? {
         if skipping.skips(item) { return .locked }
-        if let owner = item.inUseByBundleID { return .inUse(bundleID: owner) }
+        if let owner = inUseBy { return .inUse(bundleID: owner) }
         if category.requiresAdmin { return .needsHelper }
         if !category.isDeclaredRoot(item.url.deletingLastPathComponent()) { return .outsideCleanupArea }
         return nil
