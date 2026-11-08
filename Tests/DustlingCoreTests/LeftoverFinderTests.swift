@@ -223,18 +223,40 @@ import Foundation
         try sandbox.file("home/Library/Caches/com.example.foo/c")
         try sandbox.file("home/Library/Application Support/com.example.foo/c")
         try sandbox.file("home/Library/Preferences/ByHost/com.example.foo.X.plist")
-        let a = try app()
+        try sandbox.file("home/Library/Caches/Foo/c")
+        try sandbox.file("Library/PrivilegedHelperTools/com.example.foo.helper")
+        try sandbox.file("home/Library/Application Support/Steam/steamapps/common/Foo/g")
+        try sandbox.file("home/Library/Application Support/Steam/steamapps/common/Bar/g")
+        try Data("\"installdir\"\t\t\"Bar\"\n".utf8).write(
+            to: sandbox.root.appending(path: "home/Library/Application Support/Steam/steamapps/appmanifest_7.acf"))
         runner.setDefault(CommandResult(status: 0, stdout: "pkgid: com.example.foo.pkg\n", stderr: ""))
-        let env = sandbox.environment
-        let allowed: Set<String> = [
-            "Caches", "Preferences", "Preferences/ByHost", "Saved Application State", "HTTPStorages",
-            "WebKit", "Logs", "Cookies", "Application Support", "Containers", "Group Containers",
-            "LaunchAgents",
-        ].reduce(into: Set<String>()) { $0.insert(env.userLibrary.appending(path: $1).path) }
-            .union(["/private/var/db/receipts"])
-        for item in finder().leftovers(for: a) {
-            #expect(allowed.contains(item.url.deletingLastPathComponent().path), "\(item.url.path)")
+        let allowed = Set(LeftoverFinder.locationDirectories(sandbox.environment).map(\.standardizedFileURL.path))
+        let withSteam = try app(steam: "8")
+        let withManifest = try app(bundleID: nil, name: "Other", steam: "7")
+        let items = finder().leftovers(for: withSteam) + finder().leftovers(for: withManifest)
+        #expect(items.contains { $0.kind == .steamGameData })
+        #expect(items.contains { $0.kind == .packageReceipt })
+        #expect(items.count >= 7)
+        for item in items {
+            #expect(allowed.contains(item.url.deletingLastPathComponent().standardizedFileURL.path), "\(item.url.path)")
         }
+    }
+
+    @Test func locationDirectoriesAreFixed() throws {
+        let env = sandbox.environment
+        let dirs = LeftoverFinder.locationDirectories(env).map(\.standardizedFileURL.path)
+        let lib = env.userLibrary
+        for expected in [
+            lib.appending(path: "Caches"), lib.appending(path: "LaunchAgents"), lib.appending(path: "Preferences/ByHost"),
+            lib.appending(path: "Application Support/Steam/steamapps"),
+            lib.appending(path: "Application Support/Steam/steamapps/common"),
+            env.systemLibrary.appending(path: "LaunchDaemons"), env.systemLibrary.appending(path: "PrivilegedHelperTools"),
+        ] {
+            #expect(dirs.contains(expected.standardizedFileURL.path), "\(expected.path)")
+        }
+        #expect(!dirs.contains(lib.standardizedFileURL.path))
+        #expect(!dirs.contains(env.home.standardizedFileURL.path))
+        #expect(!dirs.contains(env.home.appending(path: "Downloads").standardizedFileURL.path))
     }
 
     @Test func graphemeClusterSlashBypassIsRejected() throws {

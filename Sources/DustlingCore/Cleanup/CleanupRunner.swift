@@ -23,17 +23,28 @@ public struct CleanupRunner: Sendable {
         extraEntries: [JournalEntry] = [],
         onItem: @Sendable (URL, DeletionOutcome) -> Void
     ) async -> RunRecord {
+        let startedAt = Date()
         var entries: [JournalEntry] = []
         for url in urls {
-            let bytes = sizer.measure(url).bytes
-            let outcome = mover.moveToTrash(url, allowedRoots: allowedRoots)
-            entries.append(JournalEntry(originalPath: url.path(percentEncoded: false), bytes: bytes, outcome: outcome))
-            onItem(url, outcome)
+            let entry = attempt(url, allowedRoots: allowedRoots)
+            entries.append(entry)
+            onItem(url, entry.outcome)
         }
-        entries += extraEntries
+        return finish(entries + extraEntries, kind: kind, startedAt: startedAt)
+    }
 
+    /// Measures and moves one item, without journaling. Callers that need to decide between items
+    /// (the uninstaller moves the app first) use this and then `finish` once.
+    func attempt(_ url: URL, allowedRoots: [URL]) -> JournalEntry {
+        let bytes = sizer.measure(url).bytes
+        let outcome = mover.moveToTrash(url, allowedRoots: allowedRoots)
+        return JournalEntry(originalPath: url.path(percentEncoded: false), bytes: bytes, outcome: outcome)
+    }
+
+    /// Journals and logs a finished run (one record per run).
+    func finish(_ entries: [JournalEntry], kind: RunKind, startedAt: Date) -> RunRecord {
         var record = RunRecord(
-            startedAt: Date(), kind: kind, entries: entries,
+            startedAt: startedAt, kind: kind, entries: entries,
             restorable: entries.contains { if case .movedToTrash = $0.outcome { true } else { false } })
 
         var journalSaved = true

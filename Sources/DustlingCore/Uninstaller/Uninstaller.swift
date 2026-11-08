@@ -23,7 +23,13 @@ public enum UninstallError: Error, Equatable {
 
 /// Removes an app and the leftovers the user selected. Everything goes to the Trash through
 /// `CleanupRunner`; admin-only leftovers are recorded as "needs admin" and never attempted.
+///
+/// The app bundle moves first. Leftovers are only touched once the app itself is in the Trash, so a
+/// refused or failed app never loses its settings and data. The allowed roots are fixed (the
+/// application folders and the leftover locations the finder declares), never derived from input.
 public struct Uninstaller: Sendable {
+    static let keptReason = "kept because the app itself was not removed"
+
     private let runner: CleanupRunner
     private let commands: CommandRunning
     private let running: RunningAppsProviding
@@ -39,7 +45,8 @@ public struct Uninstaller: Sendable {
         self.environment = environment
     }
 
-    /// `leftovers` is the set the user selected; it is not re-filtered here.
+    /// `leftovers` is the set the user selected; it is not re-filtered here, but each one must be a
+    /// direct child of a declared leftover location or it is skipped as outside the cleanup area.
     public func uninstall(
         _ app: InstalledApp,
         leftovers: [Leftover],
@@ -47,31 +54,62 @@ public struct Uninstaller: Sendable {
     ) async throws -> RunRecord {
         if running.isRunning(app) { throw UninstallError.appIsRunning(app.displayName) }
 
+        let startedAt = Date()
+        let kind = RunKind.uninstall(appName: app.displayName)
+        let locations = LeftoverFinder.locationDirectories(environment)
+        let roots = environment.applicationDirectories + locations
+
+        let appEntry = runner.attempt(app.url, allowedRoots: roots)
+        var entries = [appEntry]
+        onItem(app.url, appEntry.outcome)
+
+        guard case .movedToTrash = appEntry.outcome else {
+            for leftover in leftovers {
+                let outcome = DeletionOutcome.skipped(reason: Self.keptReason)
+                entries.append(JournalEntry(
+                    originalPath: leftover.url.path(percentEncoded: false), bytes: leftover.bytes, outcome: outcome))
+                onItem(leftover.url, outcome)
+            }
+            return runner.finish(entries, kind: kind, startedAt: startedAt)
+        }
+
+        let locationPaths = Set(locations.map { Self.key($0) })
         let userLeftovers = leftovers.filter { !$0.requiresAdmin }
         let adminLeftovers = leftovers.filter { $0.requiresAdmin }
 
         var extra: [JournalEntry] = []
+        let agentsDirectory = environment.userLibrary.appending(path: "LaunchAgents", directoryHint: .isDirectory)
+        let guardPaths = ProtectedPaths(environment: environment)
         for agent in userLeftovers where agent.kind == .launchAgent {
+            // Only agents that really live in ~/Library/LaunchAgents are ever booted out.
+            guard guardPaths.verdict(for: agent.url, allowedRoots: [agentsDirectory]) == .allowed,
+                  locationPaths.contains(Self.key(agent.url.deletingLastPathComponent()))
+            else { continue }
             if let failure = unload(agent.url) { extra.append(failure) }
+        }
+        for leftover in userLeftovers {
+            let entry: JournalEntry
+            if locationPaths.contains(Self.key(leftover.url.deletingLastPathComponent())) {
+                entry = runner.attempt(leftover.url, allowedRoots: roots)
+            } else {
+                entry = JournalEntry(
+                    originalPath: leftover.url.path(percentEncoded: false), bytes: leftover.bytes,
+                    outcome: .skipped(reason: "outside the cleanup area"))
+            }
+            entries.append(entry)
+            onItem(leftover.url, entry.outcome)
         }
         for leftover in adminLeftovers {
             extra.append(JournalEntry(
                 originalPath: leftover.url.path(percentEncoded: false),
                 bytes: leftover.bytes, outcome: .needsAdmin))
         }
+        return runner.finish(entries + extra, kind: kind, startedAt: startedAt)
+    }
 
-        var roots = environment.applicationDirectories
-        for leftover in userLeftovers {
-            let parent = leftover.url.deletingLastPathComponent()
-            if !roots.contains(parent) { roots.append(parent) }
-        }
-
-        return await runner.run(
-            [app.url] + userLeftovers.map(\.url),
-            kind: .uninstall(appName: app.displayName),
-            allowedRoots: roots,
-            extraEntries: extra,
-            onItem: onItem)
+    private static func key(_ url: URL) -> String {
+        let path = url.standardizedFileURL.path(percentEncoded: false)
+        return path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
     }
 
     /// Returns a failure entry, or nil when the agent was unloaded (or wasn't loaded at all).

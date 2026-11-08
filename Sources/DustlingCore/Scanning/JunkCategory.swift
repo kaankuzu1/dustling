@@ -54,6 +54,26 @@ public struct JunkCategory: Sendable {
         self.itemFilter = itemFilter
         self.measuredFilter = measuredFilter
     }
+
+    /// True when `folder` is one of this category's fixed roots, or one root an expansion produces
+    /// (`<expansion.parent>/<one child>/<expansion.subpath>`). Cleaning uses only these folders as the
+    /// allowed roots, so an item that isn't a direct child of one is never touched.
+    public func isDeclaredRoot(_ folder: URL) -> Bool {
+        let path = Self.components(folder)
+        if roots.contains(where: { Self.components($0) == path }) { return true }
+        return expansions.contains { expansion in
+            let parent = Self.components(expansion.parent)
+            let sub = expansion.subpath.split(separator: "/").map(String.init)
+            return path.count == parent.count + 1 + sub.count
+                && Array(path.prefix(parent.count)) == parent
+                && Array(path.suffix(sub.count)) == sub
+        }
+    }
+
+    /// Standardized (`.`/`..` removed) path components, without the leading "/".
+    private static func components(_ url: URL) -> [String] {
+        url.standardizedFileURL.path(percentEncoded: false).split(separator: "/").map(String.init)
+    }
 }
 
 public struct JunkItem: Sendable, Identifiable {

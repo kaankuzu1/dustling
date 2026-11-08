@@ -162,7 +162,7 @@ enum Commands {
                 // Every item is a direct child of one of them; anything else is not touched.
                 for item in usable {
                     let parent = item.url.deletingLastPathComponent()
-                    if Self.isResolvedRoot(parent, of: scan.category) {
+                    if scan.category.isDeclaredRoot(parent) {
                         urls.append(item.url)
                         shownBytes += item.bytes
                         roots.insert(parent)
@@ -192,19 +192,6 @@ enum Commands {
             print("Space is freed when the Trash is emptied: dustling empty-trash")
         }
         return code
-    }
-
-    /// True when `folder` is one of the category's fixed roots, or an expansion of it
-    /// (`<expansion.parent>/<child>/<subpath>`).
-    private static func isResolvedRoot(_ folder: URL, of category: JunkCategory) -> Bool {
-        let path = Format.path(folder)
-        if category.roots.contains(where: { Format.path($0) == path }) { return true }
-        return category.expansions.contains { expansion in
-            let suffix = "/" + expansion.subpath
-            guard path.hasSuffix(suffix) else { return false }
-            let child = URL(filePath: String(path.dropLast(suffix.count)))
-            return Format.path(child.deletingLastPathComponent()) == Format.path(expansion.parent)
-        }
     }
 
     // MARK: apps

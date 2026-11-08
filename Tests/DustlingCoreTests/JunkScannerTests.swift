@@ -194,4 +194,30 @@ import Testing
         guard case .unreadable(let u)? = out[0].issues.first else { Issue.record("expected unreadable"); return }
         #expect(u.lastPathComponent == "a.txt")
     }
+    // MARK: - Declared roots (moved from the CLI, Important #3)
+
+    @Test func declaredRootsAreFixedRootsAndTheirExpansions() throws {
+        let sb = try TestSandbox()
+        let cats = Dictionary(uniqueKeysWithValues: JunkCatalog.standard(sb.environment).map { ($0.id, $0) })
+        let userCaches = try #require(cats[.userCaches])
+        let lib = sb.environment.userLibrary
+        #expect(userCaches.isDeclaredRoot(lib.appending(path: "Caches")))
+        #expect(userCaches.isDeclaredRoot(lib.appending(path: "Caches/", directoryHint: .isDirectory)))
+        #expect(userCaches.isDeclaredRoot(lib.appending(path: "Containers/com.x/Data/Library/Caches")))
+        #expect(!userCaches.isDeclaredRoot(lib.appending(path: "Containers/com.x/Data/Library")))
+        #expect(!userCaches.isDeclaredRoot(lib.appending(path: "Containers/a/b/Data/Library/Caches")))
+        #expect(!userCaches.isDeclaredRoot(lib.appending(path: "Containers/Data/Library/Caches")))
+        #expect(!userCaches.isDeclaredRoot(lib.appending(path: "Containers")))
+        #expect(!userCaches.isDeclaredRoot(lib))
+        #expect(!userCaches.isDeclaredRoot(lib.appending(path: "Caches/sub")))
+        #expect(!userCaches.isDeclaredRoot(sb.environment.home.appending(path: "Downloads")))
+        #expect(!userCaches.isDeclaredRoot(lib.appending(path: "Containers/x/../../Caches/Data/Library/Caches")))
+        let trash = try #require(cats[.trash])
+        #expect(trash.isDeclaredRoot(sb.environment.volumesDirectory.appending(path: "Ext/.Trashes/\(sb.environment.userID)")))
+        #expect(!trash.isDeclaredRoot(sb.environment.volumesDirectory.appending(path: "Ext/.Trashes")))
+        let downloads = try #require(cats[.oldInstallers])
+        #expect(downloads.isDeclaredRoot(sb.environment.home.appending(path: "Downloads")))
+        #expect(!downloads.isDeclaredRoot(lib.appending(path: "Caches")))
+    }
 }
+

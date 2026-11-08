@@ -75,7 +75,8 @@ struct UninstallerTests {
     @Test func appBundleIsFirstEntryAndMovedToTrash() async throws {
         let sandbox = try TestSandbox()
         let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")
-        let cache = try sandbox.file("home/Library/Caches/com.example.foo/c.bin", bytes: 10)
+        // A leftover is a direct child of a declared location (here the app's cache folder).
+        let cache = try sandbox.file("home/Library/Caches/com.example.foo/c.bin", bytes: 10).deletingLastPathComponent()
         let record = try await makeUninstaller(sandbox, commands: FakeCommandRunner())
             .uninstall(installedApp(appURL), leftovers: [leftover(cache, kind: .caches)]) { _, _ in }
         #expect(record.kind == .uninstall(appName: "Foo"))
@@ -205,4 +206,120 @@ struct UninstallerTests {
         #expect(record.entries[2].outcome == .failed(reason: "could not unload: nope"))
         #expect(record.entries[3].outcome == .needsAdmin)
     }
+    // MARK: - App first, fixed roots (Important #3)
+
+    private static let kept = DeletionOutcome.skipped(reason: "kept because the app itself was not removed")
+
+    @Test func leftoversAreKeptWhenTheAppIsNotRemoved() async throws {
+        let sandbox = try TestSandbox()
+        // Outside every application folder, so the app itself is refused.
+        let appURL = try sandbox.app("elsewhere/Foo.app", bundleID: "com.example.foo")
+        let cache = try sandbox.file("home/Library/Caches/com.example.foo/c.bin", bytes: 10)
+        let plist = try sandbox.file("home/Library/LaunchAgents/com.example.foo.plist")
+        let daemon = try sandbox.file("Library/LaunchDaemons/com.example.foo.plist")
+        let fake = FakeCommandRunner()
+        let record = try await makeUninstaller(sandbox, commands: fake).uninstall(
+            installedApp(appURL),
+            leftovers: [
+                leftover(cache, kind: .caches, bytes: 10),
+                leftover(plist, kind: .launchAgent),
+                leftover(daemon, kind: .launchDaemon, admin: true),
+            ]
+        ) { _, _ in }
+        #expect(record.entries.first?.originalPath == path(appURL))
+        #expect(record.entries.first?.outcome == .skipped(reason: "outside the cleanup area"))
+        #expect(record.entries.dropFirst().map(\.outcome) == [Self.kept, Self.kept, Self.kept])
+        #expect(record.entries.dropFirst().map(\.originalPath) == [path(cache), path(plist), path(daemon)])
+        #expect(fake.calls.isEmpty)   // no launchctl bootout
+        for url in [appURL, cache, plist, daemon] { #expect(FileManager.default.fileExists(atPath: url.path)) }
+        #expect(!record.restorable)
+    }
+
+    @Test func leftoversAreKeptWhenMovingTheAppFails() async throws {
+        let sandbox = try TestSandbox()
+        let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")
+        let cache = try sandbox.file("home/Library/Caches/com.example.foo/c.bin")
+        let backend = FailingBackend(
+            inner: DirectoryTrashBackend(directory: sandbox.root.appending(path: "trash", directoryHint: .isDirectory)),
+            failingName: "Foo.app")
+        let runner = CleanupRunner(
+            mover: TrashMover(backend: backend, protectedPaths: ProtectedPaths(environment: sandbox.environment)),
+            journal: RunJournal(directory: sandbox.environment.historyDirectory),
+            logger: RunLogger(directory: sandbox.environment.logsDirectory), sizer: DirectorySizer())
+        let uninstaller = Uninstaller(
+            runner: runner, commands: FakeCommandRunner(), running: FakeRunning(running: false),
+            environment: sandbox.environment)
+        let record = try await uninstaller.uninstall(
+            installedApp(appURL), leftovers: [leftover(cache, kind: .caches)]) { _, _ in }
+        guard case .failed = record.entries[0].outcome else { Issue.record("app should fail"); return }
+        #expect(record.entries[1].outcome == Self.kept)
+        #expect(FileManager.default.fileExists(atPath: cache.path))
+        let saved = try #require(try RunJournal(directory: sandbox.environment.historyDirectory).all().first)
+        #expect(saved.entries == record.entries)
+    }
+
+    struct FailingBackend: TrashBackend {
+        let inner: DirectoryTrashBackend
+        let failingName: String
+        func trash(_ url: URL) throws -> URL {
+            if url.lastPathComponent == failingName { throw LaunchError() }
+            return try inner.trash(url)
+        }
+    }
+
+    @Test func appMovesBeforeAgentsAreUnloadedAndLeftoversMoved() async throws {
+        let sandbox = try TestSandbox()
+        let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")
+        let plist = try sandbox.file("home/Library/LaunchAgents/com.example.foo.plist")
+        let log = EventLog()
+        _ = try await makeUninstaller(sandbox, commands: LoggingRunner(inner: FakeCommandRunner(), log: log))
+            .uninstall(installedApp(appURL), leftovers: [leftover(plist, kind: .launchAgent)]) { url, _ in
+                log.add("move:" + url.lastPathComponent)
+            }
+        #expect(log.all == ["move:Foo.app", "cmd:bootout gui/\(sandbox.environment.userID) \(path(plist))",
+                            "move:com.example.foo.plist"])
+    }
+
+    @Test func foreignLeftoversAreOutsideTheCleanupArea() async throws {
+        let sandbox = try TestSandbox()
+        let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")
+        let download = try sandbox.file("home/Downloads/x.bin")
+        let cachesFolder = try sandbox.directory("home/Library/Caches")
+        try sandbox.file("home/Library/Caches/other/keep.bin")
+        let nested = try sandbox.file("home/Library/Application Support/Google/Chrome/Default/keep.db")
+            .deletingLastPathComponent()
+        let library = sandbox.environment.userLibrary
+        let fake = FakeCommandRunner()
+        let record = try await makeUninstaller(sandbox, commands: fake).uninstall(
+            installedApp(appURL),
+            leftovers: [
+                leftover(download, kind: .caches),
+                leftover(cachesFolder, kind: .caches),
+                leftover(nested, kind: .applicationSupport),
+                leftover(sandbox.root.appending(path: "home/Downloads/agent.plist"), kind: .launchAgent),
+                leftover(library, kind: .caches),
+            ]
+        ) { _, _ in }
+        let outside = DeletionOutcome.skipped(reason: "outside the cleanup area")
+        #expect(record.entries[1].outcome == outside)
+        #expect(record.entries[2].outcome == outside)
+        #expect(record.entries[3].outcome == outside)
+        #expect(record.entries[4].outcome == outside)
+        guard case .skipped = record.entries[5].outcome else { Issue.record("~/Library must be skipped"); return }
+        #expect(fake.calls.isEmpty)   // a launch agent outside ~/Library/LaunchAgents is never booted out
+        for url in [download, cachesFolder, nested, library] { #expect(FileManager.default.fileExists(atPath: url.path)) }
+    }
+
+    @Test func steamGameDataIsInsideTheCleanupArea() async throws {
+        let sandbox = try TestSandbox()
+        let appURL = try sandbox.app("home/Applications/Portal.app", bundleID: nil)
+        let game = try sandbox.file("home/Library/Application Support/Steam/steamapps/common/Portal/p.dat")
+            .deletingLastPathComponent()
+        let record = try await makeUninstaller(sandbox, commands: FakeCommandRunner())
+            .uninstall(installedApp(appURL), leftovers: [leftover(game, kind: .steamGameData)]) { _, _ in }
+        guard case .movedToTrash = record.entries[1].outcome else {
+            Issue.record("game data should move: \(record.entries[1].outcome)"); return
+        }
+    }
 }
+

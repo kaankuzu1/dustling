@@ -17,6 +17,23 @@ public struct LeftoverFinder: Sendable {
         self.commands = commands
     }
 
+    /// Folders under `~/Library` whose direct children can be leftovers.
+    private static let userLocations = [
+        "Caches", "Preferences", "Preferences/ByHost", "Saved Application State", "HTTPStorages", "WebKit",
+        "Logs", "Cookies", "Application Support", "Containers", "Group Containers", "LaunchAgents",
+        "Application Support/Steam/steamapps", "Application Support/Steam/steamapps/common",
+    ]
+    /// Folders under `/Library` whose direct children can be leftovers (all need admin).
+    private static let systemLocations = ["LaunchAgents", "LaunchDaemons", "PrivilegedHelperTools"]
+
+    /// Every folder a leftover can be a direct child of. Fixed by the environment, never by an app's
+    /// metadata, so callers can use it as the allowed roots for removal.
+    public static func locationDirectories(_ env: SystemEnvironment) -> [URL] {
+        userLocations.map { env.userLibrary.appending(path: $0, directoryHint: .isDirectory) }
+            + systemLocations.map { env.systemLibrary.appending(path: $0, directoryHint: .isDirectory) }
+            + [receiptsDirectory]
+    }
+
     public func leftovers(for app: InstalledApp, among installed: [InstalledApp] = []) -> [Leftover] {
         leftoversWithIssues(for: app, among: installed).leftovers
     }
@@ -28,6 +45,7 @@ public struct LeftoverFinder: Sendable {
         var issues: [ScanIssue] = []
         var seen = Set<URL>()
         var listings: [URL: [String]?] = [:]
+        let locationPaths = Set(Self.locationDirectories(environment).map(\.standardizedFileURL.path))
 
         /// Lists a location directory once. Missing directories are silent; others report an issue.
         func listing(_ dir: URL) -> [String]? {
@@ -50,6 +68,8 @@ public struct LeftoverFinder: Sendable {
                  admin: Bool = false, mustExist: Bool = true, note: String? = nil) {
             let key = url.standardizedFileURL
             guard !seen.contains(key) else { return }
+            // Defense in depth (R13): a leftover is always a direct child of a declared location.
+            guard locationPaths.contains(url.deletingLastPathComponent().standardizedFileURL.path) else { return }
             var bytes: UInt64 = 0
             if mustExist {
                 guard listing(url.deletingLastPathComponent()) != nil, exists(url) else { return }
