@@ -242,7 +242,7 @@ struct RepairTests {
     // MARK: repair cases and the blocker
 
     @Test func accessLostIsOnlyABlockerAfterItWasGranted() {
-        let defaults = UserDefaults(suiteName: "dustling-memory-\(UUID().uuidString)")!
+        let defaults = ScratchDefaults.make("dustling-memory")
         let memory = FullDiskAccessMemory(defaults: defaults)
         #expect(!memory.isLost(.denied))
         memory.observe(.granted)
@@ -257,7 +257,7 @@ struct RepairTests {
 
     /// The DEBUG fixture's memory never reads or writes the saved value.
     @Test func sampleMemoryNeverSaves() {
-        let defaults = UserDefaults(suiteName: "dustling-memory-\(UUID().uuidString)")!
+        let defaults = ScratchDefaults.make("dustling-memory")
         let memory = FullDiskAccessMemory(defaults: defaults)
         memory.useSample(wasGranted: true)
         #expect(memory.isLost(.denied))
