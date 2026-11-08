@@ -22,6 +22,9 @@ public struct CategoryTileModel: Identifiable, Equatable, Sendable {
     public let inUseCount: Int
     /// Only the cleanup helper can move these (system caches): shown with their size, never selected.
     public var needsHelper: Bool = false
+    /// Files the user left out in Review files: never moved, never counted as selected.
+    public var excludedCount: Int = 0
+    public var excludedBytes: UInt64 = 0
 }
 
 /// How far a cleanup has got through one category's items (the moves it attempts).
@@ -215,6 +218,9 @@ public final class JunkScanModel {
     public private(set) var message: String?
     /// True once the run just made was put back (allowed once per run).
     public private(set) var didPutBack = false
+    /// Files left out in Review files. They stay where they are and get no journal entry; a rescan
+    /// clears them.
+    public private(set) var excludedItems: Set<URL> = []
     /// True while Put everything back runs; a second one is refused meanwhile.
     public private(set) var isRestoring = false
     /// Per category, how far the cleanup in progress (or the last one) got.
@@ -273,7 +279,9 @@ public final class JunkScanModel {
         var result: [JunkCategoryID: UInt64] = [:]
         for tile in categories {
             guard tile.isSelected, !tile.stopped, let scan = scans[tile.id], !scan.category.requiresAdmin else { continue }
-            result[tile.id] = scan.items.filter { $0.inUseByBundleID == nil }.reduce(0) { $0 + $1.bytes }
+            result[tile.id] = scan.items
+                .filter { $0.inUseByBundleID == nil && !excludedItems.contains($0.url) }
+                .reduce(0) { $0 + $1.bytes }
         }
         return result
     }
@@ -312,6 +320,7 @@ public final class JunkScanModel {
         restoreOutcomes = nil
         message = nil
         didPutBack = false
+        excludedItems = []
         categoryProgress = [:]
         categoryOutcomes = [:]
         state = .scanning(ScanProgress(
@@ -386,7 +395,45 @@ public final class JunkScanModel {
             bytes: scan.bytes, itemCount: scan.items.count, selection: category.selection,
             isSelected: (scan.stopped || category.requiresAdmin) ? false : (selected ?? initial), stopped: scan.stopped,
             issues: scan.issues, inUseCount: scan.items.filter { $0.inUseByBundleID != nil }.count,
-            needsHelper: category.requiresAdmin)
+            needsHelper: category.requiresAdmin,
+            excludedCount: scan.items.filter { excludedItems.contains($0.url) }.count,
+            excludedBytes: scan.items.filter { excludedItems.contains($0.url) }.reduce(0) { $0 + $1.bytes })
+    }
+
+    // MARK: review files
+
+    /// The Review files list for the selected categories, as if `excluding` were left out. The sheet
+    /// edits a draft and calls this on every change; `setExclusions` keeps the result.
+    public func review(
+        excluding: Set<URL>, skipping: CleanupSkip = .none, appName: (String) -> String? = { _ in nil }
+    ) -> FileReview {
+        let sections = categories.compactMap { tile -> FileReview.Section? in
+            guard tile.isSelected, !tile.stopped, let scan = scans[tile.id] else { return nil }
+            let rows = scan.items.map { item -> FileReview.Row in
+                let reason = FileReview.disabledReason(item, category: scan.category, skipping: skipping, appName: appName)
+                return FileReview.Row(
+                    url: item.url, name: item.url.lastPathComponent, bytes: item.bytes, disabledReason: reason,
+                    isIncluded: reason == nil && !excluding.contains(item.url))
+            }
+            .sorted { a, b in
+                if (a.disabledReason == nil) != (b.disabledReason == nil) { return a.disabledReason == nil }
+                return a.bytes != b.bytes ? a.bytes > b.bytes : a.url.path < b.url.path
+            }
+            let included = rows.filter(\.isIncluded)
+            return FileReview.Section(
+                id: tile.id, title: tile.title, rows: rows,
+                selectedBytes: included.reduce(0) { $0 + $1.bytes }, selectedCount: included.count)
+        }
+        return FileReview(sections: sections)
+    }
+
+    /// Keeps the files left out in Review files (Done). Unknown files are ignored.
+    public func setExclusions(_ urls: Set<URL>) {
+        guard case .ready = state else { return }
+        let known = Set(scans.values.flatMap { $0.items.map(\.url) })
+        excludedItems = urls.intersection(known)
+        message = nil
+        rebuildTiles()
     }
 
     public func toggle(_ id: JunkCategoryID) {
@@ -429,7 +476,8 @@ public final class JunkScanModel {
         for tile in categories where tile.isSelected && !tile.stopped {
             guard let scan = scans[tile.id] else { continue }
             progress[tile.id] = CategoryProgress(done: 0, total: 0)
-            for item in scan.items {
+            // Files left out in Review files were never part of the plan: no move, no entry.
+            for item in scan.items where !excludedItems.contains(item.url) {
                 let path = item.url.path(percentEncoded: false)
                 categoryOf[path] = tile.id
                 if skipping.skips(item) {

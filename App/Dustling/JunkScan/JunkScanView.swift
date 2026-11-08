@@ -221,6 +221,7 @@ private struct JunkActionBar: View {
 
     @Environment(AppModels.self) private var models
     @State private var confirmingLimitedClean = false
+    @State private var reviewingFiles = false
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -254,6 +255,9 @@ private struct JunkActionBar: View {
                     ?? (gate.kind == .refused ? gate.note : nil)
                     ?? "Moves to the Trash. Nothing is erased until you empty it."
             ) {
+                Button("Review files") { reviewingFiles = true }
+                    .disabled(!junk.categories.contains { $0.isSelected && !$0.stopped })
+                    .help("Lists every file that would move, so you can leave some out")
                 Button(action: moveToTrash) {
                     HStack(spacing: 6) {
                         PixelIconView(.trash, color: Palette.onAccent)
@@ -272,6 +276,7 @@ private struct JunkActionBar: View {
             } message: {
                 Text(gate.note ?? "")
             }
+            .sheet(isPresented: $reviewingFiles) { ReviewFilesSheet() }
         case .moving(let done, let total, let bytes):
             ActionBar(
                 title: "Moving to the Trash",

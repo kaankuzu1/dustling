@@ -122,6 +122,16 @@ struct JunkScreenTilesTests {
         #expect(tiles[0].note == "3 items. App containers need Full Disk Access")
     }
 
+    @Test func leftOutFilesShrinkTheTileAndAreNamedInTheNote() {
+        var t = tile(.userCaches, 4 * quarter)
+        t.excludedCount = 1
+        t.excludedBytes = quarter
+        let tiles = JunkScreen.tiles(input(tiles: [t], places: [Place(id: .userCaches, access: .readable)]))
+        #expect(tiles[0].bytes == 3 * quarter)
+        #expect(tiles[0].note == "3 items, 1 left out, rebuilt when needed")
+        #expect(tiles[0].cells.count == 3)
+    }
+
     @Test func inUseItemsAreNamedInTheNote() {
         let tiles = JunkScreen.tiles(input(tiles: [tile(.userCaches, quarter, inUse: 2)],
             places: [Place(id: .userCaches, access: .readable)]))

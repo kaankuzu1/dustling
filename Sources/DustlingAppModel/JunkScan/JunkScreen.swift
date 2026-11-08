@@ -177,7 +177,9 @@ public enum JunkScreen {
             }
 
             let partial = place?.lockedExpansions == true && input.scope?.partial.contains(entry.id) == true
-            let cells = MiniMosaic(count: MiniMosaic.cells(bytes: tile.bytes), kind: tile.isSelected ? .selected : .unselected)
+            // Files left out in Review files don't count toward the tile.
+            let shownBytes = tile.bytes - min(tile.bytes, tile.excludedBytes)
+            let cells = MiniMosaic(count: MiniMosaic.cells(bytes: shownBytes), kind: tile.isSelected ? .selected : .unselected)
             if tile.stopped {
                 // Stopped before anything here was measured: unknown, never 0 bytes.
                 if tile.itemCount == 0 && tile.bytes == 0 {
@@ -197,7 +199,7 @@ public enum JunkScreen {
                 }
             }
             return make(
-                status, bytes: tile.bytes, lower: partial, selected: tile.isSelected,
+                status, bytes: shownBytes, lower: partial, selected: tile.isSelected,
                 toggle: input.phase == .ready, note: scannedNote(tile, selection: entry.selection, partial: partial),
                 cells: cells)
         }
@@ -217,10 +219,11 @@ public enum JunkScreen {
         if let note = tile.note { return note }
         if selection == .review { return "Review before removing" }
         if partial { return "\(items(tile.itemCount)). App containers need Full Disk Access" }
+        let leftOut = tile.excludedCount > 0 ? ", \(tile.excludedCount) left out" : ""
         if tile.inUseCount > 0 {
-            return "\(items(tile.itemCount)), \(tile.inUseCount) in use by open apps and left alone"
+            return "\(items(tile.itemCount))\(leftOut), \(tile.inUseCount) in use by open apps and left alone"
         }
-        return "\(items(tile.itemCount)), rebuilt when needed"
+        return "\(items(tile.itemCount))\(leftOut), rebuilt when needed"
     }
 
     private static func cleanedNote(_ outcome: CategoryOutcome) -> String {
