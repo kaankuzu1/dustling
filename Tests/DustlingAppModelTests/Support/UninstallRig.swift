@@ -9,10 +9,14 @@ final class FakeCommands: CommandRunning, @unchecked Sendable {
     var calls: [[String]] { lock.withLock { recorded } }
     /// Holds every `pkgutil` call (made while finding leftovers) until opened.
     var pkgutilGate: Gate?
+    /// When set, only `pkgutil` calls whose arguments mention this text are held.
+    var gateOnly: String?
 
     func run(_ executable: String, _ arguments: [String]) throws -> CommandResult {
         lock.withLock { recorded.append([executable] + arguments) }
-        if executable.hasSuffix("pkgutil") { pkgutilGate?.wait() }
+        if executable.hasSuffix("pkgutil"), gateOnly.map({ name in arguments.contains { $0.contains(name) } }) ?? true {
+            pkgutilGate?.wait()
+        }
         return CommandResult(status: executable.hasSuffix("pkgutil") ? 1 : 0, stdout: "", stderr: "")
     }
 }

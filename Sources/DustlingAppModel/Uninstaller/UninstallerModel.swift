@@ -64,6 +64,18 @@ public struct ConfirmModel: Equatable, Sendable {
         public let text: String
     }
 
+    /// What will be moved, exactly as the user is shown it. `uninstallSelected` executes this and
+    /// nothing else.
+    public struct Planned: Equatable, Sendable {
+        public let app: InstalledApp
+        public let leftovers: [Leftover]
+    }
+
+    public let plan: [Planned]
+    /// False while a selected app is still being looked at for leftovers (or nothing is selected).
+    public let ready: Bool
+    /// "Still looking for leftovers" when not ready for that reason.
+    public let note: String?
     public let perApp: [PerApp]
     public let dataWarnings: [DataWarning]
     /// Selected apps that are open now; they are asked to quit first.
@@ -103,6 +115,7 @@ public final class UninstallerModel {
     private var rows: [URL: [LeftoverRow]] = [:]
     private var appList: [InstalledApp] = []
     private var counted: Set<URL> = []
+    @ObservationIgnored private var loadPending = false
 
     public init(
         scout: AppScout, finder: LeftoverFinder, uninstaller: Uninstaller, running: RunningAppsProviding,
@@ -128,7 +141,7 @@ public final class UninstallerModel {
     /// older one stop. Refused while an uninstall is running. Check marks the user made are kept for
     /// leftovers that are found again.
     public func load() async {
-        guard !isUninstalling else { return }
+        guard !isUninstalling else { loadPending = true; return }
         generation += 1
         let mine = generation
         isLoading = true
@@ -139,6 +152,8 @@ public final class UninstallerModel {
         guard mine == generation else { return }
         unreadableAppFolders = discovered.unreadable
         appList = discovered.apps
+        let present = Set(discovered.apps.map(\.url))
+        rows = rows.filter { present.contains($0.key) }
         selection = selection.filter { url in discovered.apps.contains { $0.url == url } }
         rebuildApps()
         for app in discovered.apps {
@@ -236,7 +251,8 @@ public final class UninstallerModel {
         var runningNames: [String] = []
         var total: UInt64 = 0
         var adminTotal = 0
-        for (app, checked) in plan() {
+        let planned = plan()
+        for (app, checked) in planned {
             let admin = checked.filter(\.requiresAdmin)
             let movable = checked.filter { !$0.requiresAdmin }
             let data = movable.filter(\.mayContainUserData)
@@ -253,7 +269,10 @@ public final class UninstallerModel {
             total += bytes
             adminTotal += admin.count
         }
+        let counting = selectedApps.contains { $0.isCounting }
         return ConfirmModel(
+            plan: planned.map { .init(app: $0.app, leftovers: $0.leftovers) },
+            ready: !counting && !planned.isEmpty, note: counting ? "Still looking for leftovers" : nil,
             perApp: perApp, dataWarnings: warnings, runningApps: runningNames, adminItems: adminTotal,
             adminNote: adminTotal > 0 ? "Needs the cleanup helper" : nil, totalBytes: total)
     }
@@ -275,30 +294,35 @@ public final class UninstallerModel {
 
     // MARK: uninstall
 
-    /// Uninstalls the selected apps one at a time and returns one record per app. A running app is
+    /// Uninstalls exactly the apps and leftovers in `confirmed` (the plan the user was shown), one at a time and returns one record per app. A running app is
     /// asked to quit; if it is not gone within the timeout it is recorded as skipped ("still
     /// running") and the others carry on.
-    public func uninstallSelected(quit: AppQuitter) async -> [RunRecord] {
-        guard !isUninstalling else { return [] }
-        // The plan the user confirmed, fixed now: later reloads or tick changes don't alter it, and a
-        // load that is still running can't publish over it.
-        let confirmed = plan()
+    public func uninstallSelected(confirmed: ConfirmModel, quit: AppQuitter) async -> [RunRecord] {
+        guard !isUninstalling, confirmed.ready else { return [] }
         isUninstalling = true
+        // A load in flight is cut off by the generation bump; it is run again once this is done.
+        if isLoading { loadPending = true }
         generation += 1
         isLoading = false
         itemsDone = 0
-        defer { isUninstalling = false }
         var records: [RunRecord] = []
-        for (app, chosen) in confirmed {
-            let record = await uninstallOne(app, leftovers: chosen, quit: quit)
+        for planned in confirmed.plan {
+            let app = planned.app
+            let record = await uninstallOne(app, leftovers: planned.leftovers, quit: quit)
             records.append(record)
             if record.entries.first.map({ if case .movedToTrash = $0.outcome { true } else { false } }) == true {
                 selection.remove(app.url)
                 appList.removeAll { $0.url == app.url }
                 rows[app.url] = nil
+                counted.remove(app.url)
                 rebuildApps()
             }
             onRunCompleted()
+        }
+        isUninstalling = false
+        if loadPending {
+            loadPending = false
+            await load()
         }
         return records
     }

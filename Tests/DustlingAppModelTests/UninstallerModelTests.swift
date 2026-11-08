@@ -82,7 +82,7 @@ struct UninstallerModelTests {
         model.selection = Set(model.apps.map(\.app.url))
         let quitter = FakeQuitter(running: running)   // refuses to quit Alpha
 
-        let records = await model.uninstallSelected(quit: quitter)
+        let records = await model.uninstallSelected(confirmed: model.confirmation, quit: quitter)
 
         #expect(records.count == 2)
         let alphaRecord = try #require(records.first { $0.kind == .uninstall(appName: "Alpha") })
@@ -111,7 +111,7 @@ struct UninstallerModelTests {
         let quitter = FakeQuitter(running: running)
         quitter.quits = ["Alpha"]
 
-        let records = await model.uninstallSelected(quit: quitter)
+        let records = await model.uninstallSelected(confirmed: model.confirmation, quit: quitter)
 
         if case .movedToTrash = records.first?.entries.first?.outcome {} else { Issue.record("expected moved") }
         #expect(!FileManager.default.fileExists(atPath: alpha.path))
@@ -128,7 +128,7 @@ struct UninstallerModelTests {
         let quitter = FakeQuitter(running: running)
         quitter.hangs = ["Alpha"]
 
-        let records = await model.uninstallSelected(quit: quitter)
+        let records = await model.uninstallSelected(confirmed: model.confirmation, quit: quitter)
 
         #expect(records.first?.entries.first?.outcome == .skipped(reason: "still running"))
         #expect(FileManager.default.fileExists(atPath: alpha.path))
@@ -243,7 +243,7 @@ struct UninstallerModelTests {
             await MainActor.run { model.setChecked(true, leftover: caches.leftover, in: alpha.app) }
         }
 
-        let records = await model.uninstallSelected(quit: quitter)
+        let records = await model.uninstallSelected(confirmed: model.confirmation, quit: quitter)
 
         if case .movedToTrash = records.first?.entries.first?.outcome {} else { Issue.record("expected moved") }
         #expect(records.first?.entries.count == 1)   // only the app
@@ -295,5 +295,78 @@ struct UninstallerModelTests {
         #expect(model.confirmation.totalBytes == withAdmin.totalBytes)   // never in what is freed
         #expect(model.confirmation.adminItems == 0)
         #expect(model.confirmation.adminNote == nil)
+    }
+
+    @Test func uninstallExecutesTheConfirmationNotLaterTicks() async throws {
+        let (rig, app) = try alphaRig()
+        let model = rig.uninstallerModel()
+        await model.load()
+        let alpha = try #require(model.apps.first)
+        model.selection = [alpha.app.url]
+        let confirmed = model.confirmation           // the sheet the user approved
+        #expect(confirmed.ready)
+        let support = try #require(model.leftovers(for: alpha.app).first { $0.leftover.kind == .applicationSupport })
+        model.setChecked(true, leftover: support.leftover, in: alpha.app)   // something changes meanwhile
+        await model.load()
+
+        let records = await model.uninstallSelected(confirmed: confirmed, quit: FakeQuitter(running: FakeRunning()))
+
+        #expect(records.first?.entries.count == 2)   // the app and its cache
+        #expect(!FileManager.default.fileExists(atPath: app.path))
+        #expect(FileManager.default.fileExists(
+            atPath: rig.environment.userLibrary.appending(path: "Application Support/com.test.alpha").path))
+    }
+
+    @Test func uninstallWhileCountingIsRefused() async throws {
+        let (rig, app) = try alphaRig()
+        let commands = FakeCommands()
+        let gate = Gate()
+        commands.pkgutilGate = gate
+        let model = rig.uninstallerModel(commands: commands)
+        let loading = Task { await model.load() }
+        #expect(await waitUntil { model.apps.count == 1 })
+        model.selection = Set(model.apps.map(\.app.url))
+
+        let confirmed = model.confirmation
+        #expect(!confirmed.ready)
+        #expect(confirmed.note == "Still looking for leftovers")
+        let records = await model.uninstallSelected(confirmed: confirmed, quit: FakeQuitter(running: FakeRunning()))
+
+        #expect(records.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: app.path))
+        gate.open()
+        await loading.value
+        #expect(model.confirmation.ready)
+    }
+
+    @Test func interruptedLoadIsRunAgainAfterUninstall() async throws {
+        let rig = try ModelRig()
+        let alpha = try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        try rig.makeApp("Beta", bundleID: "com.test.beta")
+        let running = FakeRunning()
+        running.set(alpha, running: true)
+        let commands = FakeCommands()
+        let gate = Gate()
+        commands.pkgutilGate = gate
+        commands.gateOnly = "Beta"
+        let model = rig.uninstallerModel(running: running, commands: commands)
+        let loading = Task { await model.load() }
+        let ready = await waitUntil {
+            model.apps.count == 2 && model.apps.first { $0.app.displayName == "Alpha" }?.isCounting == false
+        }
+        #expect(ready)
+        model.selection = model.apps.filter { $0.app.displayName == "Alpha" }.map(\.app.url).reduce(into: []) { $0.insert($1) }
+        let confirmed = model.confirmation
+        #expect(confirmed.ready)
+        // The load is still waiting on Beta when the uninstall starts; Beta is released while it runs.
+        let quitter = HookQuitter(running: running) { gate.open() }
+
+        let records = await model.uninstallSelected(confirmed: confirmed, quit: quitter)
+        await loading.value
+
+        #expect(records.count == 1)
+        #expect(model.apps.map(\.app.displayName) == ["Beta"])
+        #expect(model.apps.allSatisfy { !$0.isCounting })
+        #expect(model.apps.first?.leftoverCount == 0)
     }
 }
