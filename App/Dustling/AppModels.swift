@@ -41,6 +41,10 @@ final class AppModels {
     @ObservationIgnored let accessMemory = FullDiskAccessMemory()
     /// The blocker sheet over the main window (SCREENS-final §8), only for cases that stop a screen.
     var blocker: RepairCase?
+    /// The scan choice the last junk scan started with: its tiles stay until the next scan.
+    private(set) var lastScanChoice: AppSettings.ScanChoice?
+    /// The exclusions every move goes through; re-keyed when Full Disk Access changes.
+    @ObservationIgnored private let liveExclusions: LiveExclusions
 
     /// False until a Full Disk Access probe result has been published. The sidebar hides the Full
     /// Disk Access light until then, so the pre-probe `.unknown` never flashes as a warning. A probe
@@ -93,8 +97,10 @@ final class AppModels {
         self.settings = settings
         let options = settings.scanOptions
         // Exclusions follow Settings while Dustling runs: the guard every move goes through reads them live.
-        let exclusions = LiveExclusions(options.exclusionURLs(home: environment.home))
-        settings.onScanOptionsChanged = { exclusions.set($0.exclusionURLs(home: environment.home)) }
+        // Until the first probe, access counts as off: exclusions in consent folders are keyed by text.
+        let consentFolders = ProgramPresence.unjudgedFolders(environment, fullDiskAccessGranted: false)
+        let exclusions = LiveExclusions(options.exclusionURLs(home: environment.home), textualUnder: consentFolders)
+        liveExclusions = exclusions
         let protectedPaths = ProtectedPaths(environment: environment, liveExclusions: exclusions)
         let runner = CleanupRunner(
             mover: TrashMover(backend: SystemTrashBackend(), protectedPaths: protectedPaths),
@@ -158,10 +164,15 @@ final class AppModels {
             })
         // Unknown until the first probe: assume Restore can't work.
         history.canTakeOutOfTrash = false
+        // The retry reads the gate, the places check and the busy state through `owner`, set below.
+        let owner = WeakModels()
         retry = LastRunRetry(
-            catalog: { JunkCatalog.standard(environment, options: settings.scanOptions) },
+            catalog: { owner.models?.retryCatalog ?? [] },
             running: { AppModels.runningBundleIDs() },
             appName: { AppModels.appName(bundleID: $0) },
+            gate: { owner.models?.junk.cleanupGate ?? CleanupGate.make(canTakeOutOfTrash: false, policy: .refuseToClean) },
+            skipping: { owner.models?.cleanupSkip ?? .none },
+            isBusy: { owner.models?.junk.isBusy ?? true },
             run: { urls, roots in await runner.run(urls, kind: .junkClean, allowedRoots: roots, onItem: { _, _ in }) },
             onRunCompleted: {
                 health.refreshLastRun()
@@ -169,6 +180,16 @@ final class AppModels {
                 Task { await storage.refresh() }
             })
         updateCheck = UpdateSizeCheck(commands: commands)
+        owner.models = self
+        trash.includeExternalVolumes = options.includeExternalTrash
+        settings.onScanOptionsChanged = { [weak self] options in
+            guard let self else { return }
+            self.liveExclusions.set(options.exclusionURLs(home: environment.home), textualUnder: self.unjudgedProgramFolders)
+            if self.trash.includeExternalVolumes != options.includeExternalTrash {
+                self.trash.includeExternalVolumes = options.includeExternalTrash
+                if self.homeLoaded { self.refreshTrash() }
+            }
+        }
         updateCheck.onMeasured = { [weak self] bytes in
             self?.goal = UpdateGoal(neededBytes: bytes, source: .measured(.now))
         }
@@ -246,8 +267,10 @@ final class AppModels {
             return
         }
         junk.preselectSafe = settings.preselectSafe
-        let catalog = JunkCatalog.standard(environment, options: settings.scanOptions)
-            .filter { settings.scans($0.id, selection: $0.selection) }
+        let choice = settings.scanChoice
+        lastScanChoice = choice
+        let catalog = JunkCatalog.standard(environment, options: settings.scanOptions, textualUnder: unjudgedProgramFolders)
+            .filter { choice.scans($0.id, selection: $0.selection) }
         scanCatalog.categories = HomeMosaic.scannable(catalog, places: places.places)
         lastScanScope = HomeScanScope.make(places: places.places)
         junk.scan()
@@ -311,7 +334,8 @@ final class AppModels {
         case .done: phase = .done
         }
         return JunkScreen.tiles(JunkScreen.Input(
-            catalog: junkCatalog.filter { settings.scans($0.id, selection: $0.selection) }, phase: phase, tiles: junk.categories, places: places.places, scope: lastScanScope,
+            catalog: junkCatalog.filter { (lastScanChoice ?? settings.scanChoice).scans($0.id, selection: $0.selection) },
+            phase: phase, tiles: junk.categories, places: places.places, scope: lastScanScope,
             progress: junk.categoryProgress, outcomes: junk.categoryOutcomes))
     }
 
@@ -331,6 +355,13 @@ final class AppModels {
             .filter { partly.contains($0.id) }
             .flatMap { $0.expansions.map(\.parent) }
         return CleanupSkip(categories: closed, folders: folders)
+    }
+
+    /// What "Retry N items" may retry now: the categories the places check allows (as a scan would).
+    var retryCatalog: [JunkCategory] {
+        HomeMosaic.scannable(
+            JunkCatalog.standard(environment, options: settings.scanOptions, textualUnder: unjudgedProgramFolders),
+            places: places.places)
     }
 
     /// The home folder, for shortening paths on screen.
@@ -446,6 +477,7 @@ final class AppModels {
     /// without access the check must not open folders that would prompt for consent.
     func refreshPlaces() async {
         accessMemory.observe(health.fullDiskAccess)
+        liveExclusions.set(settings.scanOptions.exclusionURLs(home: environment.home), textualUnder: unjudgedProgramFolders)
         // Without Full Disk Access macOS won't let Dustling take anything out of the Trash.
         junk.canTakeOutOfTrash = health.fullDiskAccess == .granted
         uninstaller.canTakeOutOfTrash = health.fullDiskAccess == .granted
@@ -512,4 +544,10 @@ final class ScanCatalog: Sendable {
         get { lock.withLock { $0 } }
         set { lock.withLock { $0 = newValue } }
     }
+}
+
+/// Lets closures built in `AppModels.init` reach the models once they exist.
+@MainActor
+final class WeakModels {
+    weak var models: AppModels?
 }

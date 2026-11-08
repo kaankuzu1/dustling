@@ -170,9 +170,12 @@ public struct CleanupSkip: Equatable, Sendable {
         self.folders = folders
     }
 
-    func skips(_ item: JunkItem) -> Bool {
-        if categories.contains(item.category) { return true }
-        let path = item.url.standardizedFileURL.path(percentEncoded: false)
+    func skips(_ item: JunkItem) -> Bool { skips(item.url, category: item.category) }
+
+    /// Whether an item of `category` at `url` must be left alone now. Text only: never reads the disk.
+    public func skips(_ url: URL, category: JunkCategoryID) -> Bool {
+        if categories.contains(category) { return true }
+        let path = url.standardizedFileURL.path(percentEncoded: false)
         return folders.contains { folder in
             var base = folder.standardizedFileURL.path(percentEncoded: false)
             if !base.hasSuffix("/") { base += "/" }

@@ -132,6 +132,7 @@ struct HealthPopover: View {
                 Button(fix.title) { HealthFix.perform(fix, models: models) }
                     .buttonStyle(.link)
                     .fixedSize()
+                    .disabled(isRetry(fix) && models.junk.isBusy)
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5).weight(.semibold))
                     .foregroundStyle(Palette.accent)
             }
@@ -140,6 +141,11 @@ struct HealthPopover: View {
                 .font(DustlingTheme.Typography.caption)
                 .foregroundStyle(Palette.muted)
         }
+    }
+
+    private func isRetry(_ fix: FixAction) -> Bool {
+        if case .retryItems = fix { return true }
+        return false
     }
 
     /// The problem in one line (the mockup's caption under the rows), or that all is well.
@@ -187,9 +193,21 @@ enum HealthFix {
         case .repairHelper:
             // Approval happens in Login Items & Extensions. Only reachable once the helper exists (Plan 2).
             SMAppService.openSystemSettingsLoginItems()
-        case .retryItems:
-            guard let run = models.health.lastRun else { return }
-            Task { await models.retry.retry(run) }
+        case .retryItems(let count):
+            guard let run = models.health.lastRun, !models.junk.isBusy else { return }
+            // Same gate as a cleanup: in limited mode ask first (the model also refuses without it).
+            let gate = models.retry.currentGate
+            var confirmed = false
+            if gate.kind == .confirmFirst {
+                let alert = NSAlert()
+                alert.messageText = "Retry without Full Disk Access?"
+                alert.informativeText = gate.note ?? ""
+                alert.addButton(withTitle: RepairCase.itemsDidNotMove(count: count).copy.fix)
+                alert.addButton(withTitle: "Cancel")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                confirmed = true
+            }
+            Task { await models.retry.retry(run, confirmedLimited: confirmed) }
         }
     }
 }

@@ -108,36 +108,135 @@ struct RepairTests {
         #expect(plan.outsideCleanupArea == 1)
     }
 
-    @Test func retryRunsThePlanAndReportsWhatHappened() async {
-        let record = partialRun
-        nonisolated(unsafe) var ran: [URL] = []
+    /// A retry wired like the app's, with a recorder for what would move.
+    private final class RetryRig: @unchecked Sendable {
+        nonisolated(unsafe) var ran: [URL]? = nil
         var completed = 0
-        let retry = LastRunRetry(
-            catalog: { [JunkCategory(id: .userCaches, title: "C", selection: .preselected, requiresAdmin: false, roots: [self.caches])] },
-            running: { ["com.apple.mail"] },
-            appName: appName,
-            run: { urls, _ in
-                ran = urls
-                return RunRecord(startedAt: Date(), kind: .junkClean, entries: urls.map {
-                    JournalEntry(originalPath: $0.path, bytes: 1, outcome: .movedToTrash(trashedPath: "/t"))
-                }, restorable: true)
-            },
-            onRunCompleted: { completed += 1 })
-        await retry.retry(record)
-        #expect(ran == [caches.appending(path: "com.locked")])
-        #expect(completed == 1)
+        var gate = CleanupGate.make(canTakeOutOfTrash: true, policy: .warnBeforeCleaning)
+        var skipping = CleanupSkip.none
+        var busy = false
+        var running: Set<String> = ["com.apple.mail"]
+        var catalog: [JunkCategory]
+    
+        init(catalog: [JunkCategory]) { self.catalog = catalog }
+
+        @MainActor func make(appName: @escaping (String) -> String?) -> LastRunRetry {
+            LastRunRetry(
+                catalog: { self.catalog }, running: { self.running }, appName: appName,
+                gate: { self.gate }, skipping: { self.skipping }, isBusy: { self.busy },
+                run: { [self] urls, _ in
+                    self.ran = urls
+                    return RunRecord(startedAt: Date(), kind: .junkClean, entries: urls.map {
+                        JournalEntry(originalPath: $0.path, bytes: 1, outcome: .movedToTrash(trashedPath: "/t"))
+                    }, restorable: true)
+                },
+                onRunCompleted: { self.completed += 1 })
+        }
+    }
+
+    private var cachesCategory: JunkCategory {
+        JunkCategory(id: .userCaches, title: "C", selection: .preselected, requiresAdmin: false, roots: [caches])
+    }
+
+    private var mailCategory: JunkCategory {
+        JunkCategory(id: .mailDownloads, title: "Mail", selection: .review, requiresAdmin: false, roots: [],
+                     expansions: [RootExpansion(parent: home.appending(path: "Library/Containers"),
+                                                subpath: "Data/Library/Mail Downloads")])
+    }
+
+    @Test func retryRunsThePlanAndReportsWhatHappened() async {
+        let rig = RetryRig(catalog: [cachesCategory])
+        let retry = rig.make(appName: appName)
+        await retry.retry(partialRun)
+        #expect(rig.ran == [caches.appending(path: "com.locked")])
+        #expect(rig.completed == 1)
         #expect(retry.message == "Retried 1 item: 1 moved to the Trash. Mail is still open, so 2 items were left. Quit Mail, then retry.")
     }
 
     @Test func retryWithEveryItemStillOpenAsksToQuitFirst() async {
         let record = run([JournalEntry(originalPath: "/x/y", bytes: 1, outcome: .skipped(reason: "in use by com.apple.mail"))])
-        nonisolated(unsafe) var ran = false
-        let retry = LastRunRetry(
-            catalog: { [] }, running: { ["com.apple.mail"] }, appName: appName,
-            run: { _, _ in ran = true; return record }, onRunCompleted: {})
+        let rig = RetryRig(catalog: [])
+        let retry = rig.make(appName: appName)
         await retry.retry(record)
-        #expect(!ran)
+        #expect(rig.ran == nil)
         #expect(retry.message == "Mail is still open. Quit Mail, then retry.")
+    }
+
+    /// Limited mode: nothing moves until the user confirms the note; refused mode never moves.
+    @Test func retryInLimitedModeNeedsConfirmation() async {
+        let rig = RetryRig(catalog: [cachesCategory])
+        rig.gate = CleanupGate.make(canTakeOutOfTrash: false, policy: .warnBeforeCleaning)
+        let retry = rig.make(appName: appName)
+        await retry.retry(partialRun)
+        #expect(rig.ran == nil)
+        #expect(retry.message == CleanupGate.limitedNote)
+        await retry.retry(partialRun, confirmedLimited: true)
+        #expect(rig.ran == [caches.appending(path: "com.locked")])
+
+        let refused = RetryRig(catalog: [cachesCategory])
+        refused.gate = CleanupGate.make(canTakeOutOfTrash: false, policy: .refuseToClean)
+        let noRetry = refused.make(appName: appName)
+        await noRetry.retry(partialRun, confirmedLimited: true)
+        #expect(refused.ran == nil)
+        #expect(noRetry.message == CleanupGate.refusedNote)
+    }
+
+    /// Places that can't be read now (Containers, Downloads without Full Disk Access) are left alone.
+    @Test func retryLeavesLockedPlacesAlone() async {
+        let downloads = home.appending(path: "Downloads")
+        let rig = RetryRig(catalog: [cachesCategory, mailCategory,
+                                     JunkCategory(id: .largeOldDownloads, title: "D", selection: .review,
+                                                  requiresAdmin: false, roots: [downloads])])
+        rig.running = []
+        rig.skipping = CleanupSkip(categories: [.largeOldDownloads], folders: [home.appending(path: "Library/Containers")])
+        let record = run([
+            JournalEntry(originalPath: mailDownloads.appending(path: "A1F2").path, bytes: 1,
+                         outcome: .skipped(reason: "in use by com.apple.mail")),
+            JournalEntry(originalPath: downloads.appending(path: "big.dmg").path, bytes: 1, outcome: .failed(reason: "x")),
+            JournalEntry(originalPath: caches.appending(path: "com.ok").path, bytes: 1, outcome: .failed(reason: "x")),
+        ])
+        let retry = rig.make(appName: appName)
+        await retry.retry(record)
+        #expect(rig.ran == [caches.appending(path: "com.ok")])
+        #expect(retry.message?.contains("2 items are in places Dustling can't read without Full Disk Access") == true)
+    }
+
+    @Test func retryWaitsWhileBusyAndRefusesSampleData() async {
+        let rig = RetryRig(catalog: [cachesCategory])
+        rig.busy = true
+        let retry = rig.make(appName: appName)
+        await retry.retry(partialRun)
+        #expect(rig.ran == nil)
+        #expect(retry.message == "Wait until the current scan or cleanup finishes, then retry.")
+
+        let sample = RetryRig(catalog: [cachesCategory])
+        let sampleRetry = sample.make(appName: appName)
+        sampleRetry.refusesSampleData = true
+        await sampleRetry.retry(partialRun)
+        #expect(sample.ran == nil)
+        #expect(sample.completed == 0)
+    }
+
+    /// A failed item whose app is open now is left too, not only items skipped as in use.
+    @Test func failedItemOfARunningAppIsLeft() {
+        let record = run([JournalEntry(originalPath: caches.appending(path: "com.tinyspeck.slackmacgap").path,
+                                       bytes: 1, outcome: .failed(reason: "x"))])
+        let plan = LastRunReview.retryPlan(for: record, catalog: [cachesCategory], running: ["com.tinyspeck.slackmacgap"])
+        #expect(plan.urls.isEmpty)
+        #expect(plan.stillOpen == ["com.tinyspeck.slackmacgap"])
+    }
+
+    /// The category's own filter (which carries recency and exclusions) is applied to every retry.
+    @Test func retryReappliesTheCategoryFilter() {
+        let picky = JunkCategory(id: .userCaches, title: "C", selection: .preselected, requiresAdmin: false,
+                                 roots: [caches], itemFilter: { $0.lastPathComponent != "recent" })
+        let record = run([
+            JournalEntry(originalPath: caches.appending(path: "recent").path, bytes: 1, outcome: .failed(reason: "x")),
+            JournalEntry(originalPath: caches.appending(path: "old").path, bytes: 1, outcome: .failed(reason: "x")),
+        ])
+        let plan = LastRunReview.retryPlan(for: record, catalog: [picky], running: [])
+        #expect(plan.urls == [caches.appending(path: "old")])
+        #expect(plan.outsideCleanupArea == 1)
     }
 
     // MARK: repair cases and the blocker
@@ -154,6 +253,18 @@ struct RepairTests {
         #expect(FullDiskAccessMemory(defaults: defaults).isLost(.denied))
         memory.acknowledgeLoss()
         #expect(!FullDiskAccessMemory(defaults: defaults).isLost(.denied))
+    }
+
+    /// The DEBUG fixture's memory never reads or writes the saved value.
+    @Test func sampleMemoryNeverSaves() {
+        let defaults = UserDefaults(suiteName: "dustling-memory-\(UUID().uuidString)")!
+        let memory = FullDiskAccessMemory(defaults: defaults)
+        memory.useSample(wasGranted: true)
+        #expect(memory.isLost(.denied))
+        memory.acknowledgeLoss()
+        #expect(!memory.isLost(.denied))
+        memory.observe(.granted)
+        #expect(defaults.object(forKey: FullDiskAccessMemory.key) == nil)
     }
 
     @Test func repairCasesHaveTheDesignCopy() {
@@ -217,6 +328,8 @@ struct RepairTests {
             JournalEntry(originalPath: mailDownloads.appending(path: "A1F2").path, bytes: 1,
                          outcome: .skipped(reason: "in use by com.apple.mail")),
             JournalEntry(originalPath: "<log>", bytes: 0, outcome: .failed(reason: "\(home.path)/Library/Logs/Dustling is read-only")),
+            JournalEntry(originalPath: home.appending(path: "Downloads/SecretPlan.zip").path, bytes: 1, outcome: .failed(
+                reason: "\u{201C}SecretPlan.zip\u{201D} couldn\u{2019}t be moved to the trash because you don\u{2019}t have permission to access \u{201C}Downloads\u{201D}.")),
         ])
         let checks = Diagnostics.checks(Diagnostics.Input(
             fullDiskAccess: .denied, published: true, checkedAt: Date(), now: Date(), helper: .notAvailable,
@@ -236,8 +349,25 @@ struct RepairTests {
         #expect(report.contains("Dustling 0.1.0 (1)"))
         #expect(report.contains("Full Disk Access: Needs repair"))
         #expect(report.contains("Cleanup helper: Not available yet"))
-        #expect(report.contains("1 moved to the Trash, 1 skipped, 2 failed, 0 need admin rights"))
+        #expect(!report.contains("SecretPlan"))
+        #expect(!report.contains("Downloads"))
+        #expect(!report.contains("\u{201C}"))
+        #expect(report.contains("1 moved to the Trash, 1 skipped, 3 failed, 0 need admin rights"))
         #expect(report.contains("in use by com.apple.mail (1)"))
+        #expect(report.contains("failed: other error (3)"))
         #expect(report.contains("No file names from your home folder are included."))
+
+        // The same message from an Empty Trash run, plus a fixed reason that is kept.
+        let empty = RunRecord(startedAt: Date(), kind: .emptyTrash, entries: [
+            JournalEntry(originalPath: home.appending(path: ".Trash/SecretPlan.zip").path, bytes: 1, outcome: .failed(
+                reason: "\u{201C}SecretPlan.zip\u{201D} couldn\u{2019}t be removed because you don\u{2019}t have permission to access it.")),
+            JournalEntry(originalPath: home.appending(path: ".Trash/x").path, bytes: 1, outcome: .failed(reason: "Permission denied")),
+        ], restorable: false)
+        let emptyReport = DiagnosticsReport.make(DiagnosticsReport.Input(
+            macOS: "macOS 26.1", appVersion: "0.1.0 (1)", checks: checks, lastRun: empty, home: home, generatedAt: Date()))
+        #expect(!emptyReport.contains("SecretPlan"))
+        #expect(!emptyReport.contains(home.path))
+        #expect(emptyReport.contains("failed: other error (1)"))
+        #expect(emptyReport.contains("failed: Permission denied (1)"))
     }
 }

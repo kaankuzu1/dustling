@@ -7,12 +7,14 @@ import os
 public final class LiveExclusions: Sendable {
     private let keys: OSAllocatedUnfairLock<[[String]]>
 
-    public init(_ urls: [URL]) {
-        keys = OSAllocatedUnfairLock(initialState: ProtectedPaths.keys(for: urls))
+    /// `textualUnder`: folders (the consent folders without Full Disk Access) whose exclusions are
+    /// keyed by their text only, so setting them never reads inside a folder that could prompt.
+    public init(_ urls: [URL], textualUnder: [URL] = []) {
+        keys = OSAllocatedUnfairLock(initialState: ProtectedPaths.keys(for: urls, textualUnder: textualUnder))
     }
 
-    public func set(_ urls: [URL]) {
-        let new = ProtectedPaths.keys(for: urls)
+    public func set(_ urls: [URL], textualUnder: [URL] = []) {
+        let new = ProtectedPaths.keys(for: urls, textualUnder: textualUnder)
         keys.withLock { $0 = new }
     }
 
@@ -51,7 +53,11 @@ public struct ProtectedPaths: Sendable {
     /// anything that contains one (moving a parent would take the excluded folder with it). Hard denies
     /// are decided first, so an exclusion on a protected location changes nothing there.
     /// `liveExclusions` adds exclusions that can change after this value was built (Settings).
-    public init(environment: SystemEnvironment, extraDenied: [URL] = [], liveExclusions: LiveExclusions? = nil) {
+    /// `textualUnder`: exclusions equal to or inside these folders are keyed textually (see `keys`).
+    public init(
+        environment: SystemEnvironment, extraDenied: [URL] = [], liveExclusions: LiveExclusions? = nil,
+        textualUnder: [URL] = []
+    ) {
         home = Self.caseKey(Self.resolve(environment.home))
         usersRoot = Self.key(Self.resolve(URL(filePath: "/Users")))
         let entries = Self.systemDenied.map { URL(filePath: $0) }
@@ -60,7 +66,7 @@ public struct ProtectedPaths: Sendable {
         exactDenied = Self.keys(for: Self.homeExactDenied.map {
             $0.isEmpty ? environment.home : environment.home.appending(path: $0)
         })
-        fixedExcluded = Self.keys(for: extraDenied)
+        fixedExcluded = Self.keys(for: extraDenied, textualUnder: textualUnder)
         self.liveExclusions = liveExclusions
     }
 
@@ -78,8 +84,17 @@ public struct ProtectedPaths: Sendable {
     /// Each entry as resolved like a candidate, plus (for a symlinked entry) where it really lives.
     /// Paths under the Data volume's firmlink prefix also get the form without it, because realpath
     /// does not map a firmlink back (`/System/Volumes/Data/Users/x` is the same place as `/Users/x`).
-    static func keys(for entries: [URL]) -> [[String]] {
+    ///
+    /// Entries equal to or inside a `textualUnder` folder are keyed by their text only: no realpath and
+    /// no lstat, because without Full Disk Access looking inside a consent folder (Downloads,
+    /// Containers) can raise a macOS prompt. `realpath` is injectable for tests.
+    static func keys(
+        for entries: [URL], textualUnder: [URL] = [],
+        realpath: (String) -> String? = { ProtectedPaths.realpathString($0) }
+    ) -> [[String]] {
         var list: [[String]] = []
+        let textual = textualUnder.map(textualComponents)
+        func resolve(_ url: URL) -> [String] { Self.resolve(url, realpath: realpath) }
         func add(_ comps: [String]) {
             list.append(key(comps))
             // The stripped form is resolved again: it may still go through symlinks (e.g. /var).
@@ -88,8 +103,20 @@ public struct ProtectedPaths: Sendable {
             }
         }
         for entry in entries {
+            let text = textualComponents(entry)
+            if let index = textual.firstIndex(where: { isEqualOrInside(text, $0) }) {
+                // The consent folder itself may be resolved (that reads only its parent), so the key
+                // matches candidates whose parents were resolved; nothing inside it is looked at.
+                let folder = textualUnder[index]
+                let rest = Array(text.dropFirst(textual[index].count))
+                let folderReal = realpath(folder.path(percentEncoded: false))
+                    .map { $0.split(separator: "/").map(String.init) } ?? resolve(folder)
+                list.append(key(text))
+                list.append(key(folderReal + rest))
+                continue
+            }
             add(resolve(entry))
-            if let real = realpathString(entry.path(percentEncoded: false)) {
+            if let real = realpath(entry.path(percentEncoded: false)) {
                 add(real.split(separator: "/").map(String.init))
             }
         }
@@ -143,22 +170,41 @@ public struct ProtectedPaths: Sendable {
 
     /// Resolves symlinks in everything but the final component and returns normalized components.
     /// A trailing `.` or `..` is not a real name, so in that case the whole path is resolved.
-    private static func resolve(_ url: URL) -> [String] {
+    private static func resolve(
+        _ url: URL, realpath: (String) -> String? = { ProtectedPaths.realpathString($0) }
+    ) -> [String] {
         let comps = url.path(percentEncoded: false).split(separator: "/", omittingEmptySubsequences: true).map(String.init)
         guard let last = comps.last else { return [] }
         if last == "." || last == ".." {
-            return realpathOfExistingPrefix(comps)
+            return realpathOfExistingPrefix(comps, realpath: realpath)
         }
-        return realpathOfExistingPrefix(Array(comps.dropLast())) + [last]
+        return realpathOfExistingPrefix(Array(comps.dropLast()), realpath: realpath) + [last]
+    }
+
+    /// The path's components with `.` and `..` folded, without touching the disk.
+    static func textualComponents(_ url: URL) -> [String] {
+        normalize(url.path(percentEncoded: false).split(separator: "/", omittingEmptySubsequences: true).map(String.init))
+    }
+
+    /// True when `url` may not be excluded because Dustling never touches it or anything inside it
+    /// anyway: a protected folder tree (Documents, /System, …) or another user's files. The home folder
+    /// and ~/Library themselves can be excluded (only they are protected, not what's inside).
+    public func isProtectedTree(_ url: URL) -> Bool {
+        let resolved = Self.resolve(url)
+        let path = Self.key(resolved)
+        if denied.contains(where: { Self.isEqualOrInside(path, $0) }) { return true }
+        return Self.isStrictlyInside(path, usersRoot) && !Self.isEqualOrInside(Self.caseKey(resolved), home)
     }
 
     /// realpath the longest existing prefix, then append the remaining (non-existent) components
     /// and normalize `.`/`..` textually, which is safe because nothing there can be a symlink.
-    private static func realpathOfExistingPrefix(_ comps: [String]) -> [String] {
+    private static func realpathOfExistingPrefix(
+        _ comps: [String], realpath: (String) -> String? = { ProtectedPaths.realpathString($0) }
+    ) -> [String] {
         var existing = comps
         var rest: [String] = []
         while true {
-            if let real = realpathString("/" + existing.joined(separator: "/")) {
+            if let real = realpath("/" + existing.joined(separator: "/")) {
                 return normalize(real.split(separator: "/").map(String.init) + rest)
             }
             guard let tail = existing.popLast() else { return normalize(rest) }
@@ -166,7 +212,7 @@ public struct ProtectedPaths: Sendable {
         }
     }
 
-    private static func realpathString(_ path: String) -> String? {
+    static func realpathString(_ path: String) -> String? {
         guard let buffer = realpath(path, nil) else { return nil }
         defer { free(buffer) }
         return String(cString: buffer)

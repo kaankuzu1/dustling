@@ -7,7 +7,7 @@ import Foundation
 /// show them safely: `-DustlingRepairFixture helper|fda|results`.
 /// - `helper`: the helper is "not available yet" in v1, so this is the real state; opens Diagnostics.
 /// - `fda`: Full Disk Access is treated as lost (it was on, a real read is denied now), so the next
-///   scan stops at the blocker sheet. Nothing is written to the saved settings.
+///   scan stops at the blocker sheet. The memory is in-memory only, so nothing is saved.
 /// - `results`: a sample last run with 2 items in use by Mail (the mockup's numbers). Retry refuses
 ///   it, so the real history is never written.
 extension AppModels {
@@ -18,8 +18,8 @@ extension AppModels {
         guard let state = UserDefaults.standard.string(forKey: "DustlingRepairFixture") else { return }
         switch state {
         case "fda":
-            // Registration domain only: lower than anything saved, and never written to disk.
-            UserDefaults.standard.register(defaults: [FullDiskAccessMemory.key: true])
+            // In memory only: "Not now" and later probes never touch the saved value.
+            accessMemory.useSample(wasGranted: true)
         case "results":
             Self.sampleLastRun = Self.sampleRun(home: homeDirectory)
             retry.refusesSampleData = true

@@ -55,7 +55,7 @@ struct DiagnosticsView: View {
             }
         }
         .background(Palette.ground)
-        .task { logFolder = Diagnostics.readLogFolder(models.logsDirectory) }
+        .task { logFolder = await Diagnostics.readLogFolderInBackground(models.logsDirectory) }
     }
 
     private func subtitle(now: Date) -> String {
@@ -67,7 +67,7 @@ struct DiagnosticsView: View {
         checking = true
         Task {
             if await models.health.refresh() { await models.refreshPlaces() }
-            logFolder = Diagnostics.readLogFolder(models.logsDirectory)
+            logFolder = await Diagnostics.readLogFolderInBackground(models.logsDirectory)
             checking = false
         }
     }
@@ -214,6 +214,8 @@ private struct LastRunProblems: View {
                         }
                         .dustlingPrimary()
                         .controlSize(.small)
+                        .disabled(models.junk.isBusy)
+                        .help(models.junk.isBusy ? "Available when the current scan or cleanup finishes" : "")
                     }
                 }
                 if let message = models.retry.message {

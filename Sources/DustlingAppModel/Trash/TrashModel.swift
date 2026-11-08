@@ -29,6 +29,9 @@ public final class TrashModel {
     /// on other volumes are never opened (a removable or network volume can ask for consent). Their
     /// contents are then unknown, so show them as locked and totals as a lower bound.
     public private(set) var externalVolumesSkipped = false
+    /// Settings > Include Trash on external drives. Applies only with Full Disk Access; leaving other
+    /// volumes out by choice is not "skipped" (nothing is shown as locked).
+    @ObservationIgnored public var includeExternalVolumes = true
 
     /// Builds the inspector for one refresh: `true` includes other volumes' Trash folders.
     @ObservationIgnored private let makeInspector: @Sendable (_ includeExternalVolumes: Bool) -> TrashInspector
@@ -84,7 +87,8 @@ public final class TrashModel {
     public func refresh() async {
         generation += 1
         let mine = generation
-        let external = lastAccess
+        let access = lastAccess
+        let external = access && includeExternalVolumes
         let inspector = makeInspector(external)
         let journal = self.journal
         let found = await Blocking.run { () -> Snapshot in
@@ -93,7 +97,7 @@ public final class TrashModel {
         }
         guard mine == generation else { return }
         self.inspector = inspector
-        externalVolumesSkipped = !external
+        externalVolumesSkipped = !access
         contents = found.sized
         items = found.items
         inTrashBytesSinceLastEmpty = found.inTrash.bytes

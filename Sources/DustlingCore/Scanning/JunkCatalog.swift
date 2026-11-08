@@ -20,7 +20,7 @@ public enum JunkCatalog {
     /// The bundle ID of the app an item most likely belongs to, for "is it open right now" checks:
     /// a container cache (`Containers/<id>/Data/Library/Caches/*`) belongs to `<id>`, a known browser
     /// cache folder to its browser, anything else to the bundle ID its name spells.
-    static func ownerBundleID(of item: URL) -> String {
+    public static func ownerBundleID(of item: URL) -> String {
         let parent = item.deletingLastPathComponent().standardizedFileURL.pathComponents
         if parent.count >= 5, Array(parent.suffix(3)) == ["Data", "Library", "Caches"],
            parent[parent.count - 5] == "Containers" {
@@ -33,11 +33,13 @@ public enum JunkCatalog {
     private static let ignoredDownloadNames: Set<String> = [".DS_Store", ".localized"]
 
     /// Categories in claim order: an item belongs to the first category that claims it.
+    /// `textualUnder`: folders whose exclusions are keyed by text only (consent folders without Full
+    /// Disk Access), so building the catalog never looks inside them.
     public static func standard(
-        _ env: SystemEnvironment, now: Date = .now, options: ScanOptions = ScanOptions()
+        _ env: SystemEnvironment, now: Date = .now, options: ScanOptions = ScanOptions(), textualUnder: [URL] = []
     ) -> [JunkCategory] {
         applying(options, to: base(env, now: now, includeExternalTrash: options.includeExternalTrash),
-                 environment: env, now: now)
+                 environment: env, now: now, textualUnder: textualUnder)
     }
 
     /// Wraps every category's filter so excluded items (inside an exclusion, or containing one) and,
@@ -45,9 +47,10 @@ public enum JunkCatalog {
     /// (no exclusions, no recency): exclusions guard what would be MOVED to the Trash, and the Trash is
     /// only ever emptied as a whole, so its list must match what Empty Trash deletes.
     private static func applying(
-        _ options: ScanOptions, to categories: [JunkCategory], environment: SystemEnvironment, now: Date
+        _ options: ScanOptions, to categories: [JunkCategory], environment: SystemEnvironment, now: Date,
+        textualUnder: [URL]
     ) -> [JunkCategory] {
-        let guardPaths = options.protectedPaths(environment: environment)
+        let guardPaths = options.protectedPaths(environment: environment, textualUnder: textualUnder)
         let days = (options.skipChangedWithinDays ?? 0) > 0 ? options.skipChangedWithinDays : nil
         guard days != nil || !options.exclusions.isEmpty else { return categories }
         return categories.map { category in

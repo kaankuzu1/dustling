@@ -189,6 +189,37 @@ struct TrashModelTests {
         #expect(!model.externalVolumesSkipped)
         #expect(try #require(model.contents?.size.bytes) > homeOnly)
     }
+
+    /// Settings > Include Trash on external drives governs the Trash tile and Empty Trash too, but only
+    /// with Full Disk Access: off, other volumes are left out by choice (not shown as locked).
+    @Test func externalTrashSettingGovernsTheTrashWithAccess() async throws {
+        let rig = try ModelRig()
+        try rig.file(rig.environment.userTrash.appending(path: "home.bin"), bytes: 4096)
+        let stick = rig.environment.volumesDirectory.appending(path: "Stick/.Trashes/\(rig.environment.userID)")
+        try rig.file(stick.appending(path: "far.bin"), bytes: 65536)
+        let environment = rig.environment, journal = rig.journal
+        let model = TrashModel(
+            makeInspector: { external in
+                TrashInspector(
+                    environment: environment, journal: journal,
+                    logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+                    includeExternalVolumes: external)
+            },
+            journal: rig.journal)
+        model.includeExternalVolumes = false
+        await model.refresh(fullDiskAccessGranted: true)
+        let homeOnly = try #require(model.contents?.size.bytes)
+        #expect(homeOnly < 65536)
+        #expect(!model.externalVolumesSkipped)
+
+        model.includeExternalVolumes = true
+        await model.refresh()
+        #expect(try #require(model.contents?.size.bytes) > homeOnly)
+
+        // Without access the setting changes nothing: other volumes stay locked as before.
+        await model.refresh(fullDiskAccessGranted: false)
+        #expect(model.externalVolumesSkipped)
+    }
 }
 
 private extension TrashModel {

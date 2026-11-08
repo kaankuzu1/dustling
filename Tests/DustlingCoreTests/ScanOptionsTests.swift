@@ -249,4 +249,36 @@ import Testing
         #expect(paths.verdict(for: one, allowedRoots: [caches]) == .denied(reason: "excluded in Settings"))
         #expect(paths.verdict(for: two, allowedRoots: [caches]) == .denied(reason: "excluded in Settings"))
     }
+
+    /// Without Full Disk Access, an exclusion inside a consent folder is keyed by its text: setting it
+    /// never resolves (and so never reads) anything inside that folder.
+    @Test func exclusionsInConsentFoldersAreKeyedTextually() throws {
+        let home = URL(filePath: "/Users/tester")
+        let downloads = home.appending(path: "Downloads")
+        let containers = home.appending(path: "Library/Containers")
+        var asked: [String] = []
+        let keys = ProtectedPaths.keys(
+            for: [downloads.appending(path: "keep"), containers.appending(path: "com.x/Data"), downloads],
+            textualUnder: [downloads, containers],
+            realpath: { asked.append($0); return nil })
+        // Only the consent folders themselves are resolved, never anything inside them.
+        #expect(!asked.contains { $0.hasPrefix(downloads.path + "/") || $0.hasPrefix(containers.path + "/") })
+        #expect(keys.count == 6)
+        #expect(keys[0].suffix(2) == ["downloads", "keep"])
+
+        // Outside a consent folder, entries are still resolved.
+        _ = ProtectedPaths.keys(for: [home.appending(path: "Library/Caches/x")], textualUnder: [downloads],
+                                realpath: { asked.append($0); return nil })
+        #expect(!asked.isEmpty)
+    }
+
+    @Test func textualExclusionStillProtects() throws {
+        let sb = try TestSandbox()
+        let item = try sb.file("home/Library/Caches/com.keep/a", bytes: 1).deletingLastPathComponent()
+        let caches = sb.environment.userLibrary.appending(path: "Caches")
+        let live = LiveExclusions([item], textualUnder: [caches])
+        let paths = ProtectedPaths(environment: sb.environment, liveExclusions: live)
+        // The temp folder sits behind /var -> /private/var: the key from the resolved folder still matches.
+        #expect(paths.verdict(for: item, allowedRoots: [caches]) == .denied(reason: "excluded in Settings"))
+    }
 }

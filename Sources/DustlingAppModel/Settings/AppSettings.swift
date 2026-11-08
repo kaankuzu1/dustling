@@ -128,11 +128,32 @@ public final class AppSettings {
         set { update { $0.includeExternalTrash = newValue } }
     }
 
-    /// Whether the junk scan covers this category with the current toggles.
+    /// Which categories a scan covers. A scan keeps the choice it started with, so changing Settings
+    /// afterwards never hides tiles whose items would still be cleaned ("Changes apply from the next scan").
+    public struct ScanChoice: Equatable, Sendable {
+        public var includeBrowserCaches: Bool
+        public var showReviewItems: Bool
+
+        public init(includeBrowserCaches: Bool = true, showReviewItems: Bool = true) {
+            self.includeBrowserCaches = includeBrowserCaches
+            self.showReviewItems = showReviewItems
+        }
+
+        public func scans(_ id: JunkCategoryID, selection: Selection) -> Bool {
+            if id == .browserCaches, !includeBrowserCaches { return false }
+            if selection == .review, !showReviewItems { return false }
+            return true
+        }
+    }
+
+    /// The choice the next scan starts with.
+    public var scanChoice: ScanChoice {
+        ScanChoice(includeBrowserCaches: includeBrowserCaches, showReviewItems: showReviewItems)
+    }
+
+    /// Whether the next junk scan covers this category with the current toggles.
     public func scans(_ id: JunkCategoryID, selection: Selection) -> Bool {
-        if id == .browserCaches, !includeBrowserCaches { return false }
-        if selection == .review, !showReviewItems { return false }
-        return true
+        scanChoice.scans(id, selection: selection)
     }
 
     /// "7 days", "1 day" or "Off".
@@ -162,8 +183,9 @@ public final class AppSettings {
         let path = folder.path(percentEncoded: false)
         let existing = scanOptions.exclusionURLs(home: environment.home).map { $0.path(percentEncoded: false) }
         if existing.contains(path) { return "That folder is already excluded." }
-        let guardOnly = ProtectedPaths(environment: environment)
-        if case .denied = guardOnly.verdict(for: folder, allowedRoots: [URL(filePath: "/")]) {
+        // Only folders whose whole tree is off limits are refused; the home folder and ~/Library
+        // themselves are protected, but what's inside them is not, so they can be excluded.
+        if ProtectedPaths(environment: environment).isProtectedTree(folder) {
             return "Dustling never touches \(folder.lastPathComponent) anyway, so it doesn't need excluding."
         }
         update { $0.exclusions.append(path) }

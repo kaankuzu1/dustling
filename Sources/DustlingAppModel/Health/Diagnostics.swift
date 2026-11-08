@@ -123,6 +123,11 @@ public enum Diagnostics {
         return "Checked \(days) \(days == 1 ? "day" : "days") ago"
     }
 
+    /// `readLogFolder` off the main actor.
+    public static func readLogFolderInBackground(_ folder: URL) async -> LogFolderState {
+        await Blocking.run { readLogFolder(folder) }
+    }
+
     /// The log folder's size and state, read from disk. Missing reads as not created yet.
     public static func readLogFolder(_ folder: URL) -> LogFolderState {
         let fm = FileManager.default
@@ -185,8 +190,8 @@ public enum DiagnosticsReport {
             for entry in run.entries {
                 let reason: String
                 switch entry.outcome {
-                case .skipped(let r): reason = "skipped: " + scrub(r, home: input.home)
-                case .failed(let r): reason = "failed: " + scrub(r, home: input.home)
+                case .skipped(let r): reason = "skipped: " + (knownReason(r) ?? "other")
+                case .failed(let r): reason = "failed: " + (knownReason(r) ?? "other error")
                 case .needsAdmin: reason = "needs admin"
                 case .movedToTrash, .deleted: continue
                 }
@@ -224,11 +229,40 @@ public enum DiagnosticsReport {
         }
     }
 
-    /// Removes the home folder, the user name and every word that looks like a path.
+    /// Reasons the report may copy word for word: Dustling's own fixed reasons and the system's error
+    /// strings. Free text (an error description that quotes a file name) never is.
+    static let fixedReasons: Set<String> = {
+        var set: Set<String> = [
+            TrashMover.noAccessReason, "already gone", "excluded in Settings",
+            "contains a folder excluded in Settings", "protected location", "another user's files",
+            "outside the cleanup area", "cleanup stopped", CleanupSkip.reason,
+        ]
+        for code in Int32(1)...Int32(106) { set.insert(TrashMover.describe(code)) }
+        return set
+    }()
+
+    /// The reason if it is in the fixed vocabulary (or "in use by <bundle id>"), else nil.
+    static func knownReason(_ reason: String) -> String? {
+        if fixedReasons.contains(reason) { return reason }
+        if let id = LastRunReview.inUseBundleID(reason),
+           id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_") }) {
+            return reason
+        }
+        return nil
+    }
+
+    /// Removes quoted runs, the home folder, the user name and every word that looks like a path.
     static func scrub(_ text: String, home: URL) -> String {
         let homePath = home.path(percentEncoded: false)
         let user = home.lastPathComponent
-        var out = text.replacingOccurrences(of: homePath, with: "/[path]")
+        var out = text
+        for (open, close) in [("\u{201C}", "\u{201D}"), ("\"", "\""), ("\u{2018}", "\u{2019}")] {
+            while let start = out.range(of: open),
+                  let end = out.range(of: close, range: start.upperBound..<out.endIndex) {
+                out.replaceSubrange(start.lowerBound..<end.upperBound, with: "[name]")
+            }
+        }
+        out = out.replacingOccurrences(of: homePath, with: "/[path]")
         let words = out.split(separator: " ", omittingEmptySubsequences: false).map { word -> String in
             if word.contains("/") || word.hasPrefix("~") { return "[path]" + (word.hasSuffix(":") ? ":" : "") }
             return String(word)

@@ -204,4 +204,29 @@ struct AppSettingsTests {
                 == "macOS needs your OK. Turn on Dustling in System Settings > General > Login Items.")
         #expect(settings.loginItemNeedsApproval)
     }
+
+    // MARK: fix round 1
+
+    /// The home folder and ~/Library are protected themselves, not what's inside: they can be excluded.
+    @Test func homeAndLibraryCanBeExcludedButProtectedTreesCannot() {
+        let settings = make(fresh())
+        #expect(settings.addExclusion(URL(filePath: "/Users/tester")) == nil)
+        #expect(settings.addExclusion(URL(filePath: "/Users/tester/Library")) == nil)
+        #expect(settings.addExclusion(URL(filePath: "/Users/tester/Pictures/Trips")) != nil)
+        #expect(settings.addExclusion(URL(filePath: "/Users/someone/Library")) != nil)
+        #expect(settings.addExclusion(URL(filePath: "/System/Library")) != nil)
+        #expect(settings.exclusionRows.map(\.display) == ["~", "~/Library"])
+    }
+
+    /// A scan keeps the choice it started with: changing Settings later doesn't hide its tiles.
+    @Test func scanChoiceIsASnapshot() {
+        let settings = make(fresh())
+        let taken = settings.scanChoice
+        settings.showReviewItems = false
+        settings.includeBrowserCaches = false
+        #expect(taken.scans(.oldInstallers, selection: .review))
+        #expect(taken.scans(.browserCaches, selection: .preselected))
+        #expect(!settings.scanChoice.scans(.oldInstallers, selection: .review))
+        #expect(!settings.scanChoice.scans(.browserCaches, selection: .preselected))
+    }
 }

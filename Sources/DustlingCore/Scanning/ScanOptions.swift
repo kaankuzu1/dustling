@@ -67,7 +67,9 @@ public struct ScanOptions: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey { case skipChangedWithinDays, includeExternalTrash, exclusions }
 
     /// The single place that turns options into the guard used by cleaning and uninstalling.
-    public func protectedPaths(environment: SystemEnvironment) -> ProtectedPaths {
-        ProtectedPaths(environment: environment, extraDenied: exclusionURLs(home: environment.home))
+    /// `textualUnder`: the consent folders while Full Disk Access is off (see `ProtectedPaths.keys`).
+    public func protectedPaths(environment: SystemEnvironment, textualUnder: [URL] = []) -> ProtectedPaths {
+        ProtectedPaths(
+            environment: environment, extraDenied: exclusionURLs(home: environment.home), textualUnder: textualUnder)
     }
 }

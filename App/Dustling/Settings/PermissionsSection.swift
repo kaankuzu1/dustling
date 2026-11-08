@@ -57,7 +57,7 @@ struct PermissionsSection: View {
                 }
             }
         }
-        .task { logFolder = Diagnostics.readLogFolder(models.logsDirectory) }
+        .task { logFolder = await Diagnostics.readLogFolderInBackground(models.logsDirectory) }
     }
 
     /// The first step that still needs the user: Full Disk Access while it is off, else the helper.
@@ -79,7 +79,7 @@ struct PermissionsSection: View {
         checking = true
         Task {
             if await models.health.refresh() { await models.refreshPlaces() }
-            logFolder = Diagnostics.readLogFolder(models.logsDirectory)
+            logFolder = await Diagnostics.readLogFolderInBackground(models.logsDirectory)
             checking = false
         }
     }
