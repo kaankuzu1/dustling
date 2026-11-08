@@ -20,9 +20,10 @@ final class AppModels {
     /// The startup volume's name for the sidebar footer, e.g. "Macintosh HD".
     let volumeName: String
 
-    /// False until the first Full Disk Access probe has finished. The sidebar hides the Full Disk
-    /// Access light until then, so the pre-probe `.unknown` never flashes as a warning.
-    private(set) var hasProbedFullDiskAccess = false
+    /// False until a Full Disk Access probe result has been published. The sidebar hides the Full
+    /// Disk Access light until then, so the pre-probe `.unknown` never flashes as a warning. A probe
+    /// superseded by a newer one (onboarding polling at launch) doesn't count (Ruling R55).
+    var hasProbedFullDiskAccess: Bool { health.hasPublishedStatus }
 
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
 
@@ -48,7 +49,8 @@ final class AppModels {
         }
         Task {
             await health.refresh()
-            hasProbedFullDiskAccess = true
+            // If this probe was superseded, the newer one publishes and the `.task(id:)` on the
+            // Full Disk Access status refreshes the places then.
             await refreshPlaces()
         }
         Task { await storage.refresh() }

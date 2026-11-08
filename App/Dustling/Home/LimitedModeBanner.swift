@@ -8,9 +8,13 @@ struct LimitedModeBanner: View {
     @Environment(AppModels.self) private var models
     @Environment(\.openWindow) private var openWindow
 
-    /// Shown once the places check has run and at least one place is locked.
+    /// Shown once Full Disk Access is known to be off (or unverified), the places check has run and
+    /// at least one place needs access. Never while access is on: then nothing is blamed on it.
     @MainActor static func isShown(_ models: AppModels) -> Bool {
-        models.places.places != nil && !models.places.lockedPlaces.isEmpty
+        models.hasProbedFullDiskAccess
+            && models.health.fullDiskAccess != .granted
+            && models.places.places != nil
+            && !models.places.lockedPlaces.isEmpty
     }
 
     static func title(lockedCount: Int) -> String {

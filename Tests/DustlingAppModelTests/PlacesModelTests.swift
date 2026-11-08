@@ -106,6 +106,56 @@ struct PlacesModelTests {
         #expect(model.lockedPlaces.isEmpty)
     }
 
+    @Test func otherErrorsMakeAPlaceUnreadableNotReadable() throws {
+        let rig = try ModelRig()
+        let categories = JunkCatalog.standard(rig.environment, options: rig.options)
+        let logs = rig.environment.userLibrary.appending(path: "Logs").path(percentEncoded: false)
+        for granted in [false, true] {
+            let places = PlaceAccessChecker.check(categories, fullDiskAccessGranted: granted) { url in
+                url.path(percentEncoded: false) == logs ? .other(EIO) : .ok
+            }
+            #expect(places.first { $0.id == .userLogs }?.access == .unreadable)
+            #expect(places.filter { $0.access != .readable }.count == 1)
+        }
+    }
+
+    @Test func refusalWithFullDiskAccessOnIsNotBlamedOnIt() throws {
+        let rig = try ModelRig()
+        let categories = JunkCatalog.standard(rig.environment, options: rig.options)
+        let trash = rig.environment.userTrash.standardizedFileURL.path(percentEncoded: false)
+        let probe: (URL) -> PlaceAccessChecker.PathAccess = { url in
+            url.standardizedFileURL.path(percentEncoded: false) == trash ? .denied : .ok
+        }
+        let off = PlaceAccessChecker.check(categories, fullDiskAccessGranted: false, probe: probe)
+        #expect(off.first { $0.id == .trash }?.access == .locked)
+        let on = PlaceAccessChecker.check(categories, fullDiskAccessGranted: true, probe: probe)
+        #expect(on.first { $0.id == .trash }?.access == .unreadable)
+        #expect(!on.contains { $0.access == .locked })
+    }
+
+    @Test func lockedWinsOverUnreadableInOnePlace() throws {
+        let rig = try ModelRig()
+        let categories = JunkCatalog.standard(rig.environment, options: rig.options)
+        let system = categories.first { $0.id == .systemCachesAndLogs }!
+        let first = system.roots[0].path(percentEncoded: false)
+        let places = PlaceAccessChecker.check([system], fullDiskAccessGranted: false) { url in
+            url.path(percentEncoded: false) == first ? .other(ELOOP) : .denied
+        }
+        #expect(places.first?.access == .locked)
+    }
+
+    @Test @MainActor func unreadablePlacesAreNotCountedAsNeedingFullDiskAccess() async {
+        let model = PlacesModel(check: { _ in
+            [Place(id: .userLogs, access: .unreadable), Place(id: .trash, access: .locked),
+             Place(id: .browserCaches, access: .readable)]
+        })
+        await model.refresh(fullDiskAccessGranted: false)
+        #expect(model.lockedPlaces.map(\.id) == [.trash])
+        #expect(model.unreadablePlaces.map(\.id) == [.userLogs])
+        #expect(model.readableCount == 1)
+        #expect(model.unreadableSentence == "Dustling can't read the folder for app logs.")
+    }
+
     @Test func lockedSentenceNamesAtMostThree() {
         let locked: [Place] = [.xcodeJunk, .systemCachesAndLogs, .mailDownloads, .trash, .iosBackups]
             .map { Place(id: $0, access: .locked) }

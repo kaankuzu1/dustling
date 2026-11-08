@@ -53,7 +53,7 @@ struct FullDiskAccessStep: View {
     @ViewBuilder private var header: some View {
         HStack(spacing: 12) {
             // The mockup draws Mote 40 pt wide; integer scales give 32 or 48, so 48 (3 pt per pixel).
-            MoteView(models.places.places != nil && models.places.lockedPlaces.isEmpty ? .happy : .worried, pixel: 3)
+            MoteView(models.places.places != nil && models.places.readableCount == models.places.total ? .happy : .worried, pixel: 3)
             if models.places.places == nil {
                 VStack(alignment: .leading, spacing: 8) {
                     SkeletonBlock(width: 320, height: 22)
@@ -61,16 +61,27 @@ struct FullDiskAccessStep: View {
                 }
                 .accessibilityElement()
                 .accessibilityLabel("Checking which places Dustling can see")
-            } else if models.places.lockedPlaces.isEmpty {
+            } else if models.places.readableCount == models.places.total {
                 StepHeadline(
                     title: "Dustling can see everything now",
                     caption: "All \(models.places.total) places are open.")
             } else {
                 StepHeadline(
                     title: "Dustling can see \(models.places.readableCount) of \(models.places.total) places",
-                    caption: "The hatched pixels are junk in folders macOS protects. Full Disk Access opens them.")
+                    caption: seeCaption)
             }
         }
+    }
+
+    /// Locked places are blamed on Full Disk Access; places unreadable for another reason say so
+    /// separately and are never counted as needing access.
+    private var seeCaption: String {
+        var parts: [String] = []
+        if !models.places.lockedPlaces.isEmpty {
+            parts.append("The hatched pixels are junk in folders macOS protects. Full Disk Access opens them.")
+        }
+        if let unreadable = models.places.unreadableSentence { parts.append(unreadable) }
+        return parts.joined(separator: " ")
     }
 
     /// "Waiting for access…" while polling. If no probe target could decide, say that instead of waiting
@@ -161,9 +172,16 @@ struct PlacesMosaic: View {
     private var accessibilityText: String {
         guard let places else { return "Checking which places Dustling can see" }
         let locked = places.filter { $0.access == .locked }
-        guard !locked.isEmpty else { return "All \(places.count) places are open" }
-        return "\(places.count - locked.count) of \(places.count) places open. Locked: "
-            + locked.map(\.nameInSentence).joined(separator: ", ")
+        let unreadable = places.filter { $0.access == .unreadable }
+        guard !locked.isEmpty || !unreadable.isEmpty else { return "All \(places.count) places are open" }
+        var text = "\(places.count - locked.count - unreadable.count) of \(places.count) places open."
+        if !locked.isEmpty {
+            text += " Need Full Disk Access: " + locked.map(\.nameInSentence).joined(separator: ", ") + "."
+        }
+        if !unreadable.isEmpty {
+            text += " Can't be read: " + unreadable.map(\.nameInSentence).joined(separator: ", ") + "."
+        }
+        return text
     }
 
     private static func draw(_ places: [Place]?, columns: Int, in context: inout GraphicsContext, size: CGSize) {
@@ -181,7 +199,7 @@ struct PlacesMosaic: View {
                     context.fill(Path(rect), with: .color(DustlingTheme.Palette.line))
                 case .readable:
                     context.fill(Path(rect), with: .color(color(for: place!.id)))
-                case .locked:
+                case .locked, .unreadable:
                     drawHatch(in: rect, context: &context)
                 }
             }

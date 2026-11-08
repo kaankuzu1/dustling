@@ -46,6 +46,10 @@ public final class HealthModel {
     /// A plain sentence when the last cleanup left items failed or needing admin; nil otherwise.
     public private(set) var lastRunProblem: String?
     public private(set) var helper: HelperStatus = .notAvailable
+    /// False until a probe result has actually been published. A probe superseded by a newer one
+    /// doesn't count, so `fullDiskAccess` is never shown as a result while it is still the initial
+    /// `.unknown` (Ruling R55).
+    public private(set) var hasPublishedStatus = false
 
     @ObservationIgnored private let probe: @Sendable () -> FullDiskAccessStatus
     @ObservationIgnored private let clock: any Clock<Duration>
@@ -117,6 +121,7 @@ public final class HealthModel {
         let status = await Task.detached(priority: .userInitiated) { probe() }.value
         guard mine == generation else { return }
         fullDiskAccess = status
+        hasPublishedStatus = true
         refreshLastRun()
     }
 

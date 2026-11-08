@@ -9,15 +9,28 @@ struct ReadyStep: View {
     @Environment(AppModels.self) private var models
 
     private var locked: [Place] { models.places.lockedPlaces }
+    private var seesEverything: Bool {
+        models.places.places != nil && models.places.readableCount == models.places.total
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             // 64 pt: the nearest integer scale to the mockups' 72 pt Mote.
-            MoteView(locked.isEmpty ? .happy : .worried, pixel: 4)
-            if locked.isEmpty {
+            MoteView(seesEverything ? .happy : .worried, pixel: 4)
+            if models.places.places == nil {
+                SkeletonBlock(width: 420, height: 30)
+                    .accessibilityElement()
+                    .accessibilityLabel("Checking which places Dustling can see")
+            } else if seesEverything {
                 StepHeadline(
                     title: "Dustling can see everything now",
                     caption: "All \(models.places.total) places are open.",
+                    small: false, captionSize: 14)
+            } else if locked.isEmpty {
+                // Nothing needs Full Disk Access; some places can't be read for another reason.
+                StepHeadline(
+                    title: "Dustling can see \(models.places.readableCount) of \(models.places.total) places",
+                    caption: models.places.unreadableSentence,
                     small: false, captionSize: 14)
             } else {
                 StepHeadline(

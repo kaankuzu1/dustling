@@ -152,6 +152,32 @@ struct HealthModelTests {
         #expect(model.fullDiskAccess == .granted)
     }
 
+    /// Ruling R55: a probe superseded by a newer one publishes nothing, so the model must not
+    /// report a status as known until the newer probe has published.
+    @Test func supersededProbeDoesNotCountAsPublished() async {
+        let first = DispatchSemaphore(value: 0)
+        let second = DispatchSemaphore(value: 0)
+        let script = ProbeScript { n in
+            if n == 1 { first.wait(); return .granted }
+            second.wait()
+            return .denied
+        }
+        let model = HealthModel(probe: { script.probe() }, clock: ManualClock())
+        #expect(!model.hasPublishedStatus)
+        let older = Task { await model.refresh() }
+        #expect(await eventually { script.callCount == 1 })
+        let newer = Task { await model.refresh() }
+        #expect(await eventually { script.callCount == 2 })
+        first.signal()
+        await older.value
+        #expect(!model.hasPublishedStatus)
+        #expect(model.fullDiskAccess == .unknown)
+        second.signal()
+        await newer.value
+        #expect(model.hasPublishedStatus)
+        #expect(model.fullDiskAccess == .denied)
+    }
+
     @Test func refreshLastRunUpdatesWithoutProbing() async {
         let script = ProbeScript { _ in .granted }
         nonisolated(unsafe) var run: RunRecord?

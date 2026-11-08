@@ -24,7 +24,7 @@ struct PermissionsStep: View {
                     icon: .lock, title: "Cleanup helper",
                     detail: "Moves system caches and logs that belong to macOS."
                 ) {
-                    Chip(text: "Not available yet")
+                    Chip(text: "Not available yet", onPanel: true)
                 }
             }
             HStack(spacing: 12) {
@@ -38,7 +38,7 @@ struct PermissionsStep: View {
 
     @ViewBuilder private var fullDiskAccessStatus: some View {
         if !models.hasProbedFullDiskAccess {
-            Chip(text: "Checking…")
+            Chip(text: "Checking…", onPanel: true)
         } else {
             switch models.health.fullDiskAccess {
             case .granted:

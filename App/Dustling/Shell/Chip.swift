@@ -11,6 +11,9 @@ struct Chip: View {
     var kind: Kind = .neutral
     /// An optional 8 pt pixel icon. Admin chips always show the lock.
     var icon: PixelIcon?
+    /// Neutral and admin chips fill with `panel`. On a `panel`-coloured row that fill disappears, so
+    /// such rows pass true to fill with `ground` instead. Same shape and metrics.
+    var onPanel = false
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -24,7 +27,7 @@ struct Chip: View {
 
     private var background: Color {
         switch kind {
-        case .neutral, .admin: return Palette.panel
+        case .neutral, .admin: return onPanel ? Palette.ground : Palette.panel
         case .warning: return Palette.warning.opacity(0.15)
         case .success: return Palette.success.opacity(0.15)
         }
