@@ -28,6 +28,7 @@ Every pull request that changes what people see or what Dustling does adds a lin
      [Unreleased]: https://github.com/kaankuzu1/dustling/compare/v0.2.0...HEAD
      [0.2.0]: https://github.com/kaankuzu1/dustling/compare/v0.1.0...v0.2.0
      ```
+   - Run the [QA pass](#qa-pass) on this branch and paste its checklist, ticked, into the pull request.
    - Merge the pull request into `main`.
 
 2. **Tag the merge commit and push the tag.**
@@ -39,13 +40,70 @@ Every pull request that changes what people see or what Dustling does adds a lin
 
 3. **Let the workflow build it.** The tag starts the [Release workflow](../.github/workflows/release.yml). It runs the tests, checks that the tag matches `MARKETING_VERSION` and that CHANGELOG.md has a section for it, builds `Dustling.dmg`, and creates a **draft** release with the changelog section and install steps as its notes. Nothing is public yet.
 
-4. **Check the draft.** Download `Dustling.dmg` from the draft release, open it on a Mac and try the new version. Read the notes.
+4. **Check the draft.** Download `Dustling.dmg` from the draft release and go through the [install checks](#install-and-update) with it. Read the notes.
 
 5. **Publish.** On the draft release, click **Edit**, then **Publish release**. From then on, `https://github.com/kaankuzu1/dustling/releases/latest/download/Dustling.dmg` serves the new version, and so does the website's Download button.
 
 6. **Update the website.** In the `dustling-website` repository, set `VERSION` in `src/site.ts` to the new version and merge.
 
 If something is wrong after step 2, delete the draft release and the tag (`git push --delete origin v0.2.0` and `git tag -d v0.2.0`), fix it on `main`, and tag again.
+
+## QA pass
+
+Every release gets the same checks, so small problems are found before people find them. Do them on the release pull request's branch, and the install checks again with the draft release's disk image.
+
+### Automated
+
+```bash
+swift test
+scripts/qa-screens.sh
+```
+
+`scripts/qa-screens.sh` opens a separate copy of Dustling (its own settings, sample data, sample home folders; it never touches your files or your Dustling) in about 40 screen states: every fixture state, the empty states, many oddly named items and no Full Disk Access. For each one, in light and dark, at the smallest window, the default and a large one, it saves a picture of every window and sheet and checks every control: it must have a name VoiceOver can read, and it must not be cut off by the edge of its window or sheet. It ends with "No problems found" or a list of problems, and writes `dist/qa/<time>/index.html`.
+
+Then open `index.html` and look through every picture for what a check can't see: text that is cut off or overlaps, loading placeholders that don't line up with what replaces them, icons that disappear in light or dark, empty states that look broken. Without Screen Recording or Accessibility permission it still works: it only reads its own windows.
+
+### By hand
+
+Copy this into the release pull request and tick each line. Use a build of the branch (`App/README.md`) for all but the install checks.
+
+**Install and update**
+
+- [ ] First install: on a Mac user account that never ran Dustling, open the disk image. Its window shows the background, Dustling and the Applications folder, none cut off by the title bar.
+- [ ] Drag Dustling to Applications and open it: macOS asks once to confirm ([INSTALL.md](INSTALL.md)), then the setup opens over the main window. The sidebar shows "Startup items" in full.
+- [ ] Update: drag the new version over the old one while the old one is closed, then while it is open. Replacing works, and the new version opens.
+- [ ] After the update, if macOS dropped Full Disk Access, Dustling says so before scanning and the fix in Settings works.
+
+**Permissions**
+
+- [ ] Full Disk Access off: Home shows limited mode and which places it couldn't read; the Uninstaller waits for access; nothing shows 0 bytes for a place it couldn't read.
+- [ ] Turn Full Disk Access on while Dustling is open: it notices without a restart.
+
+**Every screen**
+
+- [ ] Home, Junk scan, Uninstaller, Startup items, History, Dustling health and each Settings section open, in light and dark, and switching the appearance while open redraws everything.
+- [ ] At the smallest window size and in full screen, nothing is cut off and every button can be reached.
+- [ ] With nothing to clean, no apps selected and an empty History, the screens say so plainly.
+
+**Doing and undoing**
+
+- [ ] Stop a junk scan halfway: it stops, and what was found so far stays.
+- [ ] Clean some junk, then Put everything back from the summary and one item from History.
+- [ ] Uninstall a test app, Stop an uninstall of several apps halfway, and put an app back.
+- [ ] Turn a startup item off and on again.
+- [ ] Cancel and Escape close every sheet without doing anything; Empty Trash always asks first.
+
+**Quit**
+
+- [ ] Quit (⌘Q) during a scan, during a cleanup, during an uninstall and with each sheet open: it quits after stopping cleanly. Reopen: History shows the interrupted run as it ended.
+
+**Keyboard, VoiceOver and motion**
+
+- [ ] Keyboard only: Tab reaches every button; arrow keys move in the sidebar and the lists; Return and Escape work in every sheet; ⌘, opens Settings.
+- [ ] VoiceOver (⌘F5): the sidebar, a junk category, an app row while uninstalling, a sheet and a History log line each read something useful.
+- [ ] Reduce Motion on (System Settings > Accessibility > Display): scanning, cleaning and the summary appear without movement.
+
+Anything found goes into a pull request with a line under `## [Unreleased]`, and the QA pass runs again on what changed.
 
 ## Building the disk image yourself
 

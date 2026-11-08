@@ -34,6 +34,8 @@ struct RootView: View {
         #if DEBUG
         // QA: `-DustlingSettingsSection about` also opens the Settings window at launch, at that section.
         .task { if UserDefaults.standard.string(forKey: "DustlingSettingsSection") != nil { openSettings() } }
+        // QA: `-DustlingLayoutCheck <folder>` checks every window at several sizes, then quits.
+        .task { LayoutCheck.runIfRequested() }
         #endif
         // Only for blockers, such as Full Disk Access lost before a scan (SCREENS-final §8).
         .dismissedOnQuit($models.blocker)
