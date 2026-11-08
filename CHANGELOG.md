@@ -19,6 +19,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - VoiceOver reads every line in a run's log in History, which it skipped before, and says whether each app in the Uninstaller was moved, left alone or is still waiting.
 - The three tool cards on Home are the same height with their buttons in line, also in a narrow window where one caption takes two lines.
 - Move to Trash in the Junk scan is off when nothing is selected to move, instead of only saying so after you click it.
+- In the junk scan's "Close apps to include their files?" sheet, the "Clean without them" button was cut off. The sheet is wider and its buttons always show their full labels. The Uninstaller's "Quit … and move to Trash" button no longer gets cut off by a long app name.
 
 ## [0.1.0] - 2026-11-08
 

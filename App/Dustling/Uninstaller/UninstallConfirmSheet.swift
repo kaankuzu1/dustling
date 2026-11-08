@@ -64,6 +64,7 @@ struct UninstallConfirmSheet: View {
                     dismiss()
                     onConfirm()
                 }
+                .fixedSize()
                 .dustlingPrimary()
                 .keyboardShortcut(.defaultAction)
                 .disabled(!confirm.ready)

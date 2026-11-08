@@ -162,6 +162,17 @@ struct UninstallerScreenTests {
         #expect(counting.caption == "Still looking for leftovers")
     }
 
+    /// A name too long for the button isn't put on it (the notes still name the app).
+    @Test func confirmButtonLeavesOutALongAppName() {
+        let name = "An App With An Extremely Long Name"
+        let text = ConfirmText.make(confirm(perApp: [per(name, items: 2, bytes: gb)], running: [name]))
+        #expect(text.button == "Quit 1 app and move to Trash")
+        #expect(text.notes.contains { $0.contains(name) })
+        let fits = String(repeating: "x", count: ConfirmText.buttonNameLimit)
+        #expect(ConfirmText.make(confirm(perApp: [per(fits, items: 1, bytes: gb)], running: [fits])).button
+            == "Quit \(fits) and move to Trash")
+    }
+
     @Test func confirmTextNamesTheRunningAppOnTheButton() {
         let one = ConfirmText.make(confirm(perApp: [per("Docker Desktop", items: 9, data: 1, bytes: 13 * gb)],
                                            data: [dataWarning("Docker Desktop")], running: ["Docker Desktop"], agents: 1))

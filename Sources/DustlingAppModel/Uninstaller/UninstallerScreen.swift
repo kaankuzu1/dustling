@@ -169,6 +169,9 @@ public enum UninstallerScreen {
 
 /// The confirm sheet's text ("Move 3 apps to the Trash?").
 public struct ConfirmText: Equatable, Sendable {
+    /// The longest app name the confirm button shows ("Quit <name> and move to Trash").
+    public static let buttonNameLimit = 24
+
     public struct AppLine: Equatable, Sendable {
         public let name: String
         public let items: String
@@ -243,7 +246,9 @@ public struct ConfirmText: Equatable, Sendable {
         let button: String
         switch running.count {
         case 0: button = "Move to Trash"
-        case 1: button = "Quit \(running[0]) and move to Trash"
+        // A long name would be cut off on the button; the notes above still name the app.
+        case 1: button = running[0].count <= ConfirmText.buttonNameLimit
+            ? "Quit \(running[0]) and move to Trash" : "Quit 1 app and move to Trash"
         default: button = "Quit \(running.count) apps and move to Trash"
         }
         return ConfirmText(

@@ -3,7 +3,7 @@ import DustlingAppModel
 import DustlingCore
 import Foundation
 
-/// DEBUG only. `-DustlingHomeFixture ready|scanning|done|limited|emptytrash|reviewfiles` shows Home and the Junk scan with
+/// DEBUG only. `-DustlingHomeFixture ready|scanning|done|limited|emptytrash|reviewfiles|closeapps` shows Home and the Junk scan with
 /// the approved mockup's sample numbers (`DISK`, `CATS` and `TRASH` in screens.html), for screenshots
 /// without anyone's real files:
 /// - Full Disk Access reads as on (`limited`: off, with the consent places locked), in memory only.
@@ -13,6 +13,8 @@ import Foundation
 ///   count) stay in their loading skeletons. `loadingscan`: the disk is read but the scan has
 ///   finished no place yet, so Home shows the hero with the scan's skeletons.
 /// - `done` shows the summary of a sample cleanup that was never run.
+/// - `closeapps` is `ready` with the "Close apps to include their files?" sheet for two sample apps
+///   (its buttons do nothing).
 /// - `emptytrash` and `reviewfiles` are `ready` with the Junk scan's Empty Trash or Review files sheet
 ///   open (the sheets list the sample items; Empty Trash refuses to delete anything).
 ///
@@ -108,6 +110,15 @@ enum HomeFixture {
     }
 
     /// The mockup's Trash: 3.27 GB in a few items.
+    /// Two apps holding selected junk, for the Close apps sheet. Apple's own apps, so the icons are
+    /// nobody's personal apps.
+    static let closeAppsHolders = [
+        OpenAppHolder(bundleID: "com.apple.Safari", name: "Safari", bundleURL: URL(filePath: "/Applications/Safari.app"),
+                      bytes: UInt64(1.84 * gb), itemCount: 3),
+        OpenAppHolder(bundleID: "com.apple.mail", name: "Mail", bundleURL: URL(filePath: "/System/Applications/Mail.app"),
+                      bytes: UInt64(0.62 * gb), itemCount: 2),
+    ]
+
     static func trashItems(home: URL) -> [TrashItem] {
         let trash = home.appending(path: ".Trash")
         return [
