@@ -294,7 +294,7 @@ struct OpenSettingsButton: View {
     var body: some View {
         let button = Button(action: openFullDiskAccessSettings) {
             HStack(spacing: 6) {
-                PixelIconView(.arrow, color: primary ? DustlingTheme.Palette.onAccent : DustlingTheme.Palette.ink)
+                PixelIconView(.arrow, tint: .foreground)
                 Text("Open System Settings")
             }
         }

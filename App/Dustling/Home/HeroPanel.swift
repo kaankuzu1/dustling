@@ -142,7 +142,7 @@ struct HeroPanel: View {
             } else {
                 Button { models.selection = .junkScan } label: {
                     HStack(spacing: 6) {
-                        PixelIconView(.broom, color: Palette.onAccent)
+                        PixelIconView(.broom, tint: .foreground)
                         Text("Clean up junk")
                     }
                 }

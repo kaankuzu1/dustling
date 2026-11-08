@@ -34,6 +34,8 @@ struct ToolCardRow: View {
                 button: "Review items"
             ) { models.selection = .startupItems }
         }
+        // As tall as the tallest card: a two-line caption (narrow windows) doesn't leave one card longer.
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var uninstallerText: ToolCardText? {
@@ -110,6 +112,8 @@ struct ToolCard: View {
                     .skeletonText()
                     .skeleton(text == nil, index: 1)
             }
+            // The three cards are as tall as the tallest, so their buttons line up along the bottom.
+            Spacer(minLength: 0)
             let button = Button(self.button, action: action).controlSize(.small)
             if primary {
                 button.dustlingPrimary()
@@ -118,7 +122,7 @@ struct ToolCard: View {
             }
         }
         .padding(16)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
             highlighted ? Palette.rowSelection : Palette.panel,
             in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))

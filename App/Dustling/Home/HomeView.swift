@@ -19,7 +19,7 @@ struct HomeView: View {
                 ScreenToolbar(title: "Home", subtitle: subtitle(now: context.date)) {
                     Button(action: models.reloadHome) {
                         HStack(spacing: 6) {
-                            PixelIconView(.refresh, color: Palette.ink)
+                            PixelIconView(.refresh, tint: .foreground)
                             Text("Scan again")
                         }
                     }

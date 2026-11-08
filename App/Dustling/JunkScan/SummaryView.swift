@@ -123,7 +123,7 @@ struct SummaryView: View {
         return HStack(spacing: 8) {
             Button { confirmingEmptyTrash = true } label: {
                 HStack(spacing: 6) {
-                    PixelIconView(.trash, color: Palette.onAccent)
+                    PixelIconView(.trash, tint: .foreground)
                     Text(size.map { "Empty Trash… \(Bytes.format($0))" } ?? "Empty Trash…")
                         .monospacedDigit()
                 }
@@ -136,7 +136,7 @@ struct SummaryView: View {
             case .putEverythingBack:
                 Button(action: putEverythingBack) {
                     HStack(spacing: 6) {
-                        PixelIconView(.undo, color: Palette.ink)
+                        PixelIconView(.undo, tint: .foreground)
                         Text(junk.isRestoring ? "Putting back…" : "Put everything back")
                     }
                 }
