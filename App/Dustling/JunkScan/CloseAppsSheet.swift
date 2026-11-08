@@ -47,11 +47,16 @@ struct CloseAppsSheet: View {
 
     var body: some View {
         let gate = models.junk.cleanupGate
-        VStack(alignment: .leading, spacing: 14) {
+        let layout = SheetLayout.closeApps
+        VStack(alignment: .leading, spacing: CGFloat(layout.spacing)) {
+            // Pinned: the title and the buttons. Everything between scrolls (`SheetMiddle`).
             Text(CloseApps.title(run.holders))
                 .font(.custom(DustlingTheme.Typography.sansFamily, size: 15).weight(.semibold))
                 .foregroundStyle(Palette.ink)
+                .lineLimit(2)
                 .accessibilityAddTraits(.isHeader)
+                .frame(maxHeight: CGFloat(layout.headerHeight), alignment: .leading)
+            SheetMiddle(layout: layout, spacing: 14) {
             VStack(spacing: 0) {
                 ForEach(run.holders) { holder in
                     AppRow(holder: holder, status: status(holder))
@@ -76,6 +81,7 @@ struct CloseAppsSheet: View {
                     .monospacedDigit()
                     .fixedSize(horizontal: false, vertical: true)
             }
+            }
             HStack(spacing: 8) {
                 Text(changedTo == nil ? "\(Bytes.format(promised)) will move" : "\(Bytes.format(changedTo ?? 0)) will move")
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 13).weight(.semibold))
@@ -97,8 +103,10 @@ struct CloseAppsSheet: View {
                         .disabled(run.isRunning || run.isFinished)
                 }
             }
+            .frame(height: CGFloat(SheetLayout.buttonRowHeight))
         }
-        .padding(20)
+        .padding(.vertical, CGFloat(layout.verticalPadding))
+        .padding(.horizontal, 20)
         .frame(width: 560)
         .background(Palette.ground)
         .interactiveDismissDisabled(run.isRunning)

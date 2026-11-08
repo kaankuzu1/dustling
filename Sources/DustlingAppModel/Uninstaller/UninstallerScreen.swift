@@ -188,6 +188,9 @@ public struct ConfirmText: Equatable, Sendable {
     public let total: String
     public let button: String
 
+    /// Running apps named in the note; more are counted.
+    static let maxNamedRunning = 3
+
     public static func make(_ confirm: ConfirmModel) -> ConfirmText {
         let count = confirm.perApp.count
         let title = count == 1
@@ -215,7 +218,11 @@ public struct ConfirmText: Equatable, Sendable {
         if running.count == 1 {
             notes.append("\(running[0]) is running. Dustling will quit it first.")
         } else if running.count > 1 {
-            notes.append("\(UninstallerScreen.names(running)) are running. Dustling will quit them first.")
+            let named = running.count > maxNamedRunning
+                ? running.prefix(maxNamedRunning).joined(separator: ", ")
+                    + " and \(running.count - maxNamedRunning) other \(running.count - maxNamedRunning == 1 ? "app" : "apps")"
+                : UninstallerScreen.names(running)
+            notes.append("\(named) are running. Dustling will quit them first.")
         }
         if confirm.launchAgents == 1 {
             notes.append("1 launch agent is unloaded before it moves.")
