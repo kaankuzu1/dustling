@@ -17,6 +17,8 @@ public struct Leftover: Identifiable, Hashable, Sendable {
     public var mayContainUserData: Bool
     public var requiresAdmin: Bool
     public var bytes: UInt64
+    /// A plain-English explanation shown next to the item, e.g. why a match is only name-based.
+    public var note: String?
 
     public var id: URL { url }
 
@@ -26,7 +28,7 @@ public struct Leftover: Identifiable, Hashable, Sendable {
 
     public init(
         url: URL, kind: LeftoverKind, match: MatchStrength, mayContainUserData: Bool,
-        requiresAdmin: Bool, bytes: UInt64
+        requiresAdmin: Bool, bytes: UInt64, note: String? = nil
     ) {
         self.url = url
         self.kind = kind
@@ -34,5 +36,6 @@ public struct Leftover: Identifiable, Hashable, Sendable {
         self.mayContainUserData = mayContainUserData
         self.requiresAdmin = requiresAdmin
         self.bytes = bytes
+        self.note = note
     }
 }

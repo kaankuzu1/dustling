@@ -339,4 +339,117 @@ import Foundation
         runner.setDefault(CommandResult(status: 1, stdout: "", stderr: "No receipt"))
         #expect(finder().leftoversWithIssues(for: try app()).issues.isEmpty)
     }
+    // MARK: - Steam fallback, shared install folders, duplicate names (R27 amended, Important #10)
+
+    private let steamapps = "home/Library/Application Support/Steam/steamapps"
+
+    private func manifest(_ id: String, installdir: String) throws {
+        let url = try sandbox.file("\(steamapps)/appmanifest_\(id).acf")
+        try Data("\"AppState\"\n{\n\t\"appid\"\t\t\"\(id)\"\n\t\"installdir\"\t\t\"\(installdir)\"\n}\n".utf8)
+            .write(to: url)
+    }
+
+    @Test func missingManifestFallsBackToFolderNamedLikeTheApp() throws {
+        try sandbox.file("\(steamapps)/common/Portal/portal.dat", bytes: 4096)
+        try manifest("220", installdir: "Half-Life 2")
+        let items = finder().leftovers(for: try app(bundleID: nil, name: "Portal", steam: "400"))
+        let game = try #require(find(items, "steamapps/common/Portal"))
+        #expect(game.kind == .steamGameData && game.match == .nameBased)
+        #expect(game.mayContainUserData && !game.preselected && !game.requiresAdmin)
+        #expect(game.bytes > 0)
+        #expect(game.note == "matched by folder name, no Steam manifest found")
+        #expect(find(items, "appmanifest_400.acf") == nil)
+        #expect(items.count == 1)
+    }
+
+    @Test func fallbackIsRefusedWhenAnotherManifestOwnsTheFolder() throws {
+        try sandbox.file("\(steamapps)/common/Portal/portal.dat")
+        try manifest("401", installdir: "portal")   // same folder on a case-insensitive volume
+        let result = finder().leftoversWithIssues(for: try app(bundleID: nil, name: "Portal", steam: "400"))
+        #expect(find(result.leftovers, "steamapps/common/Portal") == nil)
+        #expect(result.issues.isEmpty)
+    }
+
+    @Test func fallbackIsRefusedWhenAnotherManifestCantBeRead() throws {
+        try sandbox.file("\(steamapps)/common/Portal/portal.dat")
+        try manifest("401", installdir: "Something Else")
+        let other = sandbox.root.appending(path: "\(steamapps)/appmanifest_401.acf")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: other.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: other.path) }
+        let result = finder().leftoversWithIssues(for: try app(bundleID: nil, name: "Portal", steam: "400"))
+        #expect(find(result.leftovers, "steamapps/common/Portal") == nil)
+        #expect(result.issues == [.unreadable(other)])
+    }
+
+    @Test func sharedInstallFolderIsNameBasedWithNote() throws {
+        try sandbox.file("\(steamapps)/common/Half-Life 2/hl2.dat")
+        for id in ["220", "340", "380", "420"] { try manifest(id, installdir: "Half-Life 2") }
+        let items = finder().leftovers(for: try app(bundleID: nil, name: "Half-Life 2 Lost Coast", steam: "340"))
+        let game = try #require(find(items, "steamapps/common/Half-Life 2"))
+        #expect(game.kind == .steamGameData && game.match == .nameBased && !game.preselected)
+        #expect(game.note == "shared with 3 other Steam games")
+        let own = try #require(find(items, "appmanifest_340.acf"))
+        #expect(own.match == .exact && own.note == nil)
+        #expect(find(items, "appmanifest_220.acf") == nil)
+    }
+
+    @Test func sharedWithOneOtherGameReadsSingular() throws {
+        try sandbox.file("\(steamapps)/common/Half-Life 2/hl2.dat")
+        try manifest("220", installdir: "Half-Life 2")
+        try manifest("340", installdir: "Half-Life 2")
+        let items = finder().leftovers(for: try app(bundleID: nil, name: "Lost Coast", steam: "340"))
+        #expect(find(items, "steamapps/common/Half-Life 2")?.note == "shared with 1 other Steam game")
+    }
+
+    @Test func unsharedManifestFolderStaysExactWithoutNote() throws {
+        try sandbox.file("\(steamapps)/common/Portal/portal.dat")
+        try manifest("400", installdir: "Portal")
+        try manifest("220", installdir: "Half-Life 2")
+        let game = try #require(find(finder().leftovers(for: try app(bundleID: nil, name: "Portal", steam: "400")),
+                                     "steamapps/common/Portal"))
+        #expect(game.match == .exact && game.note == nil)
+    }
+
+    @Test func duplicateDisplayNameSkipsNameBasedMatches() throws {
+        try sandbox.file("home/Library/Application Support/Steam/registry.vdf")
+        try sandbox.file("home/Library/Caches/Steam/c")
+        try sandbox.file("home/Library/Logs/Steam/l")
+        let a = try app(bundleID: "com.valvesoftware.steam", name: "Steam")
+        let otherURL = try sandbox.app("home/Applications/CrossOver/Steam.app", bundleID: nil)
+        let b = InstalledApp(
+            url: otherURL, displayName: "steam", bundleID: nil, teamID: nil,
+            executableName: "App", steamAppID: nil, bytes: 0, lastUsed: nil)
+        let items = finder().leftovers(for: a, among: [a, b])
+        #expect(find(items, "Application Support/Steam") == nil)
+        #expect(find(items, "Caches/Steam") == nil)
+        #expect(find(items, "Logs/Steam") == nil)
+        let alone = finder().leftovers(for: a, among: [a])
+        #expect(find(alone, "Application Support/Steam") != nil)
+        #expect(find(alone, "Caches/Steam") != nil)
+        #expect(find(alone, "Logs/Steam") != nil)
+    }
+
+    @Test func duplicateDisplayNameAlsoBlocksSteamFallback() throws {
+        try sandbox.file("\(steamapps)/common/Portal/portal.dat")
+        let a = try app(bundleID: nil, name: "Portal", steam: "400")
+        let otherURL = try sandbox.app("home/Applications/Portal.app", bundleID: nil)
+        let b = InstalledApp(
+            url: otherURL, displayName: "Portal", bundleID: nil, teamID: nil,
+            executableName: "App", steamAppID: "500", bytes: 0, lastUsed: nil)
+        #expect(find(finder().leftovers(for: a, among: [a, b]), "steamapps/common/Portal") == nil)
+    }
+
+    @Test func hostileNamesNeverReachTheSteamFallback() throws {
+        try sandbox.file("home/Documents/precious.txt")
+        try sandbox.file("\(steamapps)/common/x/y")
+        let url = try sandbox.app("Applications/Safe.app", bundleID: nil)
+        for bad in ["../../../../Documents", "..", ".", "", "a/b", "a:b", "x\0y", "../\u{301}x"] {
+            let hostile = InstalledApp(
+                url: url, displayName: bad, bundleID: nil, teamID: nil,
+                executableName: "App", steamAppID: "9", bytes: 0, lastUsed: nil)
+            let items = finder().leftovers(for: hostile)
+            #expect(items.isEmpty, "\(bad.debugDescription) -> \(items.map(\.url.path))")
+        }
+    }
 }
+

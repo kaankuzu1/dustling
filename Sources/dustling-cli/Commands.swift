@@ -276,6 +276,7 @@ enum Commands {
         for leftover in result.leftovers {
             let mark = (includeAll || leftover.preselected) ? "[x]" : "[ ]"
             var notes = ""
+            if let note = leftover.note { notes += "  (\(note))" }
             if leftover.mayContainUserData { notes += "  (may contain your data)" }
             if leftover.requiresAdmin { notes += "  (needs admin, will not be touched)" }
             print("  \(mark) \(Format.bytes(leftover.bytes))  \(Format.path(leftover.url))\(notes)")

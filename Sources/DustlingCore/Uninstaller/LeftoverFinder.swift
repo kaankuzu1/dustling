@@ -47,7 +47,7 @@ public struct LeftoverFinder: Sendable {
         }
 
         func add(_ url: URL, _ kind: LeftoverKind, _ match: MatchStrength, userData: Bool,
-                 admin: Bool = false, mustExist: Bool = true) {
+                 admin: Bool = false, mustExist: Bool = true, note: String? = nil) {
             let key = url.standardizedFileURL
             guard !seen.contains(key) else { return }
             var bytes: UInt64 = 0
@@ -60,7 +60,7 @@ public struct LeftoverFinder: Sendable {
             seen.insert(key)
             collected.append(Leftover(
                 url: url, kind: kind, match: match, mayContainUserData: userData,
-                requiresAdmin: admin, bytes: bytes))
+                requiresAdmin: admin, bytes: bytes, note: note))
         }
 
         let lib = environment.userLibrary
@@ -111,8 +111,12 @@ public struct LeftoverFinder: Sendable {
             }
         }
 
-        // Name based.
-        if Self.isSafeComponent(app.displayName) {
+        // Name based. Skipped when another installed app has the same name: the folder could be its.
+        let appPath = app.url.standardizedFileURL.path
+        let nameIsShared = installed.contains {
+            $0.url.standardizedFileURL.path != appPath && Self.fold($0.displayName) == Self.fold(app.displayName)
+        }
+        if !nameIsShared, Self.isSafeComponent(app.displayName) {
             let n = app.displayName
             add(userDir("Application Support").appending(path: n), .applicationSupport, .nameBased, userData: true)
             add(userDir("Caches").appending(path: n), .caches, .nameBased, userData: false)
@@ -160,20 +164,45 @@ public struct LeftoverFinder: Sendable {
             issues.append(.commandFailed(command: "pkgutil --file-info", reason: "\(error)"))
         }
 
-        // Steam game data.
+        // Steam game data. Other manifests are read to learn which install folders they declare, so a
+        // folder shared by several games (e.g. "Half-Life 2") is never offered as this game's own.
         if let id = app.steamAppID, Self.isSafeComponent(id) {
             let steamapps = userDir("Application Support").appending(path: "Steam/steamapps", directoryHint: .isDirectory)
-            let manifest = steamapps.appending(path: "appmanifest_\(id).acf")
+            let common = steamapps.appending(path: "common", directoryHint: .isDirectory)
+            let manifestName = "appmanifest_\(id).acf"
+            let manifest = steamapps.appending(path: manifestName)
+
+            var otherOwners: [String: Int] = [:]   // folded installdir -> number of other manifests
+            var othersVerified = false
+            if let names = listing(steamapps) {
+                othersVerified = true
+                for name in names where name != manifestName && name.hasPrefix("appmanifest_") && name.hasSuffix(".acf") {
+                    let other = steamapps.appending(path: name)
+                    guard let text = try? String(contentsOf: other, encoding: .utf8) else {
+                        issues.append(.unreadable(other))
+                        othersVerified = false
+                        continue
+                    }
+                    if let dir = Self.installDir(in: text) { otherOwners[Self.fold(dir), default: 0] += 1 }
+                }
+            }
+
             if exists(manifest) {
                 if let text = try? String(contentsOf: manifest, encoding: .utf8) {
                     if let installDir = Self.installDir(in: text), Self.isSafeComponent(installDir) {
-                        add(steamapps.appending(path: "common", directoryHint: .isDirectory).appending(path: installDir),
-                            .steamGameData, .exact, userData: true)
+                        let sharers = otherOwners[Self.fold(installDir)] ?? 0
+                        add(common.appending(path: installDir), .steamGameData, sharers > 0 ? .nameBased : .exact,
+                            userData: true, note: sharers > 0 ? Self.sharedNote(sharers) : nil)
                         add(manifest, .steamGameData, .exact, userData: true)
                     }
                 } else {
                     issues.append(.unreadable(manifest))
                 }
+            } else if othersVerified, !nameIsShared, Self.isSafeComponent(app.displayName),
+                      otherOwners[Self.fold(app.displayName)] == nil {
+                // No manifest (R27): offer steamapps/common/<name>, unchecked, only when no other game owns it.
+                add(common.appending(path: app.displayName), .steamGameData, .nameBased, userData: true,
+                    note: "matched by folder name, no Steam manifest found")
             }
         }
 
@@ -188,6 +217,16 @@ public struct LeftoverFinder: Sendable {
     static func isSafeComponent(_ value: String) -> Bool {
         if value.isEmpty || value == "." || value == ".." { return false }
         return !value.unicodeScalars.contains { $0.value == 0x2F || $0.value == 0x3A || $0.value == 0 }
+    }
+
+    /// Case-insensitive key: APFS volumes are usually case-insensitive, so "Portal" and "portal" are
+    /// the same folder. Over-matching here only ever withholds a leftover, never offers a wrong one.
+    static func fold(_ name: String) -> String {
+        name.folding(options: [.caseInsensitive], locale: nil)
+    }
+
+    static func sharedNote(_ others: Int) -> String {
+        "shared with \(others) other Steam game" + (others == 1 ? "" : "s")
     }
 
     /// Prefix (dot-boundary) matching is only trusted for bundle IDs with at least 3 non-empty components.
