@@ -25,8 +25,10 @@ final class AppModels {
     let trash: TrashModel
     /// Home's Uninstaller card (and the Uninstaller screen, Task 13).
     let uninstaller: UninstallerModel
-    /// Home's Startup items card (and the Startup items screen, Task 14).
+    /// Home's Startup items card and the Startup items screen.
     let startup: StartupModel
+    /// The History screen: every run, its log, and Restore.
+    let history: HistoryModel
     /// "Check update size" next to the goal (Ruling R32).
     let updateCheck: UpdateSizeCheck
     /// The startup volume's name for the sidebar footer, e.g. "Macintosh HD".
@@ -116,12 +118,28 @@ final class AppModels {
                 Task { await trash.refresh() }
                 Task { await storage.refresh() }
             })
-        // The owner app names come with the Startup items screen (Task 14); Home only counts items.
+        // Owner names come from the installed apps, listed without measuring them.
         let startupScanner = StartupItemScanner(environment: environment, commands: commands, apps: [])
         startup = StartupModel(
             scanner: startupScanner,
             recorder: StartupChangeRecorder(scanner: startupScanner, journal: journal, logger: logger),
-            onRunCompleted: { health.refreshLastRun() })
+            apps: { AppScout(environment: environment, measuresSizes: false).discover() },
+            remover: StartupRemover(runner: runner, commands: commands, environment: environment),
+            onRunCompleted: {
+                // After every switch and every remove.
+                health.refreshLastRun()
+                Task { await trash.refresh() }
+            })
+        history = HistoryModel(
+            journal: journal, logger: logger, home: environment.home,
+            onRunCompleted: {
+                // After every Restore.
+                health.refreshLastRun()
+                Task { await trash.refresh() }
+                Task { await storage.refresh() }
+            })
+        // Unknown until the first probe: assume Restore can't work.
+        history.canTakeOutOfTrash = false
         updateCheck = UpdateSizeCheck(commands: commands)
         updateCheck.onMeasured = { [weak self] bytes in
             self?.goal = UpdateGoal(neededBytes: bytes, source: .measured(.now))
@@ -133,6 +151,7 @@ final class AppModels {
             goal = UpdateGoal(neededBytes: forced)
         }
         applyUninstallerFixtureFromLaunchArguments()
+        applyStartupHistoryFixtureFromLaunchArguments()
         #endif
     }
 
@@ -156,6 +175,37 @@ final class AppModels {
         }
         Task { await storage.refresh() }
         loadUninstallerIfAllowed(force: true)
+    }
+
+    /// Reads the startup items again: the Startup items screen, and when Full Disk Access changes
+    /// which program folders may be looked at.
+    func reloadStartup() {
+        Task {
+            await startup.load(unjudged: unjudgedProgramFolders)
+            startupLoaded = true
+        }
+    }
+
+    /// Shows a run's log file selected in Finder, or the logs folder when the file isn't there.
+    func showLogInFinder(_ file: URL?) {
+        if let file, FileManager.default.fileExists(atPath: file.path(percentEncoded: false)) {
+            NSWorkspace.shared.activateFileViewerSelecting([file])
+        } else {
+            openLogFolder()
+        }
+    }
+
+    /// "Open log folder". Says so if it can't.
+    func openLogFolder() {
+        let folder = logger.directory
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        if !NSWorkspace.shared.open(folder) {
+            NSLog("Dustling: couldn't open the logs folder")
+            let alert = NSAlert()
+            alert.messageText = "The logs folder didn't open"
+            alert.informativeText = "Dustling writes its logs to \(folder.path(percentEncoded: false))."
+            alert.runModal()
+        }
     }
 
     /// Starts a junk scan of the places that read as open right now.
@@ -298,6 +348,8 @@ final class AppModels {
     var fixtureTrashAccess: Bool?
     /// The fixture opens the confirm sheet.
     var uninstallerFixtureConfirm = false
+    /// The fixture opens Review all files.
+    var uninstallerFixtureReview = false
     #endif
 
     /// Loads the apps once Full Disk Access is on; never without it (see `uninstallerLoaded`).
@@ -357,6 +409,8 @@ final class AppModels {
         // Without Full Disk Access macOS won't let Dustling take anything out of the Trash.
         junk.canTakeOutOfTrash = health.fullDiskAccess == .granted
         uninstaller.canTakeOutOfTrash = health.fullDiskAccess == .granted
+        startup.canTakeOutOfTrash = health.fullDiskAccess == .granted
+        history.canTakeOutOfTrash = health.fullDiskAccess == .granted
         // Without access, other apps' data and the consent folders are never touched by an uninstall.
         uninstaller.canReadAppData = health.fullDiskAccess == .granted
         uninstaller.lockedFolders = health.fullDiskAccess == .granted ? [] : unjudgedProgramFolders

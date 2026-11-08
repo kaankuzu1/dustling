@@ -190,7 +190,8 @@ public struct ConfirmText: Equatable, Sendable {
 
     public static func make(_ confirm: ConfirmModel) -> ConfirmText {
         let count = confirm.perApp.count
-        let title = "Move \(count) \(count == 1 ? "app" : "apps") to the Trash?"
+        let title = count == 1
+            ? "Move \(confirm.perApp[0].name) to the Trash?" : "Move \(count) apps to the Trash?"
         let message = confirm.limitedNote == nil
             ? "Everything below goes to the Trash. You can put it back until you empty the Trash."
             : "Everything below goes to the Trash."

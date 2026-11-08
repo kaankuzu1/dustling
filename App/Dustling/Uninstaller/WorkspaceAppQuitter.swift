@@ -5,7 +5,7 @@ import Foundation
 
 /// Quits a running app before it is uninstalled: asks it with `NSRunningApplication.terminate()`, then
 /// returns only once every instance has really terminated, or false after `timeout` (the model then
-/// records the app as skipped, "still running", and moves on to the next one).
+/// records the app as skipped, "still running after Dustling asked it to quit", and moves on to the next one).
 struct WorkspaceAppQuitter: AppQuitter {
     var timeout: Duration = .seconds(10)
 

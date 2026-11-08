@@ -165,7 +165,7 @@ struct UninstallerScreenTests {
     @Test func confirmTextNamesTheRunningAppOnTheButton() {
         let one = ConfirmText.make(confirm(perApp: [per("Docker Desktop", items: 9, data: 1, bytes: 13 * gb)],
                                            data: [dataWarning("Docker Desktop")], running: ["Docker Desktop"], agents: 1))
-        #expect(one.title == "Move 1 app to the Trash?")
+        #expect(one.title == "Move Docker Desktop to the Trash?")
         #expect(one.message == "Everything below goes to the Trash. You can put it back until you empty the Trash.")
         #expect(one.apps.map(\.items) == ["10 items"])
         #expect(one.dataHeading == "1 item may contain your data:")
@@ -262,7 +262,7 @@ struct UninstallerScreenTests {
         let docker = progress.apps[0].id
         progress.quitting(docker)
         let record = RunRecord(startedAt: Date(), kind: .uninstall(appName: "Docker"), entries: [
-            JournalEntry(originalPath: "/Applications/Docker.app", bytes: 1, outcome: .skipped(reason: "still running")),
+            JournalEntry(originalPath: "/Applications/Docker.app", bytes: 1, outcome: .skipped(reason: "still running after Dustling asked it to quit")),
         ], restorable: false)
         progress.finish(docker, record: record)
         #expect(progress.apps[0].state == .finished(removed: false))
@@ -280,13 +280,13 @@ struct UninstallerScreenTests {
             JournalEntry(originalPath: "/Library/LaunchDaemons/com.docker.plist", bytes: 5, outcome: .needsAdmin),
         ], restorable: true)
         let zoom = RunRecord(startedAt: Date(), kind: .uninstall(appName: "Zoom"), entries: [
-            JournalEntry(originalPath: "/Applications/Zoom.app", bytes: gb, outcome: .skipped(reason: "still running")),
+            JournalEntry(originalPath: "/Applications/Zoom.app", bytes: gb, outcome: .skipped(reason: "still running after Dustling asked it to quit")),
             JournalEntry(originalPath: "/Users/k/Library/Caches/zoom", bytes: 1,
                          outcome: .skipped(reason: "kept because the app itself was not removed")),
         ], restorable: false)
         let summary = UninstallSummary.make(records: [docker, zoom], stopped: ["Teams"], home: home)
         #expect(summary.movedBytes == 3 * gb)
-        #expect(summary.sentence == "1 app moved to the Trash. Zoom was left alone: still running. "
+        #expect(summary.sentence == "1 app moved to the Trash. Zoom was left alone: still running after Dustling asked it to quit. "
             + "Stopped before Teams, so it was left alone.")
         #expect(summary.apps.map(\.name) == ["Docker", "Zoom"])
         #expect(summary.apps[0].status == "2 items moved, 1 failed, 1 needs the cleanup helper")
@@ -295,7 +295,7 @@ struct UninstallerScreenTests {
             .init(path: "/Library/LaunchDaemons/com.docker.plist", reason: "needs the cleanup helper"),
         ])
         #expect(summary.apps[0].canPutBack)
-        #expect(summary.apps[1].status == "Left alone: still running")
+        #expect(summary.apps[1].status == "Left alone: still running after Dustling asked it to quit")
         #expect(summary.apps[1].problems.isEmpty)
         #expect(!summary.apps[1].canPutBack)
     }

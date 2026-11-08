@@ -15,6 +15,7 @@ struct UninstallerView: View {
     /// The confirmation the sheet shows. Dropped as soon as it is used or cancelled.
     @State private var confirming: ConfirmModel?
     @State private var confirmingEmptyTrash = false
+    @State private var reviewing = false
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -66,10 +67,12 @@ struct UninstallerView: View {
             UninstallConfirmSheet(confirm: confirm) { start(confirm) }
         }
         .sheet(isPresented: $confirmingEmptyTrash) { EmptyTrashSheet() }
+        .sheet(isPresented: $reviewing) { UninstallReviewSheet() }
         #if DEBUG
         .task(id: models.uninstallerFixtureConfirm) {
             confirming = models.uninstallerFixtureConfirm ? models.uninstaller.confirmation : nil
         }
+        .task(id: models.uninstallerFixtureReview) { reviewing = models.uninstallerFixtureReview }
         #endif
     }
 
@@ -228,6 +231,9 @@ struct UninstallerView: View {
             let confirm = model.confirmation
             let line = UninstallerScreen.selectionLine(confirm)
             ActionBar(title: line.title, caption: line.caption) {
+                Button("Review all files") { reviewing = true }
+                    .disabled(!confirm.ready || model.isRestoring)
+                    .help("Every file of the selected apps, to leave any of them where they are")
                 Button(action: {
                     model.clearRefusal()
                     confirming = model.confirmation

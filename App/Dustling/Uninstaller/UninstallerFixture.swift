@@ -3,7 +3,7 @@ import DustlingAppModel
 import DustlingCore
 import Foundation
 
-/// DEBUG only. `-DustlingUninstallerFixture list|detail|confirm|confirm-limited|removing|done` shows the
+/// DEBUG only. `-DustlingUninstallerFixture list|detail|review|confirm|confirm-limited|removing|done` shows the
 /// Uninstaller with the approved mockup's sample apps for screenshots. Nothing here reads or touches
 /// the disk: the apps live under a folder that doesn't exist, and the model refuses to load,
 /// uninstall or put back anything while the fixture is on.
@@ -22,11 +22,14 @@ extension AppModels {
         fixtureTrashAccess = state != "confirm-limited"
         uninstaller.canTakeOutOfTrash = fixtureTrashAccess ?? false
         let checked = state == "list" ? [] : [fixture.dockerData]
+        // "confirm" shows the sheet for one app; the others select the mockup's three.
+        let selected = state == "confirm" ? [fixture.docker.url] : fixture.apps.prefix(3).map(\.url)
         uninstaller.showFixture(
             apps: fixture.apps, leftovers: fixture.leftovers, running: [fixture.docker.url],
-            selection: Set(fixture.apps.prefix(3).map(\.url)), checked: checked, excluded: fixture.excluded)
+            selection: Set(selected), checked: checked, excluded: fixture.excluded)
         AppVersion.fixture = fixture.versions
         uninstallerFixtureConfirm = state.hasPrefix("confirm")
+        uninstallerFixtureReview = state == "review"
         let plan = uninstaller.confirmation.plan
         switch state {
         case "removing":
@@ -40,7 +43,7 @@ extension AppModels {
                 fixture.record(plan[1], failing: 1),
                 RunRecord(startedAt: .now, kind: .uninstall(appName: plan[2].app.displayName), entries: [
                     JournalEntry(originalPath: plan[2].app.url.path(percentEncoded: false), bytes: plan[2].app.bytes,
-                                 outcome: .skipped(reason: "still running")),
+                                 outcome: .skipped(reason: UninstallerModel.stillRunningReason)),
                 ], restorable: false),
             ]
             var progress = UninstallProgress(plan: plan)

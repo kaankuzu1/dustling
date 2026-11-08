@@ -358,11 +358,11 @@ public final class UninstallerModel {
         var accessSkipped = 0
         let planned = plan()
         for (app, checked) in planned {
-            let admin = checked.filter(\.requiresAdmin)
+            // One rule (`block(for:)`) for what moves, here, in Review all files and in the uninstall.
+            let admin = checked.filter { block(for: $0) == .needsHelper }
             // Left where they are without Full Disk Access: not counted as moving.
-            let skipped = checked.filter { !$0.requiresAdmin && mustSkip($0) }
-            accessSkipped += skipped.count
-            let movable = checked.filter { !$0.requiresAdmin && !mustSkip($0) }
+            accessSkipped += checked.filter { block(for: $0) == .needsFullDiskAccess }.count
+            let movable = checked.filter { block(for: $0) == nil }
             let data = movable.filter(\.mayContainUserData)
             let bytes = (app.linkTarget == nil ? app.bytes : 0) + movable.reduce(0) { $0 + $1.bytes }
             perApp.append(.init(
@@ -418,7 +418,7 @@ public final class UninstallerModel {
 
     /// Uninstalls exactly the apps and leftovers in `confirmed` (the plan the user was shown), one at
     /// a time, and returns one record per app. A running app is asked to quit; if it is not gone
-    /// within the timeout it is recorded as skipped ("still running") and the others carry on.
+    /// within the timeout it is recorded as skipped (`stillRunningReason`) and the others carry on.
     ///
     /// Refused when the confirmation was already used, or when Dustling can't take things back out of
     /// the Trash and the confirmation didn't say so (access was lost after the sheet opened).
@@ -483,10 +483,69 @@ public final class UninstallerModel {
     public static let accessRefusal = "Full Disk Access was turned off. Check the list again before moving anything."
     public static let usedRefusal = "That confirmation was already used. Check the list again before moving anything."
     public static let openedAfterConfirmReason = "opened after you confirmed"
+    public static let stillRunningReason = "still running after Dustling asked it to quit"
     public static let needsAccessReason = "needs Full Disk Access"
 
     /// Clears the refusal banner (the user looked at the list again).
     public func clearRefusal() { refusal = nil }
+
+    /// Why a checked leftover won't move now, or nil when it will. The confirmation, Review all files
+    /// and the uninstall all ask this.
+    public func block(for row: LeftoverRow) -> LeftoverBlock? {
+        if let reason = row.disabledReason { return .excluded(reason) }
+        return block(for: row.leftover)
+    }
+
+    func block(for leftover: Leftover) -> LeftoverBlock? {
+        if leftover.requiresAdmin { return .needsHelper }
+        if mustSkip(leftover) { return .needsFullDiskAccess }
+        return nil
+    }
+
+    // MARK: review all files
+
+    /// Every file of the selected apps: the app first, then its leftovers, each with whether it moves
+    /// and, when it can't, why.
+    public func review() -> UninstallReview {
+        UninstallReview(sections: selectedApps.map { row in
+            let isLink = row.app.linkTarget != nil
+            var rows = [UninstallReview.Row(
+                url: row.app.url, title: isLink ? "Shortcut" : "Application", isApp: true,
+                bytes: isLink ? 0 : row.app.bytes, badges: [], disabledReason: nil, isIncluded: true)]
+            for leftover in leftovers(for: row.app) {
+                let block = block(for: leftover)
+                rows.append(.init(
+                    url: leftover.id, title: UninstallerScreen.kindName(leftover.leftover.kind), isApp: false,
+                    bytes: leftover.leftover.bytes, badges: leftover.badges, disabledReason: block?.text,
+                    isIncluded: block == nil && leftover.checked))
+            }
+            return UninstallReview.Section(app: row.app, rows: rows)
+        })
+    }
+
+    /// The draft Review all files opens with: the leftovers of the selected apps that won't move
+    /// because they are unticked.
+    public var reviewExclusions: Set<URL> {
+        Set(selectedApps.flatMap { app in
+            leftovers(for: app.app).filter { !$0.checked && !$0.isDisabled }.map(\.id)
+        })
+    }
+
+    /// Done in Review all files: an unticked app is deselected; every other row that can be ticked
+    /// takes the draft's state. Rows that can't move stay as they are.
+    public func applyReview(excluding: Set<URL>) {
+        guard !isUninstalling, !isRestoring else { return }
+        for row in selectedApps {
+            if excluding.contains(row.app.url) {
+                selection.remove(row.app.url)
+                continue
+            }
+            for leftover in leftovers(for: row.app) where !leftover.isDisabled && block(for: leftover.leftover) == nil {
+                let on = !excluding.contains(leftover.id)
+                if on != leftover.checked { setChecked(on, leftover: leftover.leftover, in: row.app) }
+            }
+        }
+    }
 
     /// Leftovers that must not be touched now: other apps' data without Full Disk Access, and anything
     /// in a folder that can't be read.
@@ -596,7 +655,7 @@ public final class UninstallerModel {
     }
 
     private func recordStillRunning(
-        _ app: InstalledApp, leftovers: [Leftover], error: Error? = nil, reason skipReason: String = "still running"
+        _ app: InstalledApp, leftovers: [Leftover], error: Error? = nil, reason skipReason: String = UninstallerModel.stillRunningReason
     ) -> RunRecord {
         let outcome: DeletionOutcome
         if let error, !(error is UninstallError) {

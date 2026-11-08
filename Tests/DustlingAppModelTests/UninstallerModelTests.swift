@@ -87,7 +87,7 @@ struct UninstallerModelTests {
 
         #expect(records.count == 2)
         let alphaRecord = try #require(records.first { $0.kind == .uninstall(appName: "Alpha") })
-        #expect(alphaRecord.entries.first?.outcome == .skipped(reason: "still running"))
+        #expect(alphaRecord.entries.first?.outcome == .skipped(reason: "still running after Dustling asked it to quit"))
         #expect(FileManager.default.fileExists(atPath: alpha.path))
         let betaRecord = try #require(records.first { $0.kind == .uninstall(appName: "Beta") })
         if case .movedToTrash = betaRecord.entries.first?.outcome {} else { Issue.record("Beta should be in the Trash") }
@@ -131,7 +131,7 @@ struct UninstallerModelTests {
 
         let records = await model.uninstallSelected(confirmed: model.confirmation, quit: quitter)
 
-        #expect(records.first?.entries.first?.outcome == .skipped(reason: "still running"))
+        #expect(records.first?.entries.first?.outcome == .skipped(reason: "still running after Dustling asked it to quit"))
         #expect(FileManager.default.fileExists(atPath: alpha.path))
     }
 
@@ -442,7 +442,7 @@ struct UninstallerModelTests {
         #expect(result.records == records)
         #expect(result.stopped.isEmpty)
         let summary = UninstallSummary.make(records: result.records, stopped: result.stopped, home: rig.environment.home)
-        #expect(summary.sentence == "1 app moved to the Trash. Beta was left alone: still running.")
+        #expect(summary.sentence == "1 app moved to the Trash. Beta was left alone: still running after Dustling asked it to quit.")
         #expect(summary.movedBytes == records[0].bytesMovedToTrash)
         model.dismissResult()
         #expect(model.result == nil && model.progress == nil)
