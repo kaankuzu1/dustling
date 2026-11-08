@@ -9,6 +9,8 @@ public final class StorageModel {
     public private(set) var info: StorageInfo?
     public private(set) var problems: [String] = []
 
+    /// Bumped per refresh; only the newest refresh publishes.
+    @ObservationIgnored private var generation = 0
     @ObservationIgnored private let read: @Sendable () throws -> (info: StorageInfo, problems: [String])
 
     public init(read: @escaping @Sendable () throws -> (info: StorageInfo, problems: [String])) {
@@ -28,9 +30,12 @@ public final class StorageModel {
 
     public func refresh() async {
         let read = self.read
+        generation += 1
+        let mine = generation
         let result = await Task.detached(priority: .userInitiated) {
             Result { try read() }
         }.value
+        guard mine == generation else { return }
         switch result {
         case .success(let value):
             info = value.info

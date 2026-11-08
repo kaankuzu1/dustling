@@ -136,6 +136,37 @@ struct HealthModelTests {
         #expect(lost?.fix == .openFullDiskAccessSettings)
     }
 
+    @Test func newestProbeResultWinsOverSlowOlderOne() async {
+        let gate = DispatchSemaphore(value: 0)
+        let script = ProbeScript { n in
+            if n == 1 { gate.wait(); return .denied }
+            return .granted
+        }
+        let model = HealthModel(probe: { script.probe() }, clock: ManualClock())
+        let slow = Task { await model.refresh() }
+        #expect(await eventually { script.callCount == 1 })
+        await model.refresh()
+        #expect(model.fullDiskAccess == .granted)
+        gate.signal()
+        await slow.value
+        #expect(model.fullDiskAccess == .granted)
+    }
+
+    @Test func refreshLastRunUpdatesWithoutProbing() async {
+        let script = ProbeScript { _ in .granted }
+        nonisolated(unsafe) var run: RunRecord?
+        let model = HealthModel(probe: { script.probe() }, clock: ManualClock(), lastRunSummary: { run })
+        await model.refresh()
+        #expect(model.lastRunProblem == nil)
+        run = RunRecord(
+            startedAt: Date(), kind: .junkClean,
+            entries: [JournalEntry(originalPath: "/x", bytes: 1, outcome: .failed(reason: "no"))], restorable: false)
+        model.refreshLastRun()
+        #expect(model.lastRunProblem != nil)
+        #expect(model.lights.first { $0.kind == .lastRun }?.state == .warning)
+        #expect(script.callCount == 1)
+    }
+
     @Test func helperLightIsNeutralInfo() async {
         let model = HealthModel(probe: { .granted }, clock: ManualClock())
         let helper = model.lights.first { $0.kind == .helper }
@@ -183,6 +214,23 @@ struct StorageModelTests {
         await model.refresh()
         #expect(model.purgeableBytes == 200)
         #expect(model.problems.count == 1)
+    }
+
+    @Test func newestStorageReadWins() async {
+        let gate = DispatchSemaphore(value: 0)
+        let calls = ProbeScript { _ in .granted }
+        let old = StorageInfo(totalBytes: 1, availableForImportantUsage: 1, availableBytes: 1, localSnapshotCount: 0)
+        let new = StorageInfo(totalBytes: 2, availableForImportantUsage: 2, availableBytes: 2, localSnapshotCount: 0)
+        let model = StorageModel(read: {
+            if calls.probe() == .granted, calls.callCount == 1 { gate.wait(); return (old, []) }
+            return (new, [])
+        })
+        let slow = Task { await model.refresh() }
+        #expect(await eventually { calls.callCount == 1 })
+        await model.refresh()
+        gate.signal()
+        await slow.value
+        #expect(model.info == new)
     }
 
     @Test func failedReadReportsProblemNotZeros() async {

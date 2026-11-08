@@ -51,6 +51,10 @@ public final class HealthModel {
     @ObservationIgnored private let clock: any Clock<Duration>
     @ObservationIgnored private let lastRunSummary: @MainActor () -> RunRecord?
     @ObservationIgnored private var pollingTask: Task<Void, Never>?
+    @ObservationIgnored private var activeTask: Task<Void, Never>?
+    /// Bumped before every probe. A probe's result is published only if no newer probe started
+    /// meanwhile, so a slow older answer can never overwrite a newer one.
+    @ObservationIgnored private var generation = 0
 
     public init(
         probe: @escaping @Sendable () -> FullDiskAccessStatus,
@@ -108,8 +112,17 @@ public final class HealthModel {
     /// Re-probes Full Disk Access (off the main actor) and re-reads the last run.
     public func refresh() async {
         let probe = self.probe
+        generation += 1
+        let mine = generation
         let status = await Task.detached(priority: .userInitiated) { probe() }.value
+        guard mine == generation else { return }
         fullDiskAccess = status
+        refreshLastRun()
+    }
+
+    /// Re-reads the last run without probing. Call this when a cleanup, restore or uninstall
+    /// completes so the last-run light does not wait for the next probe.
+    public func refreshLastRun() {
         lastRunProblem = Self.problem(in: lastRunSummary())
     }
 
@@ -134,7 +147,8 @@ public final class HealthModel {
 
     /// The user may have changed the setting in System Settings and come back.
     public func appBecameActive() {
-        Task { await refresh() }
+        activeTask?.cancel()
+        activeTask = Task { [weak self] in await self?.refresh() }
     }
 
     private static func problem(in run: RunRecord?) -> String? {
