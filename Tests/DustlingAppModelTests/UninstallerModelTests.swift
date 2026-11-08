@@ -3,8 +3,7 @@ import Testing
 import DustlingCore
 @testable import DustlingAppModel
 
-/// Serialized: uninstalling runs the cleanup runner's blocking file work on the cooperative pool.
-@MainActor @Suite(.serialized)
+@MainActor @Suite
 struct UninstallerModelTests {
     private let dataText = "This is your data. It can hold the app's documents, saves and settings. "
         + "You can put it back from the Trash, but not after you empty it."

@@ -40,7 +40,7 @@ private func app(_ id: String, _ name: String) -> RunningApp {
     RunningApp(bundleID: id, name: name, bundleURL: URL(filePath: "/Applications/\(name).app"))
 }
 
-@MainActor @Suite(.serialized)
+@MainActor @Suite
 struct CloseAppsTests {
     private func model(_ rig: ModelRig, running: Set<String>) -> JunkScanModel {
         let categories = rig.categories()

@@ -59,8 +59,22 @@ public struct Uninstaller: Sendable {
         leftovers: [Leftover],
         skipped: [Leftover] = [],
         skipReason: String = "skipped by request",
-        onItem: @Sendable (URL, DeletionOutcome) -> Void
+        onItem: @escaping @Sendable (URL, DeletionOutcome) -> Void
     ) async throws -> RunRecord {
+        // Moving, measuring and unloading block, so they run on the file-work queue, never on the
+        // cooperative pool. An uninstall isn't cancellable: once the app has moved, its leftovers follow.
+        try await FileWork.run {
+            try uninstallBlocking(app, leftovers: leftovers, skipped: skipped, skipReason: skipReason, onItem: onItem)
+        }
+    }
+
+    private func uninstallBlocking(
+        _ app: InstalledApp,
+        leftovers: [Leftover],
+        skipped: [Leftover],
+        skipReason: String,
+        onItem: (URL, DeletionOutcome) -> Void
+    ) throws -> RunRecord {
         if running.isRunning(app) { throw UninstallError.appIsRunning(app.displayName) }
 
         let startedAt = Date()

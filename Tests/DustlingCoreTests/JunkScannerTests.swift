@@ -224,11 +224,13 @@ import Testing
         }
         let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
         let seen = Box<[CategoryScan]>([])
+        let canceller = LateCanceller()
         let task = Task {
             await scanner.scan(cats, onCategory: { s in seen.with { $0.append(s) } }, onProgress: { p in
-                if p.categoriesDone == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+                if p.categoriesDone == 1 { canceller.cancelTask() }
             })
         }
+        canceller.attach(task)
         let result = await task.value
         #expect(result.count == 2)
         #expect(result[0].stopped == false)
@@ -249,10 +251,11 @@ import Testing
         let third = sb.root.appending(path: "third", directoryHint: .isDirectory)
         try sb.file("third/c", bytes: 10)
         // Deterministic stop: cancel right after the small item is accepted, before the big one is measured.
+        let canceller = LateCanceller()
         let secondCat = JunkCategory(
             id: .userLogs, title: "t", selection: .preselected, requiresAdmin: false, roots: [second],
             measuredFilter: { url, _ in
-                if url.lastPathComponent == "aaa-small" { withUnsafeCurrentTask { $0?.cancel() } }
+                if url.lastPathComponent == "aaa-small" { canceller.cancelTask() }
                 return true
             })
         let cats = [category(.userCaches, root: first), secondCat, category(.browserCaches, root: third)]
@@ -261,6 +264,7 @@ import Testing
         let task = Task {
             await scanner.scan(cats, onCategory: { s in seen.with { $0.append(s) } }, onProgress: { _ in })
         }
+        canceller.attach(task)
         let result = await task.value
         #expect(result.count == 2)                       // third never started
         #expect(result[0].stopped == false)
@@ -283,6 +287,7 @@ import Testing
         scanner.progressInterval = .zero   // every enumeration tick reaches the callback
         let cancelledAt = Box<ContinuousClock.Instant?>(nil)
         let insideBig = Box<Int>(0)
+        let canceller = LateCanceller()
         let task = Task {
             await scanner.scan([category(.userCaches, root: root)], onCategory: { _ in }, onProgress: { p in
                 // Events with a path inside big/ come from the enumeration itself; stop at the third
@@ -290,10 +295,11 @@ import Testing
                 guard p.currentPath.path.contains("/big/") else { return }
                 if insideBig.with({ $0 += 1; return $0 }) == 3 {
                     cancelledAt.with { $0 = .now }
-                    withUnsafeCurrentTask { $0?.cancel() }
+                    canceller.cancelTask()
                 }
             })
         }
+        canceller.attach(task)
         let result = await task.value
         let returned = ContinuousClock.now
         let start = try #require(cancelledAt.with { $0 })

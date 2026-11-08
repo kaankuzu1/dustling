@@ -3,9 +3,7 @@ import Testing
 import DustlingCore
 @testable import DustlingAppModel
 
-/// Serialized: the scanner and the cleanup runner do blocking file work inside async calls that run
-/// on the cooperative pool, and their cancellation needs the task, so they can't move to `Blocking`.
-@MainActor @Suite(.serialized)
+@MainActor @Suite
 struct JunkScanModelTests {
     private func makeModel(
         _ rig: ModelRig, running: Set<String> = [], failing: Set<String> = [], preselectSafe: Bool = true,

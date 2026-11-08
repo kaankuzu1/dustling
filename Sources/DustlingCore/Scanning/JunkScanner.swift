@@ -115,11 +115,25 @@ public struct JunkScanner: Sendable {
     /// holds the finished categories plus, if one was in progress, that category with `stopped = true`
     /// and only the items fully measured (an item cut off mid-measurement is dropped, not shown with a
     /// partial size). If the cancel lands between categories, the next category is returned as stopped with no items.
+    ///
+    /// The file work runs on a GCD queue (`FileWork`), so the callbacks arrive on that queue.
     public func scan(
         _ categories: [JunkCategory],
-        onCategory: @Sendable (CategoryScan) -> Void,
+        onCategory: @escaping @Sendable (CategoryScan) -> Void,
         onProgress: @escaping @Sendable (ScanProgress) -> Void = { _ in }
     ) async -> [CategoryScan] {
+        await FileWork.run { isCancelled in
+            scanBlocking(categories, isCancelled: isCancelled, onCategory: onCategory, onProgress: onProgress)
+        }
+    }
+
+    /// The scan itself, synchronous. `isCancelled` replaces `Task.isCancelled`, which GCD work can't see.
+    func scanBlocking(
+        _ categories: [JunkCategory],
+        isCancelled: @escaping @Sendable () -> Bool,
+        onCategory: @Sendable (CategoryScan) -> Void,
+        onProgress: @escaping @Sendable (ScanProgress) -> Void
+    ) -> [CategoryScan] {
         let running = runningBundleIDs()
         let sizer = DirectorySizer()
         var claimed = Set<String>()
@@ -128,7 +142,7 @@ public struct JunkScanner: Sendable {
         var committed: UInt64 = 0   // bytes of items accepted so far, across categories
 
         for category in categories {
-            if Task.isCancelled {
+            if isCancelled() {
                 // Cancelled between categories: say so, never let a truncated scan look complete.
                 let notStarted = CategoryScan(category: category, items: [], bytes: 0, issues: [], stopped: true)
                 results.append(notStarted)
@@ -142,7 +156,7 @@ public struct JunkScanner: Sendable {
             var lastPath = category.roots.first ?? URL(filePath: "/")
 
             rootLoop: for root in resolved.roots {
-                if Task.isCancelled { stopped = true; break }
+                if isCancelled() { stopped = true; break }
                 let children: [URL]
                 switch Self.list(root) {
                 case .success(let c): children = c
@@ -151,7 +165,7 @@ public struct JunkScanner: Sendable {
                 case .failure: issues.append(.unreadable(root)); continue
                 }
                 for child in children.sorted(by: { $0.path < $1.path }) {
-                    if Task.isCancelled { stopped = true; break rootLoop }
+                    if isCancelled() { stopped = true; break rootLoop }
                     guard category.itemFilter(child), !claimed.contains(child.path) else { continue }
                     lastPath = child
                     progress.tick(child, bytes: committed)
@@ -160,7 +174,7 @@ public struct JunkScanner: Sendable {
                     // counted until it is accepted; otherwise the counter would overshoot for good.
                     let countsInFlight = category.measuredFilter == nil
                     let size = sizer.measure(
-                        child, isCancelled: { Task.isCancelled },
+                        child, isCancelled: isCancelled,
                         onEntry: { path, soFar in progress.tick(path, bytes: base + (countsInFlight ? soFar : 0)) })
                     if size.cancelled { stopped = true; break rootLoop }
                     if let measured = category.measuredFilter {

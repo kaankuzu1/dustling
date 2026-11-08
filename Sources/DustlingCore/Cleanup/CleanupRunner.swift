@@ -25,17 +25,35 @@ public struct CleanupRunner: Sendable {
     /// The journal is saved (atomically) and the log appended after EVERY item, with the record marked
     /// `inProgress` until the end, so a crash is recorded up to the last finished item
     /// (`recoverInterrupted` clears the flag on the next launch). On cooperative cancellation
-    /// (`Task.isCancelled` is checked before each item) the items not attempted are recorded as
+    /// (cancelling the task is checked before each item) the items not attempted are recorded as
     /// `.skipped(reason: "cleanup stopped")` and the run ends normally with `inProgress == false`.
-    /// `onItemStart` fires before each move, `onItem` after it.
+    /// `onItemStart` fires before each move, `onItem` after it. The work runs on a GCD queue
+    /// (`FileWork`), so the callbacks arrive on that queue.
     public func run(
         _ urls: [URL],
         kind: RunKind,
         allowedRoots: [URL],
         extraEntries: [JournalEntry] = [],
-        onItemStart: @Sendable (URL) -> Void = { _ in },
-        onItem: @Sendable (URL, DeletionOutcome) -> Void
+        onItemStart: @escaping @Sendable (URL) -> Void = { _ in },
+        onItem: @escaping @Sendable (URL, DeletionOutcome) -> Void
     ) async -> RunRecord {
+        await FileWork.run { isCancelled in
+            runBlocking(
+                urls, kind: kind, allowedRoots: allowedRoots, extraEntries: extraEntries,
+                isCancelled: isCancelled, onItemStart: onItemStart, onItem: onItem)
+        }
+    }
+
+    /// The run itself, synchronous. `isCancelled` replaces `Task.isCancelled`, which GCD work can't see.
+    func runBlocking(
+        _ urls: [URL],
+        kind: RunKind,
+        allowedRoots: [URL],
+        extraEntries: [JournalEntry],
+        isCancelled: () -> Bool,
+        onItemStart: (URL) -> Void,
+        onItem: (URL, DeletionOutcome) -> Void
+    ) -> RunRecord {
         var record = RunRecord(startedAt: Date(), kind: kind, entries: [], restorable: false, inProgress: true)
         var historyFailed = false
         var logFailed = false
@@ -70,7 +88,7 @@ public struct CleanupRunner: Sendable {
         log(nil)
         save()
         for (index, url) in urls.enumerated() {
-            if Task.isCancelled {
+            if isCancelled() {
                 for rest in urls[index...] {
                     add(JournalEntry(
                         originalPath: rest.path(percentEncoded: false), bytes: 0,

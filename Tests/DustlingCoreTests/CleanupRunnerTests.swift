@@ -181,17 +181,18 @@ struct CleanupRunnerTests {
 
     // MARK: incremental journaling
 
-    /// Cancels the surrounding task once `cancelAfter` items have been trashed.
+    /// Cancels the run's task (as Stop does) once `cancelAfter` items have been trashed.
     final class CancellingBackend: TrashBackend, @unchecked Sendable {
         let inner: DirectoryTrashBackend
         let cancelAfter: Int
+        let canceller = LateCanceller()
         private let lock = NSLock()
         private var count = 0
         init(inner: DirectoryTrashBackend, cancelAfter: Int) { self.inner = inner; self.cancelAfter = cancelAfter }
         func trash(_ url: URL) throws -> URL {
             let moved = try inner.trash(url)
             lock.lock(); count += 1; let n = count; lock.unlock()
-            if n == cancelAfter { withUnsafeCurrentTask { $0?.cancel() } }
+            if n == cancelAfter { canceller.cancelTask() }
             return moved
         }
     }
@@ -233,9 +234,11 @@ struct CleanupRunnerTests {
         let files = try (1...4).map { try sandbox.file("home/Library/Caches/f\($0).log", bytes: 10) }
         let backend = CancellingBackend(inner: trashDir(sandbox), cancelAfter: 2)
         let r = runner(sandbox, backend: backend)
-        let record = await Task {
+        let task = Task {
             await r.run(files, kind: .junkClean, allowedRoots: [root]) { _, _ in }
-        }.value
+        }
+        backend.canceller.attach(task)
+        let record = await task.value
         // Cooperative cancellation: the two finished items stay moved, the rest are recorded as skipped.
         #expect(record.entries.count == 4)
         if case .movedToTrash = record.entries[0].outcome {} else { Issue.record("item 1 not moved") }
@@ -381,10 +384,13 @@ struct CleanupRunnerTests {
     @Test func cancelledRunLogEndsWithTotalsIncludingStoppedSkips() async throws {
         let sandbox = try TestSandbox()
         let (root, files) = try threeFiles(sandbox)
-        let r = runner(sandbox, backend: CancellingBackend(inner: trashDir(sandbox), cancelAfter: 1))
-        let record = await Task {
+        let backend = CancellingBackend(inner: trashDir(sandbox), cancelAfter: 1)
+        let r = runner(sandbox, backend: backend)
+        let task = Task {
             await r.run(files, kind: .junkClean, allowedRoots: [root]) { _, _ in }
-        }.value
+        }
+        backend.canceller.attach(task)
+        let record = await task.value
         #expect(record.skippedCount == 2)
         let lines = try logText(sandbox).split(separator: "\n")
         let last = try #require(lines.last)

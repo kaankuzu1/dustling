@@ -4,7 +4,7 @@ import DustlingCore
 @testable import DustlingAppModel
 
 /// Review files: per-file exclusions before a cleanup.
-@MainActor @Suite(.serialized)
+@MainActor @Suite
 struct FileReviewTests {
     private func makeModel(_ rig: ModelRig, running: Set<String> = []) -> JunkScanModel {
         let categories = rig.categories()

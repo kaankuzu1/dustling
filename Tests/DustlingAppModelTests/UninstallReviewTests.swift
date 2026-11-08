@@ -5,7 +5,7 @@ import DustlingCore
 
 /// Review all files: one list per selected app (the app, then its leftovers), the same movability rule
 /// as the confirmation and the uninstall.
-@MainActor @Suite(.serialized)
+@MainActor @Suite
 struct UninstallReviewTests {
     /// Alpha with a cache, a data folder (unchecked) and a container; Beta with a cache.
     private func rig() throws -> (ModelRig, UninstallerModel, URL, URL) {
