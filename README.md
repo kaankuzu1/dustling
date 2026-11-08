@@ -28,6 +28,7 @@ It started with a full disk that blocked a macOS update, and a cleaner that some
 - [What it does](#what-it-does)
 - [Safety promises](#safety-promises)
 - [Getting started](#getting-started)
+  - [Build the app](#build-the-app)
 - [Command line](#command-line)
 - [What Dustling cleans](#what-dustling-cleans)
 - [How it works](#how-it-works)
@@ -86,6 +87,19 @@ swift run dustling-cli empty-trash   # actually free the space (asks first)
 ```
 
 Something went missing? `swift run dustling-cli history` shows every run, and `restore` puts items back.
+
+### Build the app
+
+The Mac app lives in `App/`. It needs Xcode 16 or newer and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
+
+```bash
+cd App
+xcodegen generate
+xcodebuild -project Dustling.xcodeproj -scheme Dustling -configuration Debug -derivedDataPath build build
+open build/Build/Products/Debug/Dustling.app
+```
+
+The generated project and `build/` are not checked in. See [App/README.md](App/README.md) for signing and Full Disk Access.
 
 ## Command line
 
