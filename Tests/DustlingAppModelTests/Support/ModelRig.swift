@@ -133,3 +133,15 @@ func waitUntil(_ seconds: Double = 5, _ condition: () -> Bool) async -> Bool {
     }
     return true
 }
+
+/// Yields (without sleeping) until `condition` holds, up to `limit` times. Use it to catch a state
+/// that holds only while main-actor work is suspended on a GCD call: a sleep could let that work
+/// finish unseen, while a yield hands the main actor back before the GCD result can resume it.
+@MainActor
+func yieldUntil(limit: Int = 10_000, _ condition: () -> Bool) async -> Bool {
+    for _ in 0..<limit {
+        if condition() { return true }
+        await Task.yield()
+    }
+    return condition()
+}

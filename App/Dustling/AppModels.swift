@@ -348,13 +348,7 @@ final class AppModels {
     /// Places whose access isn't readable now, plus the container part of places that are only
     /// partly open.
     var cleanupSkip: CleanupSkip {
-        let places = places.places ?? []
-        let closed = Set(places.filter { $0.access != .readable }.map(\.id))
-        let partly = Set(places.filter { $0.access == .readable && $0.lockedExpansions }.map(\.id))
-        let folders = JunkCatalog.standard(environment)
-            .filter { partly.contains($0.id) }
-            .flatMap { $0.expansions.map(\.parent) }
-        return CleanupSkip(categories: closed, folders: folders)
+        CleanupSkip.from(places: places.places ?? [], catalog: JunkCatalog.standard(environment))
     }
 
     /// What "Retry N items" may retry now: the categories the places check allows (as a scan would).

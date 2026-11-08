@@ -201,13 +201,19 @@ public struct AppScout: Sendable {
     /// from, so the kernel never follows the links again.
     private func makeApp(_ url: URL, linkTarget: URL?, metadataFrom real: URL? = nil) -> InstalledApp {
         let source = real ?? url
-        let info = NSDictionary(contentsOf: source.appending(path: "Contents/Info.plist")) as? [String: Any] ?? [:]
+        var plist: URL? = source.appending(path: "Contents/Info.plist")
+        if !skipping.isEmpty, let path = plist {
+            // Contents may itself be a link; never read through one into a skipped folder.
+            plist = realPath(path).map { URL(filePath: $0) }
+        }
+        let info = plist.flatMap { NSDictionary(contentsOf: $0) as? [String: Any] } ?? [:]
         func string(_ key: String) -> String? {
             guard let value = info[key] as? String, !value.isEmpty else { return nil }
             return value
         }
         let fileName = url.deletingPathExtension().lastPathComponent
-        let executable = string("CFBundleExecutable")
+        // An executable name is a file name inside Contents/MacOS; one with a "/" could lead anywhere.
+        let executable = string("CFBundleExecutable").flatMap { $0.contains("/") || $0 == ".." ? nil : $0 }
         let lastUsed = try? source.resourceValues(forKeys: [.contentAccessDateKey]).contentAccessDate
         return InstalledApp(
             url: url,
@@ -215,11 +221,22 @@ public struct AppScout: Sendable {
             bundleID: string("CFBundleIdentifier"),
             teamID: teamIdentifier(of: source),
             executableName: executable,
-            steamAppID: executable.flatMap { steamAppID(in: source.appending(path: "Contents/MacOS/\($0)")) },
+            steamAppID: executable.flatMap { steamAppID(executable: $0, in: source) },
             bytes: measuresSizes ? sizer.measure(linkTarget ?? url).bytes : 0,
             lastUsed: lastUsed,
             linkTarget: linkTarget
         )
+    }
+
+    /// The executable inside `bundle`. With folders to skip, links inside the bundle (Contents, MacOS
+    /// or the executable itself) are resolved by hand first, so the read never lands in one.
+    private func steamAppID(executable name: String, in bundle: URL) -> String? {
+        var file = bundle.appending(path: "Contents/MacOS/\(name)")
+        if !skipping.isEmpty {
+            guard let real = realPath(file) else { return nil }
+            file = URL(filePath: real)
+        }
+        return steamAppID(in: file)
     }
 
     private func steamAppID(in executable: URL) -> String? {

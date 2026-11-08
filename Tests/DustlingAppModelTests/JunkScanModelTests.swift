@@ -372,8 +372,7 @@ extension JunkScanModelTests {
         guard case .done(let record) = model.state else { Issue.record("expected done"); return }
 
         let restoring = Task { try await model.putEverythingBack() }
-        await Task.yield()
-        #expect(model.isRestoring)
+        #expect(await yieldUntil { model.isRestoring })
         #expect(model.isBusy)
         model.scan()   // ignored while putting back
         guard case .done(let still) = model.state, still.id == record.id else { Issue.record("scan ran"); return }

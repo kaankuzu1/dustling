@@ -19,13 +19,18 @@ extension OnboardingStep {
 
 extension OnboardingState {
     /// Opens the onboarding once per launch when it was never completed. In Debug builds,
-    /// `-DustlingOnboardingStep N` (1 to 4) opens it at step N regardless, for screenshots.
+    /// `-DustlingOnboardingStep N` (1 to 4) opens it at step N regardless, for screenshots, also only
+    /// once per launch (the main window's task runs again each time the window reappears).
     func openAtLaunchIfNeeded(models: AppModels, openWindow: OpenWindowAction) {
+        #if DEBUG
+        let firstTime = !Self.debugLaunchHandled
+        Self.debugLaunchHandled = true
+        #endif
         let shouldOpen = takeLaunchRequest()
         #if DEBUG
         let forced = UserDefaults.standard.integer(forKey: "DustlingOnboardingStep")
         if let step = OnboardingStep(rawValue: forced - 1) {
-            models.openOnboarding(at: step, using: openWindow)
+            if firstTime { models.openOnboarding(at: step, using: openWindow) }
             return
         }
         #endif
@@ -34,6 +39,17 @@ extension OnboardingState {
         }
     }
 }
+
+#if DEBUG
+@MainActor private var debugOnboardingLaunchHandled = false
+
+extension OnboardingState {
+    fileprivate static var debugLaunchHandled: Bool {
+        get { debugOnboardingLaunchHandled }
+        set { debugOnboardingLaunchHandled = newValue }
+    }
+}
+#endif
 
 extension AppModels {
     /// Opens (or brings forward) the onboarding window at `step`. Used on first launch, by the

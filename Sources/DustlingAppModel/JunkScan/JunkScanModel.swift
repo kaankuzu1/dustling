@@ -165,6 +165,17 @@ public struct CleanupSkip: Equatable, Sendable {
     public static let none = CleanupSkip(categories: [], folders: [])
     public static let reason = "needs Full Disk Access"
 
+    /// From the places check now: places that don't read as open are skipped whole; for places that
+    /// are only partly open, the folders holding their expanded roots (other apps' containers).
+    public static func from(places: [Place], catalog: [JunkCategory]) -> CleanupSkip {
+        let closed = Set(places.filter { $0.access != .readable }.map(\.id))
+        let partly = Set(places.filter { $0.access == .readable && $0.lockedExpansions }.map(\.id))
+        let folders = catalog
+            .filter { partly.contains($0.id) }
+            .flatMap { $0.expansions.map(\.parent) }
+        return CleanupSkip(categories: closed, folders: folders)
+    }
+
     public init(categories: Set<JunkCategoryID>, folders: [URL]) {
         self.categories = categories
         self.folders = folders

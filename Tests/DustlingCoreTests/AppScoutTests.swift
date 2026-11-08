@@ -110,6 +110,39 @@ import Testing
         #expect(AppScout(environment: sandbox.environment, measuresSizes: false).discover().count == 4)
     }
 
+    @Test func executableLinkedIntoASkippedFolderIsNotRead() throws {
+        let sandbox = try TestSandbox()
+        let documents = sandbox.environment.home.appending(path: "Documents")
+        let script = try sandbox.file("home/Documents/run.sh")
+        try Data("open steam://run/400\n".utf8).write(to: script)
+        let app = try sandbox.app("Applications/Game.app", bundleID: nil, executable: "run.sh")
+        let exe = app.appending(path: "Contents/MacOS/run.sh")
+        try FileManager.default.removeItem(at: exe)
+        try FileManager.default.createSymbolicLink(at: exe, withDestinationURL: script)
+        let skipping = AppScout(environment: sandbox.environment, measuresSizes: false, skipping: [documents])
+        #expect(skipping.discover().map(\.displayName) == ["Game"])
+        #expect(skipping.discover().first?.steamAppID == nil)
+        // The same link to a file outside the skipped folder is resolved and read.
+        let outside = try sandbox.file("elsewhere/run.sh")
+        try Data("open steam://run/400\n".utf8).write(to: outside)
+        try FileManager.default.removeItem(at: exe)
+        try FileManager.default.createSymbolicLink(at: exe, withDestinationURL: outside)
+        #expect(skipping.discover().first?.steamAppID == "400")
+    }
+
+    @Test func executableNameWithASlashIsIgnored() throws {
+        let sandbox = try TestSandbox()
+        let script = try sandbox.file("elsewhere/run.sh")
+        try Data("open steam://run/400\n".utf8).write(to: script)
+        let app = try sandbox.app("Applications/Odd.app", bundleID: nil)
+        let plist = try PropertyListSerialization.data(
+            fromPropertyList: ["CFBundleExecutable": "../../../../elsewhere/run.sh"], format: .xml, options: 0)
+        try plist.write(to: app.appending(path: "Contents/Info.plist"))
+        let found = try #require(scout(sandbox).discover().first)
+        #expect(found.executableName == nil)
+        #expect(found.steamAppID == nil)
+    }
+
     // MARK: resolving links without opening skipped folders
 
     /// A fake file system of links that records every path looked at.
