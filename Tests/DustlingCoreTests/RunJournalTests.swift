@@ -337,5 +337,27 @@ struct RunJournalTests {
         #expect(run.entries[0].trashedIdentity == nil && !run.entries[0].gone)
         #expect(try j.restore(runID: id) == [.restored(file.path(percentEncoded: false))])
     }
+    @Test func refreshSaveFailureBeforeRestoreMovesNothing() async throws {
+        let s = try TestSandbox()
+        let root = try s.directory("home/Library/Caches")
+        let a = try s.file("home/Library/Caches/a.log")
+        let b = try s.file("home/Library/Caches/b.log")
+        let j = RunJournal(directory: s.environment.historyDirectory)
+        let run = await runner(s, trash: s.root.appending(path: "trash")).run(
+            [a, b], kind: .junkClean, allowedRoots: [root]) { _, _ in }
+        let trashedA = try #require(trashedPath(run.entries[0]))
+        try FileManager.default.removeItem(atPath: trashedA)
+        try Data("impostor".utf8).write(to: URL(filePath: trashedA))   // refresh must mark a gone and save
+        let dir = s.environment.historyDirectory
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) }
+        do {
+            _ = try j.restore(runID: run.id)
+            Issue.record("expected saveFailed")
+        } catch RunJournalError.saveFailed(let outcomes, _) {
+            #expect(outcomes.isEmpty)   // the CLI must not claim anything was restored
+            #expect(!FileManager.default.fileExists(atPath: b.path))
+        }
+    }
 }
 

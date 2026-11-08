@@ -529,6 +529,12 @@ enum Commands {
         do {
             return report(try journal.restore(runID: run.id, paths: Set(candidates.map(\.originalPath))))
         } catch RunJournalError.saveFailed(let outcomes, let underlying) {
+            // An empty list means the history couldn't be updated before anything was moved.
+            guard !outcomes.isEmpty else {
+                Format.printError("The history couldn't be updated, so nothing was restored: "
+                    + underlying.localizedDescription)
+                return 2
+            }
             _ = report(outcomes)
             Format.printError("Items were restored, but the history couldn't be updated: \(underlying.localizedDescription)")
             return 2
