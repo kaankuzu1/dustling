@@ -247,6 +247,10 @@ final class AppModels {
         applyStartupHistoryFixtureFromLaunchArguments()
         applyRepairFixtureFromLaunchArguments()
         applyHomeFixtureFromLaunchArguments()
+        // QA: `-DustlingScreen junkScan` opens a screen at launch (see docs/RELEASING.md, "QA pass").
+        if let raw = UserDefaults.standard.string(forKey: "DustlingScreen"), let screen = Destination(rawValue: raw) {
+            selection = screen
+        }
         #endif
     }
 
