@@ -83,6 +83,7 @@ STATES=(
   "junk-scanning||-DustlingHomeFixture scanning"
   "junk-empty-trash||-DustlingHomeFixture emptytrash"
   "junk-review-files||-DustlingHomeFixture reviewfiles"
+  "junk-close-apps||-DustlingHomeFixture closeapps"
   "junk-done||-DustlingHomeFixture done"
   "uninstaller-list||-DustlingUninstallerFixture list"
   "uninstaller-detail||-DustlingUninstallerFixture detail"

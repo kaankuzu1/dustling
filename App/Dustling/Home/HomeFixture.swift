@@ -113,7 +113,7 @@ enum HomeFixture {
     /// Two apps holding selected junk, for the Close apps sheet. Apple's own apps, so the icons are
     /// nobody's personal apps.
     static let closeAppsHolders = [
-        OpenAppHolder(bundleID: "com.apple.Safari", name: "Safari", bundleURL: URL(filePath: "/Applications/Safari.app"),
+        OpenAppHolder(bundleID: "com.apple.Music", name: "Music", bundleURL: URL(filePath: "/System/Applications/Music.app"),
                       bytes: UInt64(1.84 * gb), itemCount: 3),
         OpenAppHolder(bundleID: "com.apple.mail", name: "Mail", bundleURL: URL(filePath: "/System/Applications/Mail.app"),
                       bytes: UInt64(0.62 * gb), itemCount: 2),
