@@ -62,6 +62,11 @@ public struct RunJournal: Sendable {
         try data.write(to: fileURL(run.id), options: .atomic)
     }
 
+    /// When the run's file was last written, or nil if it can't be read.
+    public func modificationDate(of id: UUID) -> Date? {
+        (try? fileURL(id).resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    }
+
     /// A missing directory means no runs yet; any other listing error is surfaced.
     private func jsonFiles() throws -> [URL] {
         do {

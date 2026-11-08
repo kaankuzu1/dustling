@@ -11,7 +11,10 @@ enum Commands {
     /// The CLI has no settings yet: defaults. Catalog, cleaning and uninstalling all derive from this one value.
     /// The app's scan settings (exclusions, skip-recent, external Trash) when the app has saved
     /// them, so the CLI never touches what the app was told to leave alone; plain defaults otherwise.
-    private static let options = AppSettings.savedScanOptions(in: UserDefaults(suiteName: AppSettings.appDefaultsDomain))
+    private static let options = AppSettings.savedScanOptions(in: UserDefaults(suiteName: AppSettings.appDefaultsDomain)) {
+        FileHandle.standardError.write(Data(
+            "note: the app's scan settings couldn't be read, so the defaults are used (no exclusions).\n".utf8))
+    }
 
     private static var journal: RunJournal { RunJournal(directory: env.historyDirectory) }
 

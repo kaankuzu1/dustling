@@ -115,16 +115,33 @@ public struct CleanupRunner: Sendable {
         return record
     }
 
+    /// How long a run's file must have been left alone before recovery treats it as interrupted. A
+    /// live run saves after every item, so one the app or the CLI is still writing is never closed.
+    public static let recoveryQuietPeriod: TimeInterval = 5 * 60
+
     /// Marks runs left `inProgress` (the process died mid-cleanup) as finished and returns their ids.
-    /// Their entries are exactly the items that finished before the interruption.
-    public static func recoverInterrupted(journal: RunJournal) throws -> [UUID] {
+    /// Their entries are exactly the items that finished before the interruption. A run whose file
+    /// changed within `quietFor` seconds of `now` is left alone: something may still be writing it.
+    public static func recoverInterrupted(
+        journal: RunJournal, quietFor: TimeInterval = recoveryQuietPeriod, now: Date = Date()
+    ) throws -> [UUID] {
         var ids: [UUID] = []
         for var run in try journal.all() where run.inProgress {
+            if let modified = journal.modificationDate(of: run.id), now.timeIntervalSince(modified) < quietFor {
+                continue
+            }
             run.inProgress = false
             try journal.save(run)
             ids.append(run.id)
         }
         return ids
+    }
+
+    /// `recoverInterrupted` on the file-work queue, for callers on the main actor.
+    public static func recoverInterruptedInBackground(
+        journal: RunJournal, quietFor: TimeInterval = recoveryQuietPeriod
+    ) async throws -> [UUID] {
+        try await FileWork.run { try recoverInterrupted(journal: journal, quietFor: quietFor) }
     }
 
     /// Measures and moves one item, without journaling. Callers that need to decide between items

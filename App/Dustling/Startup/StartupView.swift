@@ -78,6 +78,9 @@ struct StartupView: View {
 
     @ViewBuilder private var banners: some View {
         let startup = models.startup
+        if let refusal = startup.refusal {
+            Banner(title: "Nothing was removed.", message: refusal, leading: .icon(.warn))
+        }
         if let change = startup.lastResult {
             ChangeResultBanner(change: change, canTakeOutOfTrash: startup.canTakeOutOfTrash)
         }

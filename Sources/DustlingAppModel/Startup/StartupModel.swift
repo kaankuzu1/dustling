@@ -163,6 +163,10 @@ public final class StartupModel {
     public private(set) var isLoading = false
     /// What the last switch did, in plain words ("Turned off X"); nil before any.
     public private(set) var lastChange: String?
+    /// Why the last remove was refused, in plain words (shown as a banner); nil otherwise.
+    public private(set) var refusal: String?
+    public static let accessRefusal = "Full Disk Access was turned off, so a removed item couldn't be put back. "
+        + "Remove it again to confirm."
     /// The last switch or remove, for the screen's result banner. Cleared by `dismissResult()`.
     public private(set) var lastResult: StartupChange?
     /// The item being changed right now (its row shows a spinner).
@@ -378,7 +382,11 @@ public final class StartupModel {
     @discardableResult
     public func remove(_ item: StartupItem, confirmedLimited: Bool = false) async -> RunRecord? {
         guard !fixtureOn, busyItemID == nil, let remover, remover.canRemove(item) else { return nil }
-        guard canTakeOutOfTrash || confirmedLimited else { return nil }
+        guard canTakeOutOfTrash || confirmedLimited else {
+            refusal = Self.accessRefusal
+            return nil
+        }
+        refusal = nil
         busyItemID = item.id
         guard let removal = await remover.remove(item) else {
             busyItemID = nil

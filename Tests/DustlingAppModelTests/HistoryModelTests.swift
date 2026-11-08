@@ -70,12 +70,31 @@ struct HistoryModelTests {
         #expect(model.runs.first?.chip == "Still running")
 
         // Once recovery marks it finished, it can be put back.
-        #expect(try CleanupRunner.recoverInterrupted(journal: rig.journal) == [run.id])
+        #expect(try CleanupRunner.recoverInterrupted(journal: rig.journal, quietFor: 0) == [run.id])
         #expect(try rig.journal.all().first?.inProgress == false)
         await #expect(throws: HistoryModelError.busy) { _ = try await model.restore(runID: run.id) }
         model.isOtherWorkBusy = { false }
         _ = try await model.restore(runID: run.id)
         #expect(FileManager.default.fileExists(atPath: original))
+    }
+
+    @Test func onlyOneRestoreRunsAtATime() async throws {
+        let rig = try ModelRig()
+        try FileManager.default.createDirectory(at: rig.root.appending(path: "orig"), withIntermediateDirectories: true)
+        let original = rig.root.appending(path: "orig/once.txt").path
+        let run = try trashedRun(rig, name: "once.txt", original: original, ago: 60)
+        let model = HistoryModel(journal: rig.journal)
+        await model.refresh()
+        let item = try #require(model.allItems.first)
+
+        // Started back to back: the second sees the first as busy, before either reaches the journal.
+        async let first = model.restore(runID: run.id)
+        async let second = model.restore(items: [item])
+        let (a, b) = try await (first, second)
+        #expect(a.count + b.count == 1)
+        #expect(a == [.restored(original)] || b == [.restored(original)])
+        #expect(FileManager.default.fileExists(atPath: original))
+        #expect(!model.isRestoring)
     }
 
     @Test func searchFiltersAllItems() async throws {

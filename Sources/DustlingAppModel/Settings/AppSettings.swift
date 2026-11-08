@@ -61,9 +61,16 @@ public final class AppSettings {
 
     /// The scan settings saved by the app in `defaults`, or `fallback` when none are saved or they
     /// can't be read. The command-line tool uses this so it honours the app's exclusions.
-    public nonisolated static func savedScanOptions(in defaults: UserDefaults?, fallback: ScanOptions = ScanOptions()) -> ScanOptions {
-        guard let data = defaults?.data(forKey: scanOptionsKey),
-              let saved = try? JSONDecoder().decode(ScanOptions.self, from: data) else { return fallback }
+    /// `onUnreadable` is called when settings are saved but can't be read (the fallback is used then).
+    public nonisolated static func savedScanOptions(
+        in defaults: UserDefaults?, fallback: ScanOptions = ScanOptions(), onUnreadable: () -> Void = {}
+    ) -> ScanOptions {
+        guard let defaults, defaults.object(forKey: scanOptionsKey) != nil else { return fallback }
+        guard let data = defaults.data(forKey: scanOptionsKey),
+              let saved = try? JSONDecoder().decode(ScanOptions.self, from: data) else {
+            onUnreadable()
+            return fallback
+        }
         return saved
     }
     /// The choices for "Skip files changed in the last". nil is Off.

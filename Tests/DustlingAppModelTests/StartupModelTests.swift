@@ -254,10 +254,12 @@ struct StartupModelScreenTests {
         let item = try #require(model.items.first)
 
         #expect(await model.remove(item) == nil)
+        #expect(model.refusal == StartupModel.accessRefusal)
         #expect(FileManager.default.fileExists(atPath: plist.path))
         #expect(!commands.calls.contains { $0.contains("bootout") })
 
         let record = try #require(await model.remove(item, confirmedLimited: true))
+        #expect(model.refusal == nil)
         #expect(record.kind == .startupChange)
         #expect(!FileManager.default.fileExists(atPath: plist.path))
     }

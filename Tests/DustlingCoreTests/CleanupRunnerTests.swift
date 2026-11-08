@@ -282,12 +282,17 @@ struct CleanupRunnerTests {
         let fine = RunRecord(startedAt: Date(), kind: .junkClean, entries: [], restorable: false)
         try journal.save(stuck)
         try journal.save(fine)
-        let ids = try CleanupRunner.recoverInterrupted(journal: journal)
+        // Just written: it may still be running, so it is left alone.
+        #expect(try CleanupRunner.recoverInterrupted(journal: journal).isEmpty)
+        #expect(try journal.all().first { $0.id == stuck.id }?.inProgress == true)
+        // Quiet for longer than the period: interrupted.
+        let later = Date().addingTimeInterval(CleanupRunner.recoveryQuietPeriod + 1)
+        let ids = try CleanupRunner.recoverInterrupted(journal: journal, now: later)
         #expect(ids == [stuck.id])
         let after = try #require(try journal.all().first { $0.id == stuck.id })
         #expect(!after.inProgress)
         #expect(after.entries == stuck.entries)
-        #expect(try CleanupRunner.recoverInterrupted(journal: journal).isEmpty)
+        #expect(try await CleanupRunner.recoverInterruptedInBackground(journal: journal, quietFor: 0).isEmpty)
     }
 
     @Test func oldRecordsWithoutInProgressDecodeAsFinished() throws {

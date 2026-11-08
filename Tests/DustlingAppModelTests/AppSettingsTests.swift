@@ -54,9 +54,15 @@ struct AppSettingsTests {
         // A field missing from what was saved takes its default; the rest still loads.
         defaults.set(Data(#"{"exclusions":["~/keep"]}"#.utf8), forKey: AppSettings.scanOptionsKey)
         #expect(AppSettings.savedScanOptions(in: defaults) == ScanOptions(exclusions: ["~/keep"]))
-        // Unreadable: the fallback.
+        // Unreadable: the fallback, and the caller is told (the CLI prints a note).
         defaults.set(Data("nope".utf8), forKey: AppSettings.scanOptionsKey)
-        #expect(AppSettings.savedScanOptions(in: defaults) == ScanOptions())
+        var told = false
+        #expect(AppSettings.savedScanOptions(in: defaults, onUnreadable: { told = true }) == ScanOptions())
+        #expect(told)
+        // Nothing saved: not unreadable.
+        told = false
+        _ = AppSettings.savedScanOptions(in: fresh(), onUnreadable: { told = true })
+        #expect(!told)
     }
 
     private func make(_ defaults: UserDefaults, login: FakeLoginItems = FakeLoginItems()) -> AppSettings {

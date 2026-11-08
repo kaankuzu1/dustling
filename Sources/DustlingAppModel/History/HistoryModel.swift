@@ -267,6 +267,10 @@ public final class HistoryModel {
         guard canTakeOutOfTrash else { throw HistoryModelError.cantTakeOutOfTrash }
         guard !isRestoring else { return [] }
         guard !isOtherWorkBusy() else { throw HistoryModelError.busy }
+        // Busy before the first await, so a second restore started meanwhile is refused.
+        isRestoring = true
+        restoringCount = paths?.count ?? 0
+        defer { isRestoring = false }
         // Always from the journal as it is now: a run's in-progress flag may have changed.
         await refresh()
         if runs.first(where: { $0.id == runID })?.inProgress == true { throw HistoryModelError.runInProgress }
@@ -274,7 +278,6 @@ public final class HistoryModel {
            run.record.startedAt < emptied {
             throw HistoryModelError.trashWasEmptied
         }
-        isRestoring = true
         restoringCount = paths?.count ?? runs.first { $0.id == runID }.map { row in
             row.record.entries.filter { RunJournal.isRestorable($0) }.count
         } ?? 0
@@ -299,10 +302,12 @@ public final class HistoryModel {
         guard canTakeOutOfTrash else { throw HistoryModelError.cantTakeOutOfTrash }
         guard !isRestoring, !items.isEmpty else { return [] }
         guard !isOtherWorkBusy() else { throw HistoryModelError.busy }
-        await refresh()
-        let live = Set(runs.filter(\.inProgress).map(\.id))
+        // Busy before the first await, so a second restore started meanwhile is refused.
         isRestoring = true
         restoringCount = items.count
+        defer { isRestoring = false }
+        await refresh()
+        let live = Set(runs.filter(\.inProgress).map(\.id))
         let byRun = Dictionary(grouping: items, by: \.runID)
         let emptied = lastEmptyTrash
         let journal = self.journal

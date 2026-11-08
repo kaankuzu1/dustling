@@ -120,6 +120,10 @@ final class AppModels {
         let runner = CleanupRunner(
             mover: TrashMover(backend: SystemTrashBackend(), protectedPaths: protectedPaths),
             journal: journal, logger: logger, sizer: DirectorySizer())
+        // Closures built here reach the models through `owner` once they exist (set below): the
+        // retry reads the gate, the places check and the busy state, and every finished run
+        // refreshes History so its chips never go stale.
+        let owner = WeakModels()
         let trash = TrashModel(
             makeInspector: { external in
                 TrashInspector(
@@ -129,6 +133,7 @@ final class AppModels {
             journal: journal,
             onRunCompleted: {
                 health.refreshLastRun()
+                Task { await owner.models?.history.refresh() }
                 Task { await storage.refresh() }
             })
         self.trash = trash
@@ -140,6 +145,7 @@ final class AppModels {
             categories: { scope.categories },
             onRunCompleted: {
                 health.refreshLastRun()
+                Task { await owner.models?.history.refresh() }
                 Task { await trash.refresh() }
                 Task { await storage.refresh() }
             })
@@ -154,6 +160,7 @@ final class AppModels {
             onRunCompleted: {
                 // After every uninstall and every Put back.
                 health.refreshLastRun()
+                Task { await owner.models?.history.refresh() }
                 Task { await trash.refresh() }
                 Task { await storage.refresh() }
             })
@@ -167,6 +174,7 @@ final class AppModels {
             onRunCompleted: {
                 // After every switch and every remove.
                 health.refreshLastRun()
+                Task { await owner.models?.history.refresh() }
                 Task { await trash.refresh() }
             })
         history = HistoryModel(
@@ -179,8 +187,6 @@ final class AppModels {
             })
         // Unknown until the first probe: assume Restore can't work.
         history.canTakeOutOfTrash = false
-        // The retry reads the gate, the places check and the busy state through `owner`, set below.
-        let owner = WeakModels()
         retry = LastRunRetry(
             catalog: { owner.models?.retryCatalog ?? [] },
             running: { AppModels.runningBundleIDs() },
@@ -191,6 +197,7 @@ final class AppModels {
             run: { urls, roots in await runner.run(urls, kind: .junkClean, allowedRoots: roots, onItem: { _, _ in }) },
             onRunCompleted: {
                 health.refreshLastRun()
+                Task { await owner.models?.history.refresh() }
                 Task { await trash.refresh() }
                 Task { await storage.refresh() }
             })
@@ -552,12 +559,13 @@ final class AppModels {
         // new can run, so History shows it as it ended and it can be put back.
         let journal = self.journal
         Task {
-            let recovered = await Task.detached(priority: .utility) { () -> [UUID] in
-                do { return try CleanupRunner.recoverInterrupted(journal: journal) } catch {
-                    NSLog("Dustling: couldn't finish interrupted runs in the history: \(error)")
-                    return []
-                }
-            }.value
+            let recovered: [UUID]
+            do {
+                recovered = try await CleanupRunner.recoverInterruptedInBackground(journal: journal)
+            } catch {
+                NSLog("Dustling: couldn't finish interrupted runs in the history: \(error)")
+                recovered = []
+            }
             if !recovered.isEmpty {
                 health.refreshLastRun()
                 await history.refresh()
