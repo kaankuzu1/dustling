@@ -239,13 +239,26 @@ struct StepHeadline: View {
                 .foregroundStyle(DustlingTheme.Palette.ink)
                 .lineSpacing(2)
                 .accessibilityAddTraits(.isHeader)
+                .skeletonText()
             if let caption {
                 Text(caption)
                     .font(OnboardingType.caption(size: captionSize))
                     .foregroundStyle(DustlingTheme.Palette.muted)
+                    .skeletonText()
             }
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+extension StepHeadline {
+    /// The headline's loading skeleton while the places check runs: a headline and a one-line
+    /// caption, in placeholder mode.
+    static var placeholder: some View {
+        StepHeadline(title: "Dustling can see 00 of 00 places", caption: Placeholder.text(0, base: 30, spread: 0))
+            .skeleton(true)
+            .accessibilityElement()
+            .accessibilityLabel("Checking which places Dustling can see")
     }
 }
 

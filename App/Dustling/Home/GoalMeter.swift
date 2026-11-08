@@ -13,6 +13,9 @@ struct GoalMeterView: View {
     let needed: Int64
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The loading skeleton: the bar and legend as blocks, no marker.
+    @Environment(\.skeletonIndex) private var skeletonIndex
+    private var isSkeleton: Bool { skeletonIndex != nil }
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -30,7 +33,8 @@ struct GoalMeterView: View {
                 }
             }
             .frame(height: 18)
-            .overlay(alignment: .topLeading) { marker(meter.markerFraction) }
+            .skeletonBlock(cornerRadius: 2)
+            .overlay(alignment: .topLeading) { if !isSkeleton { marker(meter.markerFraction) } }
             .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.meter, reduceMotion: reduceMotion), value: meter)
             .accessibilityElement()
             .accessibilityLabel(
@@ -79,11 +83,13 @@ struct GoalMeterView: View {
     private func legend(_ label: String, _ value: String, color: Color) -> some View {
         HStack(spacing: 6) {
             RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 9, height: 9)
+                .skeletonBlock(cornerRadius: 2)
             (Text(label + " ").foregroundStyle(Palette.muted)
              + Text(value).fontWeight(.semibold).foregroundStyle(Palette.ink))
                 .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
                 .monospacedDigit()
                 .lineLimit(1)
+                .skeletonText()
         }
         .accessibilityElement(children: .combine)
     }
@@ -94,6 +100,9 @@ struct GoalMeterView: View {
 struct UpdateCheckControl: View {
     @Environment(AppModels.self) private var models
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The loading skeleton: the bar and legend as blocks, no marker.
+    @Environment(\.skeletonIndex) private var skeletonIndex
+    private var isSkeleton: Bool { skeletonIndex != nil }
 
     private typealias Palette = DustlingTheme.Palette
 

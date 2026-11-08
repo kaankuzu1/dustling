@@ -16,6 +16,8 @@ struct UninstallerView: View {
     @State private var confirming: ConfirmModel?
     @State private var confirmingEmptyTrash = false
     @State private var reviewing = false
+    /// The app list's height, for how many skeleton rows fill it.
+    @State private var listHeight: CGFloat = 0
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -145,7 +147,8 @@ struct UninstallerView: View {
         return ScrollViewReader { proxy in ScrollView {
             LazyVStack(spacing: 0) {
                 if model.apps.isEmpty && model.isLoading {
-                    ForEach(0..<6, id: \.self) { SkeletonRow(index: $0) }
+                    let rows = SkeletonMetrics.rowCount(height: listHeight - 16, rowHeight: AppListRow.minHeight)
+                    ForEach(0..<rows, id: \.self) { AppListRow.placeholder($0) }
                 } else if shown.isEmpty {
                     Text(query.isEmpty ? "No apps found" : "No apps match \u{201C}\(query)\u{201D}")
                         .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
@@ -177,6 +180,7 @@ struct UninstallerView: View {
             .padding(8)
         }
         .arrowKeyList(shown.map(\.id), current: currentID(shown), proxy: proxy) { current = $0 }
+        .onGeometryChange(for: CGFloat.self, of: \.size.height) { listHeight = $0 }
         }
     }
 
@@ -201,12 +205,8 @@ struct UninstallerView: View {
             if let id = currentID(shown), let row = shown.first(where: { $0.id == id }) {
                 AppDetailPane(row: row)
             } else if model.isLoading {
-                VStack(alignment: .leading, spacing: 10) {
-                    SkeletonBlock(width: 220, height: 18)
-                    ForEach(0..<5, id: \.self) { SkeletonRow(index: $0) }
-                }
-                .padding(DustlingTheme.Metrics.gutter)
-                .frame(maxHeight: .infinity, alignment: .top)
+                // The detail pane itself, for a placeholder app, drawn as its skeleton.
+                AppDetailPane(row: .placeholder(0), isPlaceholder: true)
             } else {
                 PickAnApp(text: "Pick an app")
             }
@@ -313,16 +313,24 @@ struct UninstallerView: View {
 /// The selected app's header, its leftover rows and the "never touched" footer (`.u-prev`).
 private struct AppDetailPane: View {
     let row: AppRow
+    /// The loading skeleton: `row` is a placeholder and the pane draws in placeholder mode.
+    var isPlaceholder = false
     @Environment(AppModels.self) private var models
+
+    /// Leftover rows a placeholder pane shows while the first app is still being found.
+    private static let placeholderLeftovers = 4
+    /// Leftover rows shown under a listed app while its leftovers are still being looked for.
+    private static let countingLeftovers = 3
 
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
         let model = models.uninstaller
-        let leftovers = model.leftovers(for: row.app)
+        let leftovers = isPlaceholder ? [] : model.leftovers(for: row.app)
         let locked = model.isUninstalling || model.isRestoring
         VStack(spacing: 0) {
             header(leftovers)
+                .skeleton(isPlaceholder)
             ScrollView {
                 VStack(spacing: 0) {
                     if let warning = row.warning {
@@ -330,14 +338,19 @@ private struct AppDetailPane: View {
                             .padding(.bottom, 6)
                     }
                     applicationLine(locked: locked)
+                        .skeleton(isPlaceholder)
                     ForEach(leftovers) { leftover in
                         Hairline()
                         LeftoverRowView(row: leftover, home: models.homeDirectory, isLocked: locked) { on in
                             model.setChecked(on, leftover: leftover.leftover, in: row.app)
                         }
                     }
-                    if row.isCounting {
-                        ForEach(0..<3, id: \.self) { SkeletonRow(index: $0) }
+                    if row.isCounting || isPlaceholder {
+                        let count = isPlaceholder ? Self.placeholderLeftovers : Self.countingLeftovers
+                        ForEach(0..<count, id: \.self) { index in
+                            Hairline()
+                            LeftoverLineSkeleton(index: index + 1)
+                        }
                     }
                 }
                 .padding(.vertical, 6)
@@ -356,9 +369,11 @@ private struct AppDetailPane: View {
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 16).weight(.semibold))
                     .foregroundStyle(Palette.ink)
                     .accessibilityAddTraits(.isHeader)
-                Text(detailLine)
+                    .skeletonText()
+                Text(isPlaceholder ? "Version 00.0.0." : detailLine)
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
                     .foregroundStyle(Palette.muted)
+                    .skeletonText()
             }
             .lineLimit(1)
             Spacer(minLength: 12)
@@ -367,9 +382,11 @@ private struct AppDetailPane: View {
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 20).weight(.bold))
                     .foregroundStyle(Palette.accent)
                     .contentTransition(.numericText())
+                    .skeletonText()
                 Text("of \(Bytes.format(totals.found)) found")
                     .font(DustlingTheme.Typography.caption)
                     .foregroundStyle(Palette.muted)
+                    .skeletonText()
             }
             .monospacedDigit()
             .lineLimit(1)
@@ -415,7 +432,7 @@ private struct AppDetailPane: View {
     private var footer: some View {
         HStack(spacing: 8) {
             PixelIconView(.shield, color: Palette.success)
-            Text("Documents you made with \(row.app.displayName) are never touched. "
+            Text("Documents you made with \(isPlaceholder ? "an app" : row.app.displayName) are never touched. "
                  + "Data items stay unchecked unless you check them.")
                 .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
                 .foregroundStyle(Palette.muted)

@@ -15,6 +15,8 @@ struct HistoryView: View {
     /// A restore that was refused or threw, in plain words.
     @State private var refusal: String?
     @State private var confirmingEmptyTrash = false
+    /// The tab content's height, for how many skeleton runs fill it.
+    @State private var contentHeight: CGFloat = 0
 
     enum Tab: String, CaseIterable { case runs = "Runs", allItems = "All items", log = "Log" }
 
@@ -47,9 +49,12 @@ struct HistoryView: View {
             Group {
                 if history.runs.isEmpty {
                     if history.isLoading {
-                        VStack(spacing: 0) { ForEach(0..<5, id: \.self) { SkeletonRow(index: $0) } }
-                            .padding(.horizontal, DustlingTheme.Metrics.gutter)
-                            .frame(maxHeight: .infinity, alignment: .top)
+                        // Each tab draws itself with placeholder rows, in placeholder mode.
+                        switch tab {
+                        case .runs: RunsTimeline.placeholder(height: contentHeight)
+                        case .allItems: AllItemsTable(context: context, checked: $checked)
+                        case .log: LogTab(run: nil, runs: [], context: context, onSelectRun: { _ in })
+                        }
                     } else {
                         NothingYet()
                     }
@@ -75,6 +80,7 @@ struct HistoryView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { contentHeight = $0 }
             actionBar
         }
         .background(Palette.ground)

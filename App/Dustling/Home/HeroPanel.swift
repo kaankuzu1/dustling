@@ -34,13 +34,29 @@ struct HeroPanel: View {
                     available: available, afterCleanup: after, afterCleanupIsLowerBound: figures.afterCleanupIsLowerBound,
                     needed: models.goal.neededBytes)
                     .padding(.top, 18)
+            } else if isLoading(figures) {
+                // Until the disk is read the meter is a skeleton of itself, so it doesn't push the
+                // panel down when it arrives.
+                GoalMeterView(available: 0, afterCleanup: 0, needed: models.goal.neededBytes)
+                    .skeleton(true, index: 2)
+                    .padding(.top, 18)
             }
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))
+        .skeletonSurfaceIsPanel()
     }
+
+    /// The disk hasn't been read yet (and reading it didn't fail).
+    private func isLoading(_ figures: HomeFigures) -> Bool {
+        figures.hero == nil && models.storage.problems.isEmpty
+    }
+
+    /// What the skeleton stands in for: the headline and the caption under it.
+    private static let placeholderHeadline = "You need 00.0 GB more for the macOS update"
+    private static let placeholderCaption = (bold: "00.0 GB", rest: Placeholder.text(0, base: 34, spread: 0))
 
     private func mood(_ figures: HomeFigures) -> MoteView.Mood {
         if case .moving = models.junk.state { return .chomp }
@@ -52,13 +68,8 @@ struct HeroPanel: View {
 
     @ViewBuilder private func headline(_ figures: HomeFigures) -> some View {
         if let hero = figures.hero {
-            Text(hero.headline)
-                .font(.custom(DustlingTheme.Typography.pixelFamily, size: 22))
-                .foregroundStyle(Palette.ink)
-                .monospacedDigit()
-                .contentTransition(reduceMotion ? .identity : .numericText())
+            headlineText(hero.headline)
                 .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.meter, reduceMotion: reduceMotion), value: hero)
-                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
         } else if let problem = models.storage.problems.first {
             // The storage read failed: say so instead of showing a made-up number.
@@ -66,8 +77,19 @@ struct HeroPanel: View {
                 .font(DustlingTheme.Typography.rowTitle)
                 .foregroundStyle(Palette.warning)
         } else {
-            SkeletonBlock(width: 420, height: 22)
+            headlineText(Self.placeholderHeadline)
+                .skeletonText()
+                .skeleton(true)
         }
+    }
+
+    private func headlineText(_ text: String) -> some View {
+        Text(text)
+            .font(.custom(DustlingTheme.Typography.pixelFamily, size: 22))
+            .foregroundStyle(Palette.ink)
+            .monospacedDigit()
+            .contentTransition(reduceMotion ? .identity : .numericText())
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder private func caption(_ figures: HomeFigures) -> some View {
@@ -79,19 +101,29 @@ struct HeroPanel: View {
             }
         case .needMore(let shortfall):
             if !figures.scanFinished {
-                SkeletonBlock(width: 300, height: 12, index: 1)
+                placeholderCaption
             } else if let junk = HomeHero.junkCaption(safeJunk: figures.safeJunk, shortfall: shortfall) {
                 captionText(junk)
             }
         case nil:
-            EmptyView()
+            if isLoading(figures) { placeholderCaption }
         }
     }
 
+    private var placeholderCaption: some View {
+        captionText(bold: Self.placeholderCaption.bold, rest: Self.placeholderCaption.rest)
+            .skeletonText()
+            .skeleton(true, index: 1)
+    }
+
     private func captionText(_ caption: HomeHero.Caption) -> some View {
-        (Text(caption.bold).font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5).weight(.semibold))
+        captionText(bold: caption.bold, rest: caption.rest)
+    }
+
+    private func captionText(bold: String, rest: String) -> some View {
+        (Text(bold).font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5).weight(.semibold))
             .foregroundStyle(Palette.ink)
-         + Text(caption.rest).font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
+         + Text(rest).font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
             .foregroundStyle(Palette.muted))
             .monospacedDigit()
             .contentTransition(reduceMotion ? .identity : .numericText())

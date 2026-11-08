@@ -363,6 +363,15 @@ public final class HistoryModel {
         publish(records)
     }
 
+    /// DEBUG screenshots only: History still reading, with nothing read yet (the loading skeleton).
+    public func showFixtureLoading() {
+        isFixture = true
+        problem = nil
+        unreadableRecords = []
+        publish([])
+        isLoading = true
+    }
+
     /// DEBUG screenshots only.
     public func showFixtureRestore(_ summary: HistoryScreen.RestoreSummary?, restoring: Int = 0) {
         lastRestore = summary

@@ -82,8 +82,13 @@ final class AppModels {
             // Screenshots: sample access, disk and places, never the real ones.
             let limited = HomeFixture.isLimited
             probe = { limited ? .denied : .granted }
-            storageRead = { (HomeFixture.storage, []) }
-            placesCheck = { _ in HomeFixture.places(limited: limited) }
+            if HomeFixture.neverAnswers {
+                storageRead = { HomeFixture.waitForever() }
+                placesCheck = { _ in HomeFixture.waitForever() }
+            } else {
+                storageRead = { (HomeFixture.storage, []) }
+                placesCheck = { _ in HomeFixture.places(limited: limited) }
+            }
         }
         #endif
         let health = HealthModel(
@@ -264,6 +269,9 @@ final class AppModels {
         case "scanning":
             junk.showFixture(scans, phase: .scanning(
                 HomeFixture.scanningProgress(home: environment.home, total: scans.count), finished: 3))
+        case "loadingscan":
+            junk.showFixture(scans, phase: .scanning(
+                HomeFixture.startingProgress(home: environment.home, total: scans.count), finished: 0))
         case "done":
             let record = HomeFixture.cleanup(of: scans)
             junk.showFixture(scans, phase: .done(record))

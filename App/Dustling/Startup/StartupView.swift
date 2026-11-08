@@ -11,6 +11,8 @@ struct StartupView: View {
     @Environment(AppModels.self) private var models
     /// The item the Remove confirmation is about. Dropped once it is answered.
     @State private var removing: StartupRow?
+    /// The list's height, for how many skeleton rows fill it.
+    @State private var listHeight: CGFloat = 0
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -51,6 +53,7 @@ struct StartupView: View {
                 .padding(.horizontal, DustlingTheme.Metrics.gutter)
                 .padding(.vertical, 14)
             }
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { listHeight = $0 }
             ActionBar(
                 title: "Turning an item off is reversible",
                 caption: "Changes apply right away. Removing an item asks first."
@@ -110,9 +113,16 @@ struct StartupView: View {
         }
     }
 
+    /// A group as it will appear: its header, then rows, all in placeholder mode.
     private var skeleton: some View {
-        VStack(spacing: 0) {
-            ForEach(0..<6, id: \.self) { SkeletonRow(index: $0) }
+        let header = StartupGroupHeader(
+            title: StartupScreen.heading(.agents), caption: StartupScreen.caption(.agents),
+            onCount: "0 of 0 on")
+        // The list's height less its vertical padding (14 + 14) and the group header (about 28).
+        let rows = SkeletonMetrics.rowCount(height: listHeight - 56, rowHeight: StartupRowView.minHeight)
+        return VStack(alignment: .leading, spacing: 0) {
+            header.skeleton(true)
+            ForEach(0..<rows, id: \.self) { StartupRowView.placeholder($0 + 1) }
         }
     }
 }
@@ -129,25 +139,9 @@ private struct StartupGroupSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(StartupScreen.heading(group.kind))
-                    .font(DustlingTheme.Typography.rowTitle)
-                    .foregroundStyle(Palette.ink)
-                    .accessibilityAddTraits(.isHeader)
-                Text(StartupScreen.caption(group.kind))
-                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
-                    .foregroundStyle(Palette.muted)
-                Spacer(minLength: 8)
-                if group.kind != .loginItems {
-                    Text(StartupScreen.onCount(on: group.onCount, total: group.total))
-                        .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
-                        .foregroundStyle(Palette.muted)
-                        .monospacedDigit()
-                }
-            }
-            .padding(.horizontal, 2)
-            .padding(.top, 4)
-            .padding(.bottom, 6)
+            StartupGroupHeader(
+                title: StartupScreen.heading(group.kind), caption: StartupScreen.caption(group.kind),
+                onCount: group.kind == .loginItems ? nil : StartupScreen.onCount(on: group.onCount, total: group.total))
             if group.kind == .loginItems {
                 LoginItemsRow()
             } else if group.rows.isEmpty {
@@ -173,6 +167,40 @@ private struct StartupGroupSection: View {
                 }
             }
         }
+    }
+}
+
+/// A group's header: its name, a muted caption and the "N of M on" count. Shared with the skeleton.
+private struct StartupGroupHeader: View {
+    let title: String
+    let caption: String
+    let onCount: String?
+
+    private typealias Palette = DustlingTheme.Palette
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(title)
+                .font(DustlingTheme.Typography.rowTitle)
+                .foregroundStyle(Palette.ink)
+                .accessibilityAddTraits(.isHeader)
+                .skeletonText()
+            Text(caption)
+                .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
+                .foregroundStyle(Palette.muted)
+                .skeletonText()
+            Spacer(minLength: 8)
+            if let onCount {
+                Text(onCount)
+                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
+                    .foregroundStyle(Palette.muted)
+                    .monospacedDigit()
+                    .skeletonText()
+            }
+        }
+        .padding(.horizontal, 2)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
     }
 }
 
