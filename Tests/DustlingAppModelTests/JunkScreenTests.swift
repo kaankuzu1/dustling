@@ -132,6 +132,23 @@ struct JunkScreenTilesTests {
         #expect(tiles[0].cells.count == 3)
     }
 
+    @Test func leftOutIsNamedInEveryNote() {
+        func note(_ t: CategoryTileModel, _ place: Place) -> String {
+            var t = t
+            t.excludedCount = 2
+            return JunkScreen.tiles(input(tiles: [t], places: [place])).first { $0.id == t.id }?.note ?? ""
+        }
+        let readable = { (id: JunkCategoryID) in Place(id: id, access: .readable) }
+        #expect(note(tile(.iosBackups, quarter, selection: .review), readable(.iosBackups))
+            == "Your data, never selected for you, 2 left out")
+        #expect(note(tile(.mailDownloads, quarter, selection: .review), readable(.mailDownloads))
+            == "Review before removing, 2 left out")
+        #expect(note(tile(.userCaches, quarter), Place(id: .userCaches, access: .readable, lockedExpansions: true))
+            == "3 items, 2 left out. App containers need Full Disk Access")
+        #expect(note(tile(.userCaches, quarter, inUse: 1), readable(.userCaches))
+            == "3 items, 2 left out, 1 in use by open apps and left alone")
+    }
+
     @Test func inUseItemsAreNamedInTheNote() {
         let tiles = JunkScreen.tiles(input(tiles: [tile(.userCaches, quarter, inUse: 2)],
             places: [Place(id: .userCaches, access: .readable)]))

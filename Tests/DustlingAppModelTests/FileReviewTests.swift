@@ -65,6 +65,38 @@ struct FileReviewTests {
         #expect(model.categories.first?.excludedCount == 0)
     }
 
+    @Test func footerSelectedTotalAndWhatMovesAgreeUnderASkippedFolder() async throws {
+        let rig = try ModelRig()
+        let containerCaches = rig.root.appending(path: "Containers/com.other.app/Data/Library/Caches", directoryHint: .isDirectory)
+        try rig.file(rig.cachesDirectory.appending(path: "plain.log"), bytes: 4096)
+        let boxed = try rig.file(containerCaches.appending(path: "boxed.log"), bytes: 65536)
+        let categories = [JunkCategory(
+            id: .userCaches, title: "App caches", selection: .preselected, requiresAdmin: false,
+            roots: [rig.cachesDirectory, containerCaches])]
+        let model = JunkScanModel(
+            scanner: rig.scanner(), runner: rig.runner(), journal: rig.journal,
+            environment: rig.environment, options: rig.options, categories: { categories })
+        model.canTakeOutOfTrash = true
+        await scanned(model)
+
+        // The containers folder (as the scan saw it) is off limits now.
+        let boxedURL = try scannedURL(model, "boxed.log")
+        let containers = boxedURL.deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        model.cleanupSkip = CleanupSkip(categories: [], folders: [containers])
+
+        let footer = model.review(excluding: model.excludedItems).selectedBytes
+        #expect(model.review(excluding: []).sections[0].rows.first { $0.url == boxedURL }?.disabledReason == "Needs Full Disk Access")
+        #expect(footer == model.selectedBytes)
+        #expect(footer < model.categories[0].bytes)
+
+        await model.clean()
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+        #expect(record.bytesMovedToTrash == footer)
+        #expect(FileManager.default.fileExists(atPath: boxed.path))
+        #expect(record.entries.contains { $0.outcome == .skipped(reason: "needs Full Disk Access") })
+    }
+
     @Test func reviewListsSelectedCategoriesWithDisabledReasonsAndLiveTotals() async throws {
         let rig = try ModelRig()
         let small = try rig.file(rig.cachesDirectory.appending(path: "small.log"), bytes: 4096)
@@ -98,6 +130,11 @@ struct FileReviewTests {
         #expect(applied.sections[0].rows.map(\.url) == review.sections[0].rows.map(\.url))
         #expect(applied.selectedBytes == unticked.selectedBytes && applied.selectedCount == unticked.selectedCount)
         #expect(applied.footerLine == "1 file selected, \(Bytes.format(bytes(small)))")
+
+        // Totals alone, for live ticks.
+        let totals = review.totals(excluding: [bigURL])
+        #expect(totals.bytes == bytes(small) && totals.count == 1)
+        #expect(totals.sections[.userCaches] == bytes(small))
 
         // A place locked since the scan: its files are listed but can't move.
         let locked = model.review(excluding: [], skipping: CleanupSkip(categories: [.userCaches], folders: []))

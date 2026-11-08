@@ -218,6 +218,9 @@ public final class JunkScanModel {
     public private(set) var message: String?
     /// True once the run just made was put back (allowed once per run).
     public private(set) var didPutBack = false
+    /// Places that can't be read now (from the places check). Selected totals, Review files and
+    /// `clean()` leave their items out.
+    public var cleanupSkip: CleanupSkip = .none
     /// Files left out in Review files. They stay where they are and get no journal entry; a rescan
     /// clears them.
     public private(set) var excludedItems: Set<URL> = []
@@ -234,6 +237,9 @@ public final class JunkScanModel {
     public var canTakeOutOfTrash = false
     /// What happens to a cleanup while `canTakeOutOfTrash` is false.
     public var limitedCleanupPolicy: LimitedCleanupPolicy = .warnBeforeCleaning
+    /// True while the Review files sheet is open; the app holds off automatic rescans meanwhile, so
+    /// the sheet and its draft stay put.
+    public var isReviewingFiles = false
     /// Applied at the next scan (the "Preselect safe categories" setting).
     public var preselectSafe: Bool
 
@@ -278,9 +284,9 @@ public final class JunkScanModel {
     public var selectedBytesByCategory: [JunkCategoryID: UInt64] {
         var result: [JunkCategoryID: UInt64] = [:]
         for tile in categories {
-            guard tile.isSelected, !tile.stopped, let scan = scans[tile.id], !scan.category.requiresAdmin else { continue }
+            guard tile.isSelected, !tile.stopped, let scan = scans[tile.id] else { continue }
             result[tile.id] = scan.items
-                .filter { $0.inUseByBundleID == nil && !excludedItems.contains($0.url) }
+                .filter { !excludedItems.contains($0.url) && Unmovable.check($0, category: scan.category, skipping: cleanupSkip) == nil }
                 .reduce(0) { $0 + $1.bytes }
         }
         return result
@@ -405,8 +411,9 @@ public final class JunkScanModel {
     /// The Review files list for the selected categories, as if `excluding` were left out. The sheet
     /// edits a draft and calls this on every change; `setExclusions` keeps the result.
     public func review(
-        excluding: Set<URL>, skipping: CleanupSkip = .none, appName: (String) -> String? = { _ in nil }
+        excluding: Set<URL>, skipping: CleanupSkip? = nil, appName: (String) -> String? = { _ in nil }
     ) -> FileReview {
+        let skipping = skipping ?? cleanupSkip
         let sections = categories.compactMap { tile -> FileReview.Section? in
             guard tile.isSelected, !tile.stopped, let scan = scans[tile.id] else { return nil }
             let rows = scan.items.map { item -> FileReview.Row in
@@ -451,7 +458,8 @@ public final class JunkScanModel {
     ///
     /// `skipping`: places that can't be read now; their items are recorded as skipped. With the gate
     /// at `confirmFirst`, nothing happens unless the user confirmed (`confirmedLimited`).
-    public func clean(skipping: CleanupSkip = .none, confirmedLimited: Bool = false) async {
+    public func clean(skipping: CleanupSkip? = nil, confirmedLimited: Bool = false) async {
+        let skipping = skipping ?? cleanupSkip
         guard case .ready = state, !isRestoring else { return }
         switch cleanupGate.kind {
         case .refused:
@@ -480,27 +488,15 @@ public final class JunkScanModel {
             for item in scan.items where !excludedItems.contains(item.url) {
                 let path = item.url.path(percentEncoded: false)
                 categoryOf[path] = tile.id
-                if skipping.skips(item) {
-                    extra.append(JournalEntry(
-                        originalPath: path, bytes: item.bytes, outcome: .skipped(reason: CleanupSkip.reason)))
-                } else if let owner = item.inUseByBundleID {
-                    extra.append(JournalEntry(
-                        originalPath: path, bytes: item.bytes, outcome: .skipped(reason: "in use by \(owner)")))
-                } else if scan.category.requiresAdmin {
-                    // Unreachable while admin tiles can't be selected; kept as defence.
-                    extra.append(JournalEntry(originalPath: path, bytes: item.bytes, outcome: .needsAdmin))
+                if let unmovable = Unmovable.check(item, category: scan.category, skipping: skipping) {
+                    extra.append(JournalEntry(originalPath: path, bytes: item.bytes, outcome: unmovable.outcome))
                 } else {
                     let parent = item.url.deletingLastPathComponent()
-                    if scan.category.isDeclaredRoot(parent) {
-                        urls.append(item.url)
-                        sizes[item.url] = item.bytes
-                        urlCategory[item.url] = tile.id
-                        progress[tile.id, default: CategoryProgress(done: 0, total: 0)].total += 1
-                        roots.insert(parent)
-                    } else {
-                        extra.append(JournalEntry(
-                            originalPath: path, bytes: item.bytes, outcome: .skipped(reason: "outside the cleanup area")))
-                    }
+                    urls.append(item.url)
+                    sizes[item.url] = item.bytes
+                    urlCategory[item.url] = tile.id
+                    progress[tile.id, default: CategoryProgress(done: 0, total: 0)].total += 1
+                    roots.insert(parent)
                 }
             }
         }

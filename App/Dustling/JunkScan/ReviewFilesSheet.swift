@@ -17,7 +17,7 @@ struct ReviewFilesSheet: View {
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
-        let review = base?.applying(excluding: excluded)
+        let totals = base?.totals(excluding: excluded)
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Review files")
@@ -32,14 +32,14 @@ struct ReviewFilesSheet: View {
             .padding(.top, 18)
             .padding(.bottom, 12)
             Hairline()
-            if let review {
-                FileList(review: review, home: models.homeDirectory, excluded: $excluded)
+            if let base, let totals {
+                FileList(review: base, sectionTotals: totals.sections, home: models.homeDirectory, excluded: $excluded)
             } else {
                 Spacer()
             }
             Hairline()
             HStack(spacing: 8) {
-                Text(review?.footerLine ?? "")
+                Text(totals.map { FileReview.footerLine(count: $0.count, bytes: $0.bytes) } ?? "")
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 13.5).weight(.semibold))
                     .foregroundStyle(Palette.ink)
                     .monospacedDigit()
@@ -58,6 +58,9 @@ struct ReviewFilesSheet: View {
         }
         .frame(width: 760, height: 560)
         .background(Palette.ground)
+        // Holds off automatic rescans while open, so this list and the draft stay put.
+        .onAppear { models.junk.isReviewingFiles = true }
+        .onDisappear { models.junk.isReviewingFiles = false }
         .task {
             excluded = models.junk.excludedItems
             base = models.junk.review(
@@ -68,7 +71,9 @@ struct ReviewFilesSheet: View {
 
 /// The rows, lazily, with each category's header pinned while its files scroll.
 private struct FileList: View {
+    /// The rows as the sheet opened; ticks don't rebuild them.
     let review: FileReview
+    let sectionTotals: [JunkCategoryID: UInt64]
     let home: URL
     @Binding var excluded: Set<URL>
 
@@ -88,7 +93,7 @@ private struct FileList: View {
                                 .font(DustlingTheme.Typography.rowTitle)
                                 .foregroundStyle(Palette.ink)
                             Spacer(minLength: 8)
-                            Text(Bytes.format(section.selectedBytes))
+                            Text(Bytes.format(sectionTotals[section.id] ?? 0))
                                 .font(DustlingTheme.Typography.size)
                                 .foregroundStyle(Palette.ink)
                         }
@@ -111,10 +116,13 @@ private struct FileRow: View {
 
     private typealias Palette = DustlingTheme.Palette
 
+    /// Read from the draft here, so a tick redraws only this row.
+    private var isIncluded: Bool { row.disabledReason == nil && !excluded.contains(row.url) }
+
     var body: some View {
         HStack(spacing: DustlingTheme.Metrics.columnGap) {
             Toggle(isOn: Binding(
-                get: { row.isIncluded },
+                get: { isIncluded },
                 set: { on in if on { excluded.remove(row.url) } else { excluded.insert(row.url) } }
             )) { EmptyView() }
                 .toggleStyle(.checkbox)
@@ -139,7 +147,7 @@ private struct FileRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Text(Bytes.format(row.bytes))
                 .font(DustlingTheme.Typography.size)
-                .foregroundStyle(row.isIncluded ? Palette.ink : Palette.muted)
+                .foregroundStyle(isIncluded ? Palette.ink : Palette.muted)
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([row.url]) }
                 .controlSize(.small)
         }

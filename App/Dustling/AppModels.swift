@@ -169,7 +169,8 @@ final class AppModels {
     /// Scans again when places opened that the last scan couldn't cover (Full Disk Access arrived),
     /// unless a scan or cleanup is running or a cleanup summary is showing.
     func rescanIfPlacesOpened() {
-        guard homeLoaded, let scope = lastScanScope,
+        // Not under an open Review files sheet: a rescan would drop its list and the user's draft.
+        guard homeLoaded, !junk.isReviewingFiles, let scope = lastScanScope,
               scope.shouldRescan(places: places.places, phase: homeFigures.phase) else { return }
         scanJunk()
     }
@@ -358,6 +359,8 @@ final class AppModels {
         #endif
         guard hasProbedFullDiskAccess else { return }
         await places.refresh(fullDiskAccessGranted: health.fullDiskAccess == .granted)
+        // Selected totals and Review files leave out what can't be read now, like a cleanup does.
+        junk.cleanupSkip = cleanupSkip
     }
 
     private func appBecameActive() {

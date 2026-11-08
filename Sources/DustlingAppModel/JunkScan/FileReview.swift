@@ -31,9 +31,7 @@ public struct FileReview: Equatable, Sendable {
     public var selectedCount: Int { sections.reduce(0) { $0 + $1.selectedCount } }
 
     /// The footer's "N files selected, X".
-    public var footerLine: String {
-        "\(selectedCount == 1 ? "1 file" : "\(selectedCount) files") selected, \(Bytes.format(selectedBytes))"
-    }
+    public var footerLine: String { Self.footerLine(count: selectedCount, bytes: selectedBytes) }
 
     /// The same list with `excluding` left out: rows and order stay, only what's ticked and the totals
     /// change. The sheet calls this on every tick, so a long list isn't sorted again.
@@ -50,14 +48,72 @@ public struct FileReview: Equatable, Sendable {
         })
     }
 
-    /// Why an item can't move, in the order a cleanup would decide it.
+    /// Why an item can't move, in words for the sheet (`Unmovable.check` decides).
     static func disabledReason(
         _ item: JunkItem, category: JunkCategory, skipping: CleanupSkip, appName: (String) -> String?
     ) -> String? {
-        if skipping.skips(item) { return "Needs Full Disk Access" }
-        if let owner = item.inUseByBundleID { return "In use by \(appName(owner) ?? owner)" }
-        if category.requiresAdmin { return "Needs the cleanup helper" }
-        if !category.isDeclaredRoot(item.url.deletingLastPathComponent()) { return "Outside the cleanup area" }
+        Unmovable.check(item, category: category, skipping: skipping)?.text(appName: appName)
+    }
+
+    /// Only the selection totals for `excluding`, without rebuilding any rows (for live totals).
+    public func totals(excluding: Set<URL>) -> (sections: [JunkCategoryID: UInt64], count: Int, bytes: UInt64) {
+        var perSection: [JunkCategoryID: UInt64] = [:], count = 0, bytes: UInt64 = 0
+        for section in sections {
+            var sum: UInt64 = 0
+            for row in section.rows where row.disabledReason == nil && !excluding.contains(row.url) {
+                sum += row.bytes
+                count += 1
+            }
+            perSection[section.id] = sum
+            bytes += sum
+        }
+        return (perSection, count, bytes)
+    }
+
+    /// "N files selected, X" for any count and size.
+    public static func footerLine(count: Int, bytes: UInt64) -> String {
+        "\(count == 1 ? "1 file" : "\(count) files") selected, \(Bytes.format(bytes))"
+    }
+}
+
+/// The one rule for whether a scanned item can move to the Trash now. The Review files list, the
+/// selected totals (action bar, confirm alert, Home) and `clean()` all ask it, so they always agree.
+public enum Unmovable: Equatable, Sendable {
+    /// Its place can't be read now (access revoked since the scan, or a locked container folder).
+    case locked
+    /// An app that is open right now owns it.
+    case inUse(bundleID: String)
+    /// Only the cleanup helper could move it.
+    case needsHelper
+    /// It isn't directly inside one of the category's folders.
+    case outsideCleanupArea
+
+    /// nil when the item can move.
+    public static func check(_ item: JunkItem, category: JunkCategory, skipping: CleanupSkip) -> Unmovable? {
+        if skipping.skips(item) { return .locked }
+        if let owner = item.inUseByBundleID { return .inUse(bundleID: owner) }
+        if category.requiresAdmin { return .needsHelper }
+        if !category.isDeclaredRoot(item.url.deletingLastPathComponent()) { return .outsideCleanupArea }
         return nil
+    }
+
+    /// The reason in the sheet.
+    public func text(appName: (String) -> String?) -> String {
+        switch self {
+        case .locked: "Needs Full Disk Access"
+        case .inUse(let id): "In use by \(appName(id) ?? id)"
+        case .needsHelper: "Needs the cleanup helper"
+        case .outsideCleanupArea: "Outside the cleanup area"
+        }
+    }
+
+    /// What the run records for it.
+    public var outcome: DeletionOutcome {
+        switch self {
+        case .locked: .skipped(reason: CleanupSkip.reason)
+        case .inUse(let id): .skipped(reason: "in use by \(id)")
+        case .needsHelper: .needsAdmin
+        case .outsideCleanupArea: .skipped(reason: "outside the cleanup area")
+        }
     }
 }

@@ -216,10 +216,10 @@ public enum JunkScreen {
     private static func items(_ count: Int) -> String { count == 1 ? "1 item" : "\(count) items" }
 
     private static func scannedNote(_ tile: CategoryTileModel, selection: Selection, partial: Bool) -> String {
-        if let note = tile.note { return note }
-        if selection == .review { return "Review before removing" }
-        if partial { return "\(items(tile.itemCount)). App containers need Full Disk Access" }
         let leftOut = tile.excludedCount > 0 ? ", \(tile.excludedCount) left out" : ""
+        if let note = tile.note { return note + leftOut }
+        if selection == .review { return "Review before removing" + leftOut }
+        if partial { return "\(items(tile.itemCount))\(leftOut). App containers need Full Disk Access" }
         if tile.inUseCount > 0 {
             return "\(items(tile.itemCount))\(leftOut), \(tile.inUseCount) in use by open apps and left alone"
         }
