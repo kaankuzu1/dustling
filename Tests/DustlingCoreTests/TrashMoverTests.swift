@@ -68,6 +68,75 @@ struct TrashMoverTests {
         #expect(FileManager.default.fileExists(atPath: file.path))
     }
 
+    @Test func unwritableDirectoryNeedsAdmin() throws {
+        // Moving a directory to another folder rewrites its "..", which needs write access to it.
+        let sandbox = try TestSandbox()
+        let root = try sandbox.directory("home/Library/Caches")
+        let locked = try sandbox.directory("home/Library/Caches/locked")
+        try sandbox.file("home/Library/Caches/locked/inner.bin")
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+        let (mover, _) = make(sandbox)
+        #expect(mover.moveToTrash(locked, allowedRoots: [root]) == .needsAdmin)
+        #expect(FileManager.default.fileExists(atPath: locked.path))
+    }
+
+    @Test func unreadableFileInWritableFolderIsStillMovable() throws {
+        // Only directories need write access on themselves; a read-only file moves fine.
+        let sandbox = try TestSandbox()
+        let root = try sandbox.directory("home/Library/Caches")
+        let file = try sandbox.file("home/Library/Caches/ro.bin")
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: file.path)
+        let (mover, _) = make(sandbox)
+        guard case .movedToTrash = mover.moveToTrash(file, allowedRoots: [root]) else {
+            Issue.record("read-only file should move"); return
+        }
+    }
+
+    @Test func itemInsideUnreadableFolderFailsWithAccessHint() throws {
+        let sandbox = try TestSandbox()
+        let root = try sandbox.directory("home/Library/Caches")
+        let sealed = try sandbox.directory("home/Library/Caches/sealed")
+        let item = try sandbox.file("home/Library/Caches/sealed/item.bin")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: sealed.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: sealed.path) }
+        let (mover, _) = make(sandbox)
+        #expect(mover.moveToTrash(item, allowedRoots: [root])
+            == .failed(reason: "no access (Full Disk Access may be needed)"))
+    }
+
+    @Test func pathThroughAFileIsAlreadyGone() throws {
+        let sandbox = try TestSandbox()
+        let root = try sandbox.directory("home/Library/Caches")
+        let file = try sandbox.file("home/Library/Caches/a.log")
+        let (mover, _) = make(sandbox)
+        #expect(mover.moveToTrash(file.appending(path: "child"), allowedRoots: [root])
+            == .skipped(reason: "already gone"))
+    }
+
+    // MARK: - Needs-admin decision (stat data injected: other owners need root to set up)
+
+    private func facts(
+        parentOK: Bool = true, sticky: Bool = false, parentOwner: uid_t = 501,
+        directory: Bool = false, itemWritable: Bool = true, itemOwner: uid_t = 501
+    ) -> TrashMover.PermissionFacts {
+        TrashMover.PermissionFacts(
+            parentWritableAndSearchable: parentOK, parentIsSticky: sticky, parentOwner: parentOwner,
+            itemIsDirectory: directory, itemWritable: itemWritable, itemOwner: itemOwner, userID: 501)
+    }
+
+    @Test func needsAdminDecision() {
+        #expect(!TrashMover.needsAdmin(facts()))
+        #expect(TrashMover.needsAdmin(facts(parentOK: false)))
+        #expect(TrashMover.needsAdmin(facts(directory: true, itemWritable: false)))
+        #expect(!TrashMover.needsAdmin(facts(directory: false, itemWritable: false)))
+        // Sticky parent (like /tmp): someone else's item in someone else's folder can't be moved.
+        #expect(TrashMover.needsAdmin(facts(sticky: true, parentOwner: 0, itemOwner: 0)))
+        #expect(!TrashMover.needsAdmin(facts(sticky: true, parentOwner: 0, itemOwner: 501)))
+        #expect(!TrashMover.needsAdmin(facts(sticky: true, parentOwner: 501, itemOwner: 0)))
+        #expect(!TrashMover.needsAdmin(facts(sticky: false, parentOwner: 0, itemOwner: 0)))
+    }
+
     @Test func backendErrorBecomesFailedWithReason() throws {
         let sandbox = try TestSandbox()
         let root = try sandbox.directory("home/Library/Caches")
