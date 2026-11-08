@@ -98,6 +98,7 @@ public enum ScanIssue: Equatable, Sendable {
 }
 
 /// A live snapshot of a running scan, for a "space found" counter and a path ticker.
+/// Live only; final totals must come from the returned CategoryScans.
 public struct ScanProgress: Sendable {
     public let currentPath: URL
     /// Bytes found so far. Never decreases during one scan.

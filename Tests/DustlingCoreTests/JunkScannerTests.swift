@@ -127,9 +127,10 @@ import Testing
             return await scanner.scan(catalog, onCategory: { _ in })
         }
         task.cancel()
-        // Cancelled before any category started: nothing finished, nothing invented, no throw.
+        // Cancelled before any category started: no throw, and the first category is marked stopped, empty.
         let result = await task.value
-        #expect(result.isEmpty)
+        #expect(result.count == 1)
+        #expect(result[0].stopped && result[0].items.isEmpty)
     }
 
     // MARK: - Progress and mid-folder stop
@@ -156,35 +157,86 @@ import Testing
     @Test func progressIsThrottledAndMonotonic() async throws {
         let sb = try TestSandbox()
         var cats: [JunkCategory] = []
-        for (i, id) in [JunkCategoryID.userCaches, .userLogs, .browserCaches].enumerated() {
+        for (i, id) in [JunkCategoryID.userCaches, .userLogs].enumerated() {
             let root = sb.root.appending(path: "r\(i)", directoryHint: .isDirectory)
-            let big = root.appending(path: "big", directoryHint: .isDirectory)
-            try makeFiles(6_000, in: big)
-            cats.append(category(id, root: root))
+            for n in 0..<80 { try sb.file("r\(i)/f\(n)", bytes: 10) }
+            // Slow measurement (about 5 ms per item) so each category runs well past 100 ms.
+            cats.append(JunkCategory(
+                id: id, title: "t", selection: .preselected, requiresAdmin: false, roots: [root],
+                measuredFilter: { _, _ in Thread.sleep(forTimeInterval: 0.005); return true }))
         }
         let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
         let events = Box<[(ScanProgress, ContinuousClock.Instant)]>([])
         let started = ContinuousClock.now
         _ = await scanner.scan(cats, onCategory: { _ in }, onProgress: { p in
-            events.with { $0.append((p, .now)) }
+            events.with { $0.append((p, .now)) }   // timestamp taken inside the callback
         })
         let elapsed = started.duration(to: .now)
         let all = events.with { $0 }
-        #expect(!all.isEmpty)
-        // Monotonic bytes, constant total, and the last event reports every category done.
+        var sameCategoryGaps = 0
         for (a, b) in zip(all, all.dropFirst()) {
             #expect(b.0.bytesFound >= a.0.bytesFound)
             #expect(b.0.categoriesDone >= a.0.categoriesDone)
-            // Throttle: two events inside one category are at least ~100 ms apart.
             if a.0.categoriesDone == b.0.categoriesDone {
-                #expect(a.1.duration(to: b.1) >= .milliseconds(95))
+                sameCategoryGaps += 1
+                #expect(a.1.duration(to: b.1) >= .milliseconds(90))
             }
         }
-        #expect(all.allSatisfy { $0.0.categoriesTotal == 3 })
-        #expect(all.last?.0.categoriesDone == 3)
-        // Never faster than one event per 100 ms apart from the three category-final events.
+        // The throttle was really exercised: several events inside the categories, not just one each.
+        #expect(sameCategoryGaps >= 2)
+        #expect(all.allSatisfy { $0.0.categoriesTotal == 2 })
+        #expect(all.last?.0.categoriesDone == 2)
+        // Loose upper bound: far fewer events than the 160 items measured.
         let ms = Int(elapsed / .milliseconds(1))
-        #expect(all.count <= ms / 100 + 1 + 3)
+        #expect(all.count <= ms / 100 + 1 + 2 + 2)
+    }
+
+    @Test func filteredCategoryNeverInflatesLiveCounter() async throws {
+        let sb = try TestSandbox()
+        let rejectRoot = sb.root.appending(path: "rej", directoryHint: .isDirectory)
+        for n in 0..<20 { try sb.file("rej/f\(n)", bytes: 50_000) }
+        let keepRoot = sb.root.appending(path: "keep", directoryHint: .isDirectory)
+        for n in 0..<5 { try sb.file("keep/f\(n)", bytes: 50_000) }
+        let rejecting = JunkCategory(
+            id: .userCaches, title: "t", selection: .preselected, requiresAdmin: false, roots: [rejectRoot],
+            measuredFilter: { _, _ in false })
+        var scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        scanner.progressInterval = .zero
+        let events = Box<[ScanProgress]>([])
+        let results = await scanner.scan(
+            [rejecting, category(.userLogs, root: keepRoot)], onCategory: { _ in },
+            onProgress: { p in events.with { $0.append(p) } })
+        let all = events.with { $0 }
+        #expect(results[0].items.isEmpty)
+        let duringRejecting = all.filter { $0.categoriesDone == 0 }
+        #expect(!duringRejecting.isEmpty)
+        #expect(duringRejecting.allSatisfy { $0.bytesFound == 0 })
+        #expect(all.last?.bytesFound == results.reduce(0) { $0 + $1.bytes })
+        #expect(results[1].bytes > 0)
+    }
+
+    @Test func cancelBetweenCategoriesMarksNextOneStopped() async throws {
+        let sb = try TestSandbox()
+        var cats: [JunkCategory] = []
+        for (i, id) in [JunkCategoryID.userCaches, .userLogs, .browserCaches].enumerated() {
+            try sb.file("c\(i)/a", bytes: 10)
+            cats.append(category(id, root: sb.root.appending(path: "c\(i)", directoryHint: .isDirectory)))
+        }
+        let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        let seen = Box<[CategoryScan]>([])
+        let task = Task {
+            await scanner.scan(cats, onCategory: { s in seen.with { $0.append(s) } }, onProgress: { p in
+                if p.categoriesDone == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+            })
+        }
+        let result = await task.value
+        #expect(result.count == 2)
+        #expect(result[0].stopped == false)
+        #expect(result[1].category.id == .userLogs)
+        #expect(result[1].stopped)
+        #expect(result[1].items.isEmpty && result[1].issues.isEmpty)
+        #expect(seen.with { $0.count } == 2)
+        #expect(ScanTotals(result).cleanableByDefault.isComplete == false)
     }
 
     @Test func stopMarksPartialCategory() async throws {
@@ -225,13 +277,21 @@ import Testing
     @Test func cancelDuringHugeDirectoryStopsQuickly() async throws {
         let sb = try TestSandbox()
         let root = sb.root.appending(path: "huge", directoryHint: .isDirectory)
+        try sb.file("huge/aaa-small", bytes: 10)
         try makeFiles(20_000, in: root.appending(path: "big", directoryHint: .isDirectory))
-        let scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        var scanner = JunkScanner(environment: sb.environment, runningBundleIDs: { [] })
+        scanner.progressInterval = .zero   // every enumeration tick reaches the callback
         let cancelledAt = Box<ContinuousClock.Instant?>(nil)
+        let insideBig = Box<Int>(0)
         let task = Task {
-            await scanner.scan([category(.userCaches, root: root)], onCategory: { _ in }, onProgress: { _ in
-                cancelledAt.with { if $0 == nil { $0 = .now } }
-                withUnsafeCurrentTask { $0?.cancel() }
+            await scanner.scan([category(.userCaches, root: root)], onCategory: { _ in }, onProgress: { p in
+                // Events with a path inside big/ come from the enumeration itself; stop at the third
+                // (about 257 entries in), well before the 20 000th.
+                guard p.currentPath.path.contains("/big/") else { return }
+                if insideBig.with({ $0 += 1; return $0 }) == 3 {
+                    cancelledAt.with { $0 = .now }
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
             })
         }
         let result = await task.value
@@ -240,7 +300,7 @@ import Testing
         #expect(start.duration(to: returned) < .seconds(1))
         #expect(result.count == 1)
         #expect(result[0].stopped)
-        #expect(result[0].items.isEmpty)
+        #expect(names(result[0]) == ["aaa-small"])   // the half-measured big folder is dropped
     }
 
     private func fdaPaths(_ scan: CategoryScan?) -> [String] {

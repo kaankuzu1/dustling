@@ -3,6 +3,8 @@ import Foundation
 public struct JunkScanner: Sendable {
     private let environment: SystemEnvironment
     private let runningBundleIDs: @Sendable () -> Set<String>
+    /// Minimum gap between progress events. Tests shorten it; the app always uses 100 ms.
+    var progressInterval: Duration = .milliseconds(100)
 
     public init(environment: SystemEnvironment, runningBundleIDs: @escaping @Sendable () -> Set<String>) {
         self.environment = environment
@@ -82,17 +84,19 @@ public struct JunkScanner: Sendable {
     /// decreases, and `finish` always emits. Used from one task only.
     private final class ProgressEmitter {
         private let total: Int
+        private let interval: Duration
         private let sink: @Sendable (ScanProgress) -> Void
         private var last: ContinuousClock.Instant?
         private var highWater: UInt64 = 0
         var done = 0
-        init(total: Int, sink: @escaping @Sendable (ScanProgress) -> Void) {
+        init(total: Int, interval: Duration, sink: @escaping @Sendable (ScanProgress) -> Void) {
             self.total = total
+            self.interval = interval
             self.sink = sink
         }
         func tick(_ path: URL, bytes: UInt64) {
             let now = ContinuousClock.now
-            if let last, last.duration(to: now) < .milliseconds(100) { return }
+            if let last, last.duration(to: now) < interval { return }
             emit(path, bytes, at: now)
         }
         func finish(_ path: URL, bytes: UInt64) { emit(path, bytes, at: .now) }
@@ -110,7 +114,7 @@ public struct JunkScanner: Sendable {
     /// Cancelling the task stops the scan even in the middle of a big folder and never throws: the result
     /// holds the finished categories plus, if one was in progress, that category with `stopped = true`
     /// and only the items fully measured (an item cut off mid-measurement is dropped, not shown with a
-    /// partial size). Categories not yet started are absent.
+    /// partial size). If the cancel lands between categories, the next category is returned as stopped with no items.
     public func scan(
         _ categories: [JunkCategory],
         onCategory: @Sendable (CategoryScan) -> Void,
@@ -120,11 +124,17 @@ public struct JunkScanner: Sendable {
         let sizer = DirectorySizer()
         var claimed = Set<String>()
         var results: [CategoryScan] = []
-        let progress = ProgressEmitter(total: categories.count, sink: onProgress)
+        let progress = ProgressEmitter(total: categories.count, interval: progressInterval, sink: onProgress)
         var committed: UInt64 = 0   // bytes of items accepted so far, across categories
 
         for category in categories {
-            if Task.isCancelled { break }
+            if Task.isCancelled {
+                // Cancelled between categories: say so, never let a truncated scan look complete.
+                let notStarted = CategoryScan(category: category, items: [], bytes: 0, issues: [], stopped: true)
+                results.append(notStarted)
+                onCategory(notStarted)
+                break
+            }
             var items: [JunkItem] = []
             let resolved = resolveRoots(category)
             var issues = resolved.issues
@@ -146,9 +156,12 @@ public struct JunkScanner: Sendable {
                     lastPath = child
                     progress.tick(child, bytes: committed)
                     let base = committed
+                    // With a measuredFilter the item may still be rejected, so its in-flight bytes are not
+                    // counted until it is accepted; otherwise the counter would overshoot for good.
+                    let countsInFlight = category.measuredFilter == nil
                     let size = sizer.measure(
                         child, isCancelled: { Task.isCancelled },
-                        onEntry: { path, soFar in progress.tick(path, bytes: base + soFar) })
+                        onEntry: { path, soFar in progress.tick(path, bytes: base + (countsInFlight ? soFar : 0)) })
                     if size.cancelled { stopped = true; break rootLoop }
                     if let measured = category.measuredFilter {
                         do {
