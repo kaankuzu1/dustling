@@ -9,6 +9,12 @@ import Observation
 final class AppModels {
     let health: HealthModel
     let storage: StorageModel
+    /// Which junk places Dustling can open right now (onboarding and the limited-mode banner).
+    let places: PlacesModel
+    /// The onboarding window's step and the persisted "onboarding completed" flag.
+    let onboarding = OnboardingState()
+    /// The main window's selected destination. Shared so onboarding can send the user to a screen.
+    var selection: Destination = .home
     /// The free space the user wants for a macOS update. Default 30 GB until Settings (Task 15) can change it.
     var goal = UpdateGoal()
     /// The startup volume's name for the sidebar footer, e.g. "Macintosh HD".
@@ -27,6 +33,7 @@ final class AppModels {
             clock: ContinuousClock(),
             lastRunSummary: { AppModels.latestRun(in: journal) })
         storage = StorageModel(commands: commands)
+        places = PlacesModel(environment: environment)
         volumeName = Self.readVolumeName()
     }
 
@@ -42,8 +49,16 @@ final class AppModels {
         Task {
             await health.refresh()
             hasProbedFullDiskAccess = true
+            await refreshPlaces()
         }
         Task { await storage.refresh() }
+    }
+
+    /// Re-checks which places are locked. Waits for the first Full Disk Access probe, because
+    /// without access the check must not open folders that would prompt for consent.
+    func refreshPlaces() async {
+        guard hasProbedFullDiskAccess else { return }
+        await places.refresh(fullDiskAccessGranted: health.fullDiskAccess == .granted)
     }
 
     private func appBecameActive() {
@@ -52,6 +67,7 @@ final class AppModels {
         guard hasProbedFullDiskAccess else { return }
         health.appBecameActive()
         Task { await storage.refresh() }
+        Task { await refreshPlaces() }
     }
 
     /// The newest run in the history journal, for the last-run health light. An unreadable journal

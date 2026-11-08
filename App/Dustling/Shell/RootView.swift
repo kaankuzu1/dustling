@@ -2,16 +2,18 @@ import SwiftUI
 
 /// The main window: the 236 pt sidebar and the selected screen (SCREENS-final, Shell).
 struct RootView: View {
-    @State private var selection: Destination = .home
+    @Environment(AppModels.self) private var models
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        @Bindable var models = models
         NavigationSplitView {
-            Sidebar(selection: $selection)
+            Sidebar(selection: $models.selection)
                 .navigationSplitViewColumnWidth(DustlingTheme.Metrics.sidebarWidth)
                 .toolbar(removing: .sidebarToggle)
                 .ignoresSafeArea()
         } detail: {
-            DestinationView(destination: selection)
+            DestinationView(destination: models.selection)
                 .frame(minWidth: DustlingTheme.Metrics.contentMinWidth)
                 // Only the title bar: on macOS 26 the leading safe area keeps content clear of the sidebar.
                 .ignoresSafeArea(edges: .top)
@@ -23,6 +25,9 @@ struct RootView: View {
         .frame(
             minWidth: DustlingTheme.Metrics.sidebarWidth + DustlingTheme.Metrics.contentMinWidth,
             minHeight: 560)
+        // Full Disk Access changed (polling, activation): re-check which places are locked.
+        .task(id: models.health.fullDiskAccess) { await models.refreshPlaces() }
+        .task { models.onboarding.openAtLaunchIfNeeded(models: models, openWindow: openWindow) }
     }
 }
 
@@ -31,9 +36,16 @@ struct RootView: View {
 struct DestinationView: View {
     let destination: Destination
 
+    @Environment(AppModels.self) private var models
+
     var body: some View {
         VStack(spacing: 0) {
-            ScreenToolbar(title: destination.title, subtitle: destination.placeholderSubtitle)
+            ScreenToolbar(title: destination.title, subtitle: subtitle)
+            if destination == .home, LimitedModeBanner.isShown(models) {
+                LimitedModeBanner()
+                    .padding(.horizontal, DustlingTheme.Metrics.gutter)
+                    .padding(.top, 16)
+            }
             PlaceholderContent(destination: destination)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if destination.isToolScreen {
@@ -41,6 +53,13 @@ struct DestinationView: View {
             }
         }
         .background(DustlingTheme.Palette.ground)
+    }
+
+    private var subtitle: String {
+        if destination == .home, LimitedModeBanner.isShown(models) {
+            return LimitedModeBanner.subtitle(lockedCount: models.places.lockedPlaces.count)
+        }
+        return destination.placeholderSubtitle
     }
 }
 
