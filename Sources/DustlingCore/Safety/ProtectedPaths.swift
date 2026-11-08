@@ -52,15 +52,30 @@ public struct ProtectedPaths: Sendable {
     }
 
     /// Each entry as resolved like a candidate, plus (for a symlinked entry) where it really lives.
-    private static func keys(for entries: [URL]) -> [[String]] {
+    /// Paths under the Data volume's firmlink prefix also get the form without it, because realpath
+    /// does not map a firmlink back (`/System/Volumes/Data/Users/x` is the same place as `/Users/x`).
+    static func keys(for entries: [URL]) -> [[String]] {
         var list: [[String]] = []
+        func add(_ comps: [String]) {
+            list.append(key(comps))
+            // The stripped form is resolved again: it may still go through symlinks (e.g. /var).
+            if let stripped = withoutDataVolumePrefix(comps) {
+                list.append(key(resolve(URL(filePath: "/" + stripped.joined(separator: "/")))))
+            }
+        }
         for entry in entries {
-            list.append(key(resolve(entry)))
+            add(resolve(entry))
             if let real = realpathString(entry.path(percentEncoded: false)) {
-                list.append(key(real.split(separator: "/").map(String.init)))
+                add(real.split(separator: "/").map(String.init))
             }
         }
         return list
+    }
+
+    static func withoutDataVolumePrefix(_ comps: [String]) -> [String]? {
+        let prefix = ["System", "Volumes", "Data"]
+        guard comps.count > prefix.count, Array(comps.prefix(3)) == prefix else { return nil }
+        return Array(comps.dropFirst(3))
     }
 
     public func verdict(for url: URL, allowedRoots: [URL]) -> PathVerdict {

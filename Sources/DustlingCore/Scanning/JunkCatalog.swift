@@ -41,8 +41,9 @@ public enum JunkCatalog {
     }
 
     /// Wraps every category's filter so excluded items (inside an exclusion, or containing one) and,
-    /// when asked, recently changed items never reach measuring. The Trash is exempt from the recency
-    /// rule: it is only ever emptied as a whole, so its list must match what emptying does.
+    /// when asked, recently changed items never reach measuring. The Trash category is left untouched
+    /// (no exclusions, no recency): exclusions guard what would be MOVED to the Trash, and the Trash is
+    /// only ever emptied as a whole, so its list must match what Empty Trash deletes.
     private static func applying(
         _ options: ScanOptions, to categories: [JunkCategory], environment: SystemEnvironment, now: Date
     ) -> [JunkCategory] {
@@ -51,13 +52,13 @@ public enum JunkCatalog {
         guard days != nil || !options.exclusions.isEmpty else { return categories }
         return categories.map { category in
             let inner = category.itemFilter
-            let checksRecency = category.id != .trash
+            if category.id == .trash { return category }
             return JunkCategory(
                 id: category.id, title: category.title, selection: category.selection,
                 requiresAdmin: category.requiresAdmin, roots: category.roots, expansions: category.expansions,
                 itemFilter: { url in
                     guard inner(url), guardPaths.exclusionReason(for: url) == nil else { return false }
-                    if checksRecency, let days, changedWithin(days: days, url, now: now) { return false }
+                    if let days, changedWithin(days: days, url, now: now) { return false }
                     return true
                 },
                 measuredFilter: category.measuredFilter)

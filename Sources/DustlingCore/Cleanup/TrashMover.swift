@@ -2,7 +2,7 @@ import Foundation
 
 public struct TrashMover: Sendable {
     private let backend: TrashBackend
-    private let protectedPaths: ProtectedPaths
+    public let protectedPaths: ProtectedPaths
 
     static let noAccessReason = "no access (Full Disk Access may be needed)"
 

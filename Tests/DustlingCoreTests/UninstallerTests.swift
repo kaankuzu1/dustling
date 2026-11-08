@@ -30,11 +30,12 @@ struct UninstallerTests {
     }
 
     private func makeUninstaller(
-        _ sandbox: TestSandbox, commands: CommandRunning, running: Bool = false
+        _ sandbox: TestSandbox, commands: CommandRunning, running: Bool = false,
+        options: ScanOptions = ScanOptions()
     ) -> Uninstaller {
         let backend = DirectoryTrashBackend(directory: sandbox.root.appending(path: "trash", directoryHint: .isDirectory))
         let runner = CleanupRunner(
-            mover: TrashMover(backend: backend, protectedPaths: ProtectedPaths(environment: sandbox.environment)),
+            mover: TrashMover(backend: backend, protectedPaths: options.protectedPaths(environment: sandbox.environment)),
             journal: RunJournal(directory: sandbox.environment.historyDirectory),
             logger: RunLogger(directory: sandbox.environment.logsDirectory),
             sizer: DirectorySizer())
@@ -113,6 +114,19 @@ struct UninstallerTests {
         guard case .movedToTrash = record.entries[1].outcome else {
             Issue.record("plist not trashed"); return
         }
+    }
+
+    @Test func excludedLaunchAgentIsNeitherBootedOutNorTrashed() async throws {
+        let sandbox = try TestSandbox()
+        let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")
+        let plist = try sandbox.file("home/Library/LaunchAgents/com.example.foo.plist")
+        let fake = FakeCommandRunner()
+        let uninstaller = makeUninstaller(sandbox, commands: fake, options: ScanOptions(exclusions: [plist.path]))
+        let record = try await uninstaller.uninstall(
+            installedApp(appURL), leftovers: [leftover(plist, kind: .launchAgent)]) { _, _ in }
+        #expect(fake.calls.isEmpty)
+        #expect(record.entries[1].outcome == .skipped(reason: "excluded in Settings"))
+        #expect(FileManager.default.fileExists(atPath: plist.path))
     }
 
     @Test func failedBootoutIsRecordedAndPlistStillTrashed() async throws {

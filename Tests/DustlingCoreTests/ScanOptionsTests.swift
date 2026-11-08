@@ -172,4 +172,51 @@ import Testing
         #expect(try JSONDecoder().decode(ScanOptions.self, from: JSONEncoder().encode(o)) == o)
         #expect(ScanOptions() == ScanOptions(skipChangedWithinDays: nil, includeExternalTrash: true, exclusions: []))
     }
+
+    // MARK: fix round 1
+
+    @Test func exclusionsNeverHideTrashContents() async throws {
+        let sb = try TestSandbox()
+        try sb.file("home/.Trash/keep/a.bin", bytes: 4096)
+        try sb.file("home/.Trash/b.bin", bytes: 4096)
+        let inspector = TrashInspector(
+            environment: sb.environment, journal: RunJournal(directory: sb.environment.historyDirectory),
+            logger: RunLogger(directory: sb.environment.logsDirectory), sizer: DirectorySizer())
+        let expected = inspector.contents().items.map { $0.url.lastPathComponent }.sorted()
+        #expect(expected == ["b.bin", "keep"])
+        for exclusion in [sb.environment.userTrash.appending(path: "keep").path, "~", sb.environment.userTrash.path] {
+            let r = await scan(sb, options: ScanOptions(skipChangedWithinDays: 7, exclusions: [exclusion]))
+            #expect(names(r[.trash]) == expected)
+        }
+    }
+
+    @Test func firmlinkFormOfAnExclusionProtectsTheRealPath() throws {
+        let sb = try TestSandbox()
+        let caches = try sb.directory("home/Library/Caches")
+        let keep = try sb.directory("home/Library/Caches/Keep")
+        let real = keep.resolvingSymlinksInPath().path(percentEncoded: false)
+        let firm = URL(filePath: "/System/Volumes/Data" + real)
+        let p = ProtectedPaths(environment: sb.environment, extraDenied: [firm])
+        #expect(p.verdict(for: keep.appending(path: "x"), allowedRoots: [caches]) == .denied(reason: "excluded in Settings"))
+        #expect(p.verdict(for: caches.appending(path: "Other"), allowedRoots: [caches]) == .allowed)
+        #expect(ProtectedPaths.withoutDataVolumePrefix(["System", "Volumes", "Data", "Users", "u"]) == ["Users", "u"])
+        #expect(ProtectedPaths.withoutDataVolumePrefix(["System", "Volumes", "Data"]) == nil)
+        #expect(ProtectedPaths.withoutDataVolumePrefix(["Users", "u"]) == nil)
+    }
+
+    @Test func normalizerReportsWhyEntriesAreIgnored() {
+        let home = URL(filePath: "/Users/me")
+        let r = ScanOptions.normalizeExclusions(
+            ["", "  ", "rel/path", "file:///tmp/x", "~bob/x", "~", "~/a/", "/x/../y"], home: home)
+        #expect(r.accepted.map(\.path) == ["/Users/me", "/Users/me/a", "/y"])
+        #expect(r.ignored.map(\.reason) == ["empty", "empty", "not an absolute path", "file URL not supported", "unknown user"])
+        #expect(r.ignored.map(\.entry) == ["", "  ", "rel/path", "file:///tmp/x", "~bob/x"])
+    }
+
+    @Test func partialSettingsDecodeWithDefaults() throws {
+        let empty = try JSONDecoder().decode(ScanOptions.self, from: Data("{}".utf8))
+        #expect(empty == ScanOptions())
+        let partial = try JSONDecoder().decode(ScanOptions.self, from: Data(#"{"exclusions":["/a"]}"#.utf8))
+        #expect(partial == ScanOptions(exclusions: ["/a"]))
+    }
 }

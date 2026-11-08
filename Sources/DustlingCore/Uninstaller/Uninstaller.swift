@@ -36,15 +36,13 @@ public struct Uninstaller: Sendable {
     private let commands: CommandRunning
     private let running: RunningAppsProviding
     private let environment: SystemEnvironment
-    private let guardPaths: ProtectedPaths
 
-    /// `protectedPaths` should be the same one the runner's mover uses, so a user-excluded launch agent
-    /// is neither booted out nor trashed.
+    /// The bootout guard is the runner's own `ProtectedPaths`, so a user-excluded launch agent is
+    /// neither booted out nor trashed.
     public init(
         runner: CleanupRunner, commands: CommandRunning, running: RunningAppsProviding,
-        environment: SystemEnvironment, protectedPaths: ProtectedPaths? = nil
+        environment: SystemEnvironment
     ) {
-        self.guardPaths = protectedPaths ?? ProtectedPaths(environment: environment)
         self.runner = runner
         self.commands = commands
         self.running = running
@@ -91,6 +89,7 @@ public struct Uninstaller: Sendable {
 
         var extra: [JournalEntry] = []
         let agentsDirectory = environment.userLibrary.appending(path: "LaunchAgents", directoryHint: .isDirectory)
+        let guardPaths = runner.protectedPaths
         for agent in userLeftovers where agent.kind == .launchAgent {
             // Only agents that really live in ~/Library/LaunchAgents are ever booted out.
             guard guardPaths.verdict(for: agent.url, allowedRoots: [agentsDirectory]) == .allowed,

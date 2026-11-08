@@ -7,6 +7,10 @@ public struct CleanupRunner: Sendable {
     private let logger: RunLogger
     private let sizer: DirectorySizer
 
+    /// The guard every move goes through; other code that acts before moving (e.g. booting out a launch
+    /// agent) must use this one so it can't disagree with the mover.
+    public var protectedPaths: ProtectedPaths { mover.protectedPaths }
+
     public init(mover: TrashMover, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer) {
         self.mover = mover
         self.journal = journal

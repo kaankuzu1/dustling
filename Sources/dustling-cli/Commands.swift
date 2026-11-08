@@ -317,8 +317,7 @@ enum Commands {
 
         do {
             let record = try await Uninstaller(
-                runner: makeRunner(), commands: commands, running: WorkspaceRunningApps(), environment: env,
-                protectedPaths: options.protectedPaths(environment: env)
+                runner: makeRunner(), commands: commands, running: WorkspaceRunningApps(), environment: env
             ).uninstall(app, leftovers: selected) { _, _ in }
             Format.printEntries(record)
             let code = Format.printTotals(record)
