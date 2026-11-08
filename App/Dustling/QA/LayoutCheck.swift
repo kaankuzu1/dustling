@@ -130,7 +130,8 @@ import SwiftUI
                 problems.append("\(place) has no name for VoiceOver")
             }
             // Controls outside scroll views, and the scroll views themselves, must fit their window or sheet.
-            if (isControl && !scrolled) || (role == kAXScrollAreaRole && !scrolled), frame.width > 1, frame.height > 1 {
+            if (isControl && !scrolled) || (role == kAXScrollAreaRole && !scrolled), isFinite(frame),
+               frame.width > 1, frame.height > 1 {
                 // Half a point of slack for rounding.
                 if !clip.insetBy(dx: -0.5, dy: -0.5).contains(frame) {
                     problems.append(clip.intersects(frame)
@@ -174,7 +175,13 @@ import SwiftUI
     }
 
     private static func describe(_ r: CGRect) -> String {
-        "(\(Int(r.minX)),\(Int(r.minY)) \(Int(r.width))x\(Int(r.height)))"
+        guard isFinite(r) else { return "(no frame)" }
+        return "(\(Int(r.minX)),\(Int(r.minY)) \(Int(r.width))x\(Int(r.height)))"
+    }
+
+    /// Some elements (off screen, not laid out yet) report NaN or infinite frames.
+    private static func isFinite(_ r: CGRect) -> Bool {
+        [r.minX, r.minY, r.width, r.height].allSatisfy(\.isFinite)
     }
 }
 #endif
