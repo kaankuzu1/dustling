@@ -164,7 +164,9 @@ struct UninstallerModelTests {
 
         #expect(row.label == "Shortcut")
         #expect(row.warning?.contains("Only the link is removed") == true)
-        #expect(model.leftovers(for: row.app).allSatisfy { !$0.checked })
+        let rows = model.leftovers(for: row.app)
+        #expect(!rows.isEmpty)
+        #expect(rows.allSatisfy { !$0.checked && $0.disabledReason == "Only the link is removed" })
 
         model.selection = [row.app.url]
         #expect(model.confirmation.perApp[0].items == 1)   // only the link, whatever is ticked
@@ -209,5 +211,89 @@ struct UninstallerModelTests {
         #expect(badges(.groupContainer, .nameBased, data: true, admin: false) == [.nameMatch, .yourData])
         #expect(badges(.launchDaemon, .exact, data: false, admin: true) == [.helper])
         #expect(badges(.caches, .nameBased, data: false, admin: false) == [.nameMatch])
+    }
+
+    @Test func untickedCacheStaysUntickedAfterReload() async throws {
+        let (rig, _) = try alphaRig()
+        let model = rig.uninstallerModel()
+        await model.load()
+        let alpha = try #require(model.apps.first)
+        let caches = try #require(model.leftovers(for: alpha.app).first { $0.leftover.kind == .caches })
+        model.setChecked(false, leftover: caches.leftover, in: alpha.app)
+
+        await model.load()
+
+        let after = try #require(model.leftovers(for: alpha.app).first { $0.leftover.kind == .caches })
+        #expect(!after.checked)
+    }
+
+    @Test func reloadDuringUninstallUsesTheConfirmedPlan() async throws {
+        let (rig, app) = try alphaRig()
+        let running = FakeRunning()
+        running.set(app, running: true)
+        let model = rig.uninstallerModel(running: running)
+        await model.load()
+        let alpha = try #require(model.apps.first)
+        let caches = try #require(model.leftovers(for: alpha.app).first { $0.leftover.kind == .caches })
+        model.setChecked(false, leftover: caches.leftover, in: alpha.app)   // the user unticked it
+        model.selection = [alpha.app.url]
+        let quitter = HookQuitter(running: running) {
+            // While the app is quitting: a reload is attempted and the box gets ticked again.
+            await model.load()
+            await MainActor.run { model.setChecked(true, leftover: caches.leftover, in: alpha.app) }
+        }
+
+        let records = await model.uninstallSelected(quit: quitter)
+
+        if case .movedToTrash = records.first?.entries.first?.outcome {} else { Issue.record("expected moved") }
+        #expect(records.first?.entries.count == 1)   // only the app
+        #expect(FileManager.default.fileExists(
+            atPath: rig.environment.userLibrary.appending(path: "Caches/com.test.alpha").path))
+        #expect(!FileManager.default.fileExists(atPath: app.path))
+        #expect(!model.isUninstalling)
+    }
+
+    @Test func appsShowBeforeLeftoversAreCounted() async throws {
+        let (rig, _) = try alphaRig()
+        try rig.makeApp("Beta", bundleID: "com.test.beta")
+        let commands = FakeCommands()
+        let gate = Gate()
+        commands.pkgutilGate = gate
+        let model = rig.uninstallerModel(commands: commands)
+
+        let loading = Task { await model.load() }
+        let shown = await waitUntil { model.apps.count == 2 }
+        #expect(shown)
+        #expect(model.apps.allSatisfy { $0.isCounting })
+        #expect(model.isLoading)
+
+        gate.open()
+        await loading.value
+
+        #expect(model.apps.allSatisfy { !$0.isCounting })
+        #expect(model.apps.first { $0.app.displayName == "Alpha" }?.leftoverCount == 2)
+        #expect(!model.isLoading)
+    }
+
+    @Test func helperOnlyLeftoversAreCountedApart() async throws {
+        let (rig, _) = try alphaRig()
+        let daemons = rig.environment.systemLibrary.appending(path: "LaunchDaemons")
+        let plist = try rig.writeLaunchPlist(daemons, label: "com.test.alpha.daemon", program: "/x/y")
+        let model = rig.uninstallerModel()
+        await model.load()
+        let alpha = try #require(model.apps.first)
+        let admin = try #require(model.leftovers(for: alpha.app).first { $0.leftover.url.lastPathComponent == plist.lastPathComponent })
+        #expect(admin.badges.contains(.helper))
+        model.selection = [alpha.app.url]
+        let withAdmin = model.confirmation
+        #expect(admin.checked)
+        #expect(withAdmin.adminItems == 1)
+        #expect(withAdmin.adminNote == "Needs the cleanup helper")
+        #expect(withAdmin.perApp[0].adminItems == 1)
+        #expect(withAdmin.perApp[0].items == 2)   // the app and its cache, not the daemon
+        model.setChecked(false, leftover: admin.leftover, in: alpha.app)
+        #expect(model.confirmation.totalBytes == withAdmin.totalBytes)   // never in what is freed
+        #expect(model.confirmation.adminItems == 0)
+        #expect(model.confirmation.adminNote == nil)
     }
 }

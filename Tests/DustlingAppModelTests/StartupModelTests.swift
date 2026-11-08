@@ -118,4 +118,24 @@ struct StartupModelTests {
         #expect(off.rows.allSatisfy { !$0.item.isEnabled })
         #expect(off.total == 2)
     }
+
+    @Test func orphansAreJudgedOnlyForAbsolutePathsAndComputedOnceInLoad() async throws {
+        let rig = try ModelRig()
+        let agents = rig.environment.userLibrary.appending(path: "LaunchAgents")
+        try rig.writeLaunchPlist(agents, label: "com.x.bare", program: "sometool")
+        try rig.writeLaunchPlist(agents, label: "com.x.gone", program: "/nope/gone")
+        let checks = Counter()
+        let scanner = rig.startupScanner()
+        let recorder = StartupChangeRecorder(
+            scanner: scanner, journal: rig.journal, logger: RunLogger(directory: rig.environment.logsDirectory))
+        let model = StartupModel(
+            scanner: scanner, recorder: recorder, fileExists: { _ in checks.bump(); return false })
+        await model.load()
+
+        #expect(model.orphanBanner?.items.map(\.label) == ["com.x.gone"])
+        let afterLoad = checks.value
+        #expect(afterLoad == 1)   // the bare name was never checked
+        for _ in 0..<5 { _ = model.groups; _ = model.orphanBanner }
+        #expect(checks.value == afterLoad)
+    }
 }

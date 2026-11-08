@@ -116,4 +116,18 @@ struct HistoryModelTests {
         await model.refresh()
         #expect(model.unreadableRecords.count == 1)
     }
+
+    @Test func restoreOfRunBeforeLastEmptyIsRefusedEvenWithoutAPriorRefresh() async throws {
+        let rig = try ModelRig()
+        let original = rig.root.appending(path: "orig/old.txt")
+        let old = try trashedRun(rig, name: "old.txt", original: original.path, ago: 3 * 3600)
+        try rig.journal.save(RunRecord(
+            startedAt: Date().addingTimeInterval(-3600), kind: .emptyTrash, entries: [], restorable: false))
+        let model = HistoryModel(journal: rig.journal)   // never refreshed
+
+        await #expect(throws: HistoryModelError.trashWasEmptied) {
+            _ = try await model.restore(runID: old.id)
+        }
+        #expect(!FileManager.default.fileExists(atPath: original.path))
+    }
 }

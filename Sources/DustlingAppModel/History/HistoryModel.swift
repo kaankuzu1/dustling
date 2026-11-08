@@ -173,7 +173,9 @@ public final class HistoryModel {
     /// journal's own errors (`notRestorable`, `saveFailed`, ...) otherwise. Refreshes afterwards
     /// and calls `onRunCompleted` whenever a restore was attempted.
     public func restore(runID: UUID, paths: Set<String>? = nil) async throws -> [RestoreOutcome] {
-        if let row = runs.first(where: { $0.id == runID }), !row.restorable, row.chip == "Trash emptied" {
+        if !runs.contains(where: { $0.id == runID }) { await refresh() }
+        if let run = runs.first(where: { $0.id == runID }), let emptied = lastEmptyTrash,
+           run.record.startedAt < emptied {
             throw HistoryModelError.trashWasEmptied
         }
         let journal = self.journal

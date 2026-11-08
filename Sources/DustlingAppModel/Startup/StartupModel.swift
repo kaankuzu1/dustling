@@ -66,6 +66,9 @@ public final class StartupModel {
     public private(set) var isLoading = false
     /// What the last switch did, in plain words ("Turned off X"); nil before any.
     public private(set) var lastChange: String?
+    /// Computed once per `load()` so reading `groups` never touches the disk.
+    public private(set) var orphanBanner: OrphanBanner?
+    @ObservationIgnored private var orphanIDs: Set<String> = []
     public private(set) var filters: [StartupGroupKind: StartupFilter] = [:]
 
     @ObservationIgnored private let scanner: StartupItemScanner
@@ -89,12 +92,29 @@ public final class StartupModel {
         generation += 1
         let mine = generation
         isLoading = true
-        let scanner = self.scanner
-        let found = await Task.detached(priority: .userInitiated) { scanner.scanWithIssues() }.value
+        let scanner = self.scanner, fileExists = self.fileExists
+        let found = await Task.detached(priority: .userInitiated) { () -> ([StartupItem], [ScanIssue], [StartupItem]) in
+            let scanned = scanner.scanWithIssues()
+            // Only an absolute program path can be judged; a bare name is looked up on PATH at launch.
+            let orphans = scanned.items.filter { item in
+                guard let program = item.program, program.hasPrefix("/") else { return false }
+                return !fileExists(program)
+            }
+            return (scanned.items, scanned.issues, orphans)
+        }.value
         guard mine == generation else { return }
         isLoading = false
-        items = found.items
-        issues = found.issues
+        items = found.0
+        issues = found.1
+        orphanIDs = Set(found.2.map(\.id))
+        if found.2.isEmpty {
+            orphanBanner = nil
+        } else {
+            let one = found.2.count == 1
+            orphanBanner = OrphanBanner(
+                items: found.2,
+                message: "\(found.2.count) startup \(one ? "item" : "items") point to an app or file that is gone. Turning \(one ? "it" : "them") off is safe.")
+        }
     }
 
     public func setFilter(_ filter: StartupFilter, for kind: StartupGroupKind) {
@@ -124,22 +144,7 @@ public final class StartupModel {
         return StartupRow(
             item: item, chip: needsHelper ? Self.helperChip : nil,
             canToggle: !needsHelper && !loginOnly, showsSystemSettingsLink: loginOnly,
-            isOrphaned: isOrphaned(item))
-    }
-
-    /// An item whose program no longer exists (including one inside an app that was removed).
-    private func isOrphaned(_ item: StartupItem) -> Bool {
-        guard let program = item.program, !program.isEmpty else { return false }
-        return !fileExists(program)
-    }
-
-    public var orphanBanner: OrphanBanner? {
-        let orphans = items.filter(isOrphaned)
-        guard !orphans.isEmpty else { return nil }
-        let noun = orphans.count == 1 ? "item" : "items"
-        return OrphanBanner(
-            items: orphans,
-            message: "\(orphans.count) startup \(noun) point to an app or file that is gone. Turning \(orphans.count == 1 ? "it" : "them") off is safe.")
+            isOrphaned: orphanIDs.contains(item.id))
     }
 
     /// Turns `item` on or off (the opposite of how it is now) and records it in History. The engine

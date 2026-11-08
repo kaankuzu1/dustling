@@ -7,9 +7,12 @@ final class FakeCommands: CommandRunning, @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [[String]] = []
     var calls: [[String]] { lock.withLock { recorded } }
+    /// Holds every `pkgutil` call (made while finding leftovers) until opened.
+    var pkgutilGate: Gate?
 
     func run(_ executable: String, _ arguments: [String]) throws -> CommandResult {
         lock.withLock { recorded.append([executable] + arguments) }
+        if executable.hasSuffix("pkgutil") { pkgutilGate?.wait() }
         return CommandResult(status: executable.hasSuffix("pkgutil") ? 1 : 0, stdout: "", stderr: "")
     }
 }
@@ -95,5 +98,21 @@ extension ModelRig {
         let dict: [String: Any] = ["Label": label, "ProgramArguments": [program]]
         try (dict as NSDictionary).write(to: url)
         return url
+    }
+}
+
+/// Runs a hook while "asking" an app to quit, then lets it quit.
+final class HookQuitter: AppQuitter, @unchecked Sendable {
+    let running: FakeRunning
+    let hook: @Sendable () async -> Void
+    init(running: FakeRunning, hook: @escaping @Sendable () async -> Void) {
+        self.running = running
+        self.hook = hook
+    }
+
+    func quit(_ app: InstalledApp) async -> Bool {
+        await hook()
+        running.set(app.url, running: false)
+        return true
     }
 }

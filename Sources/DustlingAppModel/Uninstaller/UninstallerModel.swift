@@ -22,6 +22,8 @@ public enum LeftoverBadge: Equatable, Sendable {
 
 public struct AppRow: Identifiable, Equatable, Sendable {
     public let app: InstalledApp
+    /// Leftovers are still being looked for: `leftoverCount` and `totalBytes` are not final yet.
+    public let isCounting: Bool
     public let leftoverCount: Int
     /// What removing the app frees: the leftovers, plus the app itself unless it is only a link.
     public let totalBytes: UInt64
@@ -51,6 +53,8 @@ public struct ConfirmModel: Equatable, Sendable {
         public let items: Int
         /// Checked rows that may hold the user's data; listed separately in `dataWarnings`.
         public let dataItems: Int
+        /// Leftovers only the cleanup helper can remove; not moved now and not in `bytes`.
+        public let adminItems: Int
         public let bytes: UInt64
     }
 
@@ -64,6 +68,10 @@ public struct ConfirmModel: Equatable, Sendable {
     public let dataWarnings: [DataWarning]
     /// Selected apps that are open now; they are asked to quit first.
     public let runningApps: [String]
+    /// Total of the helper-only leftovers across apps, counted apart from what will be freed.
+    public let adminItems: Int
+    /// "Needs the cleanup helper" when `adminItems > 0`.
+    public let adminNote: String?
     public let totalBytes: UInt64
 }
 
@@ -93,6 +101,8 @@ public final class UninstallerModel {
     @ObservationIgnored private let onRunCompleted: @MainActor () -> Void
     @ObservationIgnored private var generation = 0
     private var rows: [URL: [LeftoverRow]] = [:]
+    private var appList: [InstalledApp] = []
+    private var counted: Set<URL> = []
 
     public init(
         scout: AppScout, finder: LeftoverFinder, uninstaller: Uninstaller, running: RunningAppsProviding,
@@ -113,42 +123,42 @@ public final class UninstallerModel {
 
     // MARK: loading
 
-    /// Lists the installed apps and finds each one's leftovers, off the main actor. A newer load
-    /// wins over an older one.
+    /// Lists the installed apps and publishes them at once (marked counting), then finds each app's
+    /// leftovers in the background and publishes each count as it finishes. A newer load makes an
+    /// older one stop. Refused while an uninstall is running. Check marks the user made are kept for
+    /// leftovers that are found again.
     public func load() async {
+        guard !isUninstalling else { return }
         generation += 1
         let mine = generation
         isLoading = true
+        counted = []
+        issues = []
         let scout = self.scout, finder = self.finder, protected = self.protectedPaths
-        let found = await Task.detached(priority: .userInitiated) { () -> Loaded in
-            let discovered = scout.discoverWithIssues()
-            var issues: [ScanIssue] = []
-            var perApp: [(InstalledApp, [Leftover])] = []
-            for app in discovered.apps {
-                let others = Self.others(than: app, in: discovered.apps)
-                let result = finder.leftoversWithIssues(for: app, among: others)
-                issues += result.issues
-                perApp.append((app, result.leftovers))
-            }
-            let built = perApp.map { app, leftovers in
-                (app, leftovers.map { Self.makeRow($0, for: app, protectedPaths: protected) })
-            }
-            return Loaded(apps: discovered.apps, unreadable: discovered.unreadable, issues: issues, rows: built)
-        }.value
+        let discovered = await Task.detached(priority: .userInitiated) { scout.discoverWithIssues() }.value
         guard mine == generation else { return }
+        unreadableAppFolders = discovered.unreadable
+        appList = discovered.apps
+        selection = selection.filter { url in discovered.apps.contains { $0.url == url } }
+        rebuildApps()
+        for app in discovered.apps {
+            let others = Self.others(than: app, in: discovered.apps)
+            let found = await Task.detached(priority: .userInitiated) { () -> ([LeftoverRow], [ScanIssue]) in
+                let result = finder.leftoversWithIssues(for: app, among: others)
+                return (result.leftovers.map { Self.makeRow($0, for: app, protectedPaths: protected) }, result.issues)
+            }.value
+            guard mine == generation else { return }
+            let old = Dictionary((rows[app.url] ?? []).map { ($0.id, $0.checked) }, uniquingKeysWith: { _, n in n })
+            rows[app.url] = found.0.map { row in
+                var merged = row
+                if !row.isDisabled, let kept = old[row.id] { merged.checked = kept }
+                return merged.withWarning()
+            }
+            issues += found.1
+            counted.insert(app.url)
+            rebuildApps()
+        }
         isLoading = false
-        issues = found.issues
-        unreadableAppFolders = found.unreadable
-        rows = Dictionary(found.rows.map { ($0.0.url, $0.1) }, uniquingKeysWith: { _, new in new })
-        selection = selection.filter { url in found.apps.contains { $0.url == url } }
-        rebuildApps(found.apps)
-    }
-
-    private struct Loaded: Sendable {
-        let apps: [InstalledApp]
-        let unreadable: [URL]
-        let issues: [ScanIssue]
-        let rows: [(InstalledApp, [LeftoverRow])]
     }
 
     /// Every app except the target and the apps nested inside its bundle.
@@ -161,13 +171,13 @@ public final class UninstallerModel {
         }
     }
 
-    private func rebuildApps(_ list: [InstalledApp]) {
-        apps = list.map { app in
+    private func rebuildApps() {
+        apps = appList.map { app in
             let leftovers = rows[app.url] ?? []
             let isLink = app.linkTarget != nil
             let leftoverBytes = leftovers.reduce(UInt64(0)) { $0 + $1.leftover.bytes }
             return AppRow(
-                app: app, leftoverCount: leftovers.count,
+                app: app, isCounting: !counted.contains(app.url), leftoverCount: leftovers.count,
                 totalBytes: leftoverBytes + (isLink ? 0 : app.bytes),
                 label: isLink ? "Shortcut" : (app.steamAppID != nil && app.bundleID == nil ? "Steam game" : nil),
                 warning: isLink
@@ -177,6 +187,8 @@ public final class UninstallerModel {
 
     // MARK: leftovers
 
+    nonisolated static let linkReason = "Only the link is removed"
+
     nonisolated static func makeRow(
         _ leftover: Leftover, for app: InstalledApp, protectedPaths: ProtectedPaths
     ) -> LeftoverRow {
@@ -185,8 +197,8 @@ public final class UninstallerModel {
         if leftover.requiresAdmin { badges.append(.helper) }
         if leftover.match == .nameBased { badges.append(.nameMatch) }
         if leftover.mayContainUserData { badges.append(.yourData) }
-        let disabled = protectedPaths.exclusionReason(for: leftover.url)
-        let checked = leftover.preselected && app.linkTarget == nil && disabled == nil
+        let disabled = app.linkTarget != nil ? Self.linkReason : protectedPaths.exclusionReason(for: leftover.url)
+        let checked = leftover.preselected && disabled == nil
         return LeftoverRow(
             leftover: leftover, checked: checked, badges: badges, warning: nil, disabledReason: disabled)
             .withWarning()
@@ -213,26 +225,37 @@ public final class UninstallerModel {
         return leftovers(for: app).filter { $0.checked && !$0.isDisabled }.map(\.leftover)
     }
 
+    /// What would happen now for the selected apps; `uninstallSelected` takes its own copy of this plan.
+    private func plan() -> [(app: InstalledApp, leftovers: [Leftover])] {
+        selectedApps.map { ($0.app, checkedLeftovers(for: $0.app)) }
+    }
+
     public var confirmation: ConfirmModel {
         var perApp: [ConfirmModel.PerApp] = []
         var warnings: [ConfirmModel.DataWarning] = []
         var runningNames: [String] = []
         var total: UInt64 = 0
-        for row in selectedApps {
-            let checked = checkedLeftovers(for: row.app)
-            let data = checked.filter(\.mayContainUserData)
-            let bytes = (row.app.linkTarget == nil ? row.app.bytes : 0) + checked.reduce(0) { $0 + $1.bytes }
+        var adminTotal = 0
+        for (app, checked) in plan() {
+            let admin = checked.filter(\.requiresAdmin)
+            let movable = checked.filter { !$0.requiresAdmin }
+            let data = movable.filter(\.mayContainUserData)
+            let bytes = (app.linkTarget == nil ? app.bytes : 0) + movable.reduce(0) { $0 + $1.bytes }
             perApp.append(.init(
-                name: row.app.displayName, items: 1 + checked.count - data.count, dataItems: data.count, bytes: bytes))
+                name: app.displayName, items: 1 + movable.count - data.count, dataItems: data.count,
+                adminItems: admin.count, bytes: bytes))
             for leftover in data {
                 warnings.append(.init(
-                    appName: row.app.displayName, itemName: leftover.url.lastPathComponent,
+                    appName: app.displayName, itemName: leftover.url.lastPathComponent,
                     text: Self.dataWarning(for: leftover)))
             }
-            if running.isRunning(row.app) { runningNames.append(row.app.displayName) }
+            if running.isRunning(app) { runningNames.append(app.displayName) }
             total += bytes
+            adminTotal += admin.count
         }
-        return ConfirmModel(perApp: perApp, dataWarnings: warnings, runningApps: runningNames, totalBytes: total)
+        return ConfirmModel(
+            perApp: perApp, dataWarnings: warnings, runningApps: runningNames, adminItems: adminTotal,
+            adminNote: adminTotal > 0 ? "Needs the cleanup helper" : nil, totalBytes: total)
     }
 
     nonisolated static func dataWarning(for leftover: Leftover) -> String {
@@ -257,19 +280,23 @@ public final class UninstallerModel {
     /// running") and the others carry on.
     public func uninstallSelected(quit: AppQuitter) async -> [RunRecord] {
         guard !isUninstalling else { return [] }
+        // The plan the user confirmed, fixed now: later reloads or tick changes don't alter it, and a
+        // load that is still running can't publish over it.
+        let confirmed = plan()
         isUninstalling = true
+        generation += 1
+        isLoading = false
         itemsDone = 0
         defer { isUninstalling = false }
         var records: [RunRecord] = []
-        for row in selectedApps {
-            let app = row.app
-            let chosen = checkedLeftovers(for: app)
+        for (app, chosen) in confirmed {
             let record = await uninstallOne(app, leftovers: chosen, quit: quit)
             records.append(record)
             if record.entries.first.map({ if case .movedToTrash = $0.outcome { true } else { false } }) == true {
                 selection.remove(app.url)
-                apps.removeAll { $0.app.url == app.url }
+                appList.removeAll { $0.url == app.url }
                 rows[app.url] = nil
+                rebuildApps()
             }
             onRunCompleted()
         }
