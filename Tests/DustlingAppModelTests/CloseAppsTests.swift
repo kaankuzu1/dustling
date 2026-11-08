@@ -228,6 +228,64 @@ struct CloseAppsTests {
         #expect(model.closedApps == ["Slack"])
     }
 
+    @Test func appOpenedAfterTheScanIsCountedOnce() async throws {
+        let rig = try ModelRig()
+        let safari = try rig.file(rig.cachesDirectory.appending(path: "com.apple.Safari/blob"), bytes: 65536)
+        try rig.file(rig.cachesDirectory.appending(path: "plain.log"), bytes: 4096)
+        let running = LiveSet([])
+        let model = model(rig, running: [])   // Safari wasn't running at scan time
+        model.runningBundleIDs = { running.value }
+        await scanned(model)
+        let scanned = model.selectedBytes
+
+        running.value = ["com.apple.Safari"]   // opened before Move to Trash
+        let holders = model.openAppHolders(running: [app("com.apple.Safari", "Safari")])
+        let withoutThem = model.selectedBytes
+        let promised = withoutThem + holders.reduce(0) { $0 + $1.bytes }
+        #expect(holders.map(\.name) == ["Safari"])
+        #expect(promised == scanned)
+        #expect(withoutThem < scanned)
+
+        await model.clean(confirmedLimited: true)   // Clean without them
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+        #expect(record.bytesMovedToTrash == withoutThem)
+        #expect(FileManager.default.fileExists(atPath: safari.path))
+    }
+
+    @Test func withoutAProviderOnlyConfirmedQuitsFreeFiles() async throws {
+        let rig = try ModelRig()
+        let slack = try rig.file(rig.cachesDirectory.appending(path: "com.tinyspeck.slack/blob"), bytes: 8192)
+        let model = model(rig, running: ["com.tinyspeck.slack"])   // no runningBundleIDs provider
+        await scanned(model)
+        let quitter = ScriptedQuitter()   // Slack doesn't answer
+        let run = CloseAppsRun(holders: model.openAppHolders(running: [app("com.tinyspeck.slack", "Slack")]))
+        let promised = model.selectedBytes + run.holders.reduce(0) { $0 + $1.bytes }
+
+        let result = await model.quitAndCleanFlow(run, quitter: quitter, timeout: .milliseconds(100), promised: promised)
+
+        guard case .askAgain = result else { Issue.record("an unverified app must not count as closed"); return }
+        #expect(run.statuses["com.tinyspeck.slack"] == .stillOpen)
+        #expect(FileManager.default.fileExists(atPath: slack.path))
+    }
+
+    @Test func cleanTimeRecheckNeverFreesMoreThanConfirmed() async throws {
+        let rig = try ModelRig()
+        let safari = try rig.file(rig.cachesDirectory.appending(path: "com.apple.Safari/blob"), bytes: 65536)
+        try rig.file(rig.cachesDirectory.appending(path: "plain.log"), bytes: 4096)
+        let running = LiveSet(["com.apple.Safari"])
+        let model = model(rig, running: ["com.apple.Safari"])
+        model.runningBundleIDs = { running.value }
+        await scanned(model)
+        let confirmed = model.selectedBytes   // Safari's files not included
+
+        running.value = []   // Safari quit between the confirmation and the cleanup
+        await model.clean(confirmedLimited: true)
+
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+        #expect(record.bytesMovedToTrash == confirmed)
+        #expect(FileManager.default.fileExists(atPath: safari.path))
+    }
+
     @Test func changedLineWording() {
         #expect(CloseApps.changedLine(promised: 10, now: 10, someStillOpen: true) == nil)
         #expect(CloseApps.changedLine(promised: 3000, now: 1000, someStillOpen: true)

@@ -431,7 +431,16 @@ public final class JunkScanModel {
 
     /// The regular apps in `running` that hold selected files which would move if the app closed
     /// (never files that would be skipped anyway), largest first.
+    ///
+    /// Call it at Move to Trash: it first re-checks in-use from what runs now, so an app opened after
+    /// the scan is counted once (as a holder), never also in `selectedBytes`. Without a running-apps
+    /// provider it can only add protection, for the apps in `running`.
     public func openAppHolders(running: [RunningApp]) -> [OpenAppHolder] {
+        if let live = runningBundleIDs?() {
+            recheckInUse(running: live.union(running.map(\.bundleID)))
+        } else {
+            recheckInUse(running: Set(running.map(\.bundleID)), addOnly: true)
+        }
         let apps = Dictionary(running.map { ($0.bundleID, $0) }, uniquingKeysWith: { first, _ in first })
         var totals: [String: (bytes: UInt64, count: Int)] = [:]
         for tile in categories where tile.isSelected && !tile.stopped {
@@ -454,10 +463,14 @@ public final class JunkScanModel {
 
     /// Decides in-use again from `running`, for every owner (or only `owners`). An owner that runs is
     /// in use; one that doesn't is free. `clean()` does this itself right before every cleanup.
-    public func recheckInUse(running: Set<String>, only owners: Set<String>? = nil) {
+    /// `addOnly`: only protect owners that run now, never free one (used right before a cleanup, so
+    /// it can't move more than the user confirmed).
+    public func recheckInUse(running: Set<String>, only owners: Set<String>? = nil, addOnly: Bool = false) {
         let all = Set(scans.values.flatMap { $0.items.compactMap(\.ownerBundleID) })
         for owner in owners.map({ $0.intersection(all) }) ?? all {
-            runningNow[owner] = running.contains(owner)
+            let runs = running.contains(owner)
+            if addOnly && !runs { continue }
+            runningNow[owner] = runs
         }
         rebuildTiles()
     }
@@ -468,8 +481,12 @@ public final class JunkScanModel {
         _ run: CloseAppsRun, quitter: AppQuitter, timeout: Duration = CloseApps.timeout, promised: UInt64
     ) async -> CloseApps.FlowResult {
         await run.quitAll(using: quitter, timeout: timeout)
-        let running = runningBundleIDs?() ?? []
-        recheckInUse(running: running, only: Set(run.holders.map(\.bundleID)))
+        let offered = Set(run.holders.map(\.bundleID))
+        // Without a provider nothing can be verified: trust only the quitter's own answers, so an app
+        // is free only if it confirmed it closed. Never treat "unknown" as "all closed".
+        let running = runningBundleIDs?()
+            ?? Set(run.holders.filter { run.statuses[$0.bundleID] != .closed }.map(\.bundleID))
+        recheckInUse(running: running, only: offered)
         run.settle(running: running)
         let now = selectedBytes
         guard now == promised else {
@@ -549,7 +566,9 @@ public final class JunkScanModel {
             break
         }
         // Apps may have opened or closed since the last look: decide in-use from what runs now.
-        if let running = runningBundleIDs?() { recheckInUse(running: running) }
+        // Only adds protection: an app that opened meanwhile keeps its files, but nothing is freed
+        // here, so a cleanup never moves more than the figure the user confirmed.
+        if let running = runningBundleIDs?() { recheckInUse(running: running, addOnly: true) }
 
         var urls: [URL] = []
         var sizes: [URL: UInt64] = [:]
