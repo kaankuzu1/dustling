@@ -162,7 +162,7 @@ struct SummaryView: View {
 }
 
 /// The moved total, counted up over 0.9 s with a cubic ease-out; shown at once under Reduce Motion.
-private struct CountUpText: View {
+struct CountUpText: View {
     let bytes: UInt64
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var start = Date.now

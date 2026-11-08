@@ -1,0 +1,112 @@
+import AppKit
+import DustlingAppModel
+import DustlingCore
+import SwiftUI
+
+/// One app in the left pane (`aRow()` in the approved mockups): checkbox, icon, name and caption, the
+/// total with leftovers and when it was last used. While removing, the checkbox becomes a spinner or a
+/// check.
+struct AppListRow: View {
+    let row: AppRow
+    let isCurrent: Bool
+    let isSelected: Bool
+    /// The app's place in a running or finished uninstall, if it is part of one.
+    let progress: UninstallProgress.AppState?
+    /// No ticking while an uninstall runs.
+    let isLocked: Bool
+    let onToggle: @MainActor (Bool) -> Void
+    let onSelect: () -> Void
+
+    private typealias Palette = DustlingTheme.Palette
+
+    var body: some View {
+        HStack(spacing: 10) {
+            leading
+                .frame(width: 20)
+            AppIconView(app: row.app, size: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(row.app.displayName)
+                    .font(DustlingTheme.Typography.rowTitle)
+                    .foregroundStyle(Palette.ink)
+                Text(UninstallerScreen.appCaption(row))
+                    .font(DustlingTheme.Typography.caption)
+                    .foregroundStyle(isCurrent ? Palette.ink2 : Palette.muted)
+            }
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(Bytes.format(row.totalBytes))
+                    .font(DustlingTheme.Typography.size)
+                    .foregroundStyle(row.isCounting ? Palette.muted : Palette.ink)
+                if let used = UninstallerScreen.lastUsed(row.app.lastUsed, now: .now) {
+                    Text(used)
+                        .font(DustlingTheme.Typography.caption)
+                        .foregroundStyle(isCurrent ? Palette.ink2 : Palette.muted)
+                }
+            }
+            .lineLimit(1)
+            .monospacedDigit()
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 9)
+        .frame(minHeight: 54)
+        .background(
+            isCurrent ? Palette.rowSelection : Color.clear,
+            in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(isCurrent ? [.isSelected, .isButton] : .isButton)
+    }
+
+    @ViewBuilder private var leading: some View {
+        switch progress {
+        case .finished(removed: true):
+            CheckMark()
+        case .finished(removed: false):
+            PixelIconView(.warn, color: Palette.warning)
+                .accessibilityLabel("Left alone")
+        case .quitting, .removing:
+            BusyIndicator(label: "Moving…")
+        case .waiting, .stopped:
+            Toggle(isOn: .constant(true)) { EmptyView() }
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .disabled(true)
+        case nil:
+            Toggle(isOn: Binding(get: { isSelected }, set: { value in onToggle(value) })) { EmptyView() }
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .disabled(isLocked)
+                .accessibilityLabel("Remove \(row.app.displayName)")
+        }
+    }
+}
+
+/// The real app icon from `NSWorkspace` (DESIGN-mosaic §6), or the generic app icon when the bundle
+/// isn't there.
+struct AppIconView: View {
+    let app: InstalledApp
+    let size: CGFloat
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().interpolation(.high)
+            } else {
+                Color.clear
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+        .task(id: app.url) { image = AppIconView.icon(for: app.url) }
+    }
+
+    @MainActor static func icon(for url: URL) -> NSImage {
+        let path = url.path(percentEncoded: false)
+        if FileManager.default.fileExists(atPath: path) { return NSWorkspace.shared.icon(forFile: path) }
+        return NSWorkspace.shared.icon(for: .applicationBundle)
+    }
+}

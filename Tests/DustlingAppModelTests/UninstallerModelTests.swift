@@ -373,4 +373,134 @@ struct UninstallerModelTests {
         #expect(await waitUntil { model.apps.allSatisfy { !$0.isCounting } })
         #expect(model.apps.first?.leftoverCount == 0)
     }
+
+    // MARK: Task 13: the screen's flow
+
+    @Test func aConfirmationIsUsedOnlyOnce() async throws {
+        let rig = try ModelRig()
+        let alpha = try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let model = rig.uninstallerModel()
+        model.canTakeOutOfTrash = true
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        let confirm = model.confirmation
+
+        let first = await model.uninstallSelected(confirmed: confirm, quit: FakeQuitter(running: FakeRunning()))
+        #expect(first.count == 1)
+        // Put it back by hand and try the same confirmation again: refused.
+        try FileManager.default.createDirectory(at: alpha, withIntermediateDirectories: true)
+        let again = await model.uninstallSelected(confirmed: confirm, quit: FakeQuitter(running: FakeRunning()))
+        #expect(again.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: alpha.path))
+    }
+
+    @Test func withoutTrashAccessTheConfirmationMustCarryTheWarning() async throws {
+        let rig = try ModelRig()
+        let alpha = try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let model = rig.uninstallerModel()
+        model.canTakeOutOfTrash = true
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        let shownWithAccess = model.confirmation
+        #expect(shownWithAccess.limitedNote == nil)
+
+        // Access went away while the sheet was open: the sheet never warned, so nothing moves.
+        model.canTakeOutOfTrash = false
+        let refused = await model.uninstallSelected(confirmed: shownWithAccess, quit: FakeQuitter(running: FakeRunning()))
+        #expect(refused.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: alpha.path))
+
+        let warned = model.confirmation
+        #expect(warned.limitedNote == CleanupGate.limitedNote)
+        #expect(ConfirmText.make(warned).limitedNote == CleanupGate.limitedNote)
+        let records = await model.uninstallSelected(confirmed: warned, quit: FakeQuitter(running: FakeRunning()))
+        #expect(records.count == 1)
+    }
+
+    @Test func progressAndSummaryFollowTheRecords() async throws {
+        let rig = try ModelRig()
+        try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let beta = try rig.makeApp("Beta", bundleID: "com.test.beta")
+        try rig.file(rig.environment.userLibrary.appending(path: "Caches/com.test.beta/c.bin"), bytes: 1024)
+        let running = FakeRunning()
+        running.set(beta, running: true)
+        let model = rig.uninstallerModel(running: running)
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+
+        let records = await model.uninstallSelected(confirmed: model.confirmation, quit: FakeQuitter(running: running))
+
+        let progress = try #require(model.progress)
+        #expect(progress.apps.map(\.app.displayName) == ["Alpha", "Beta"])
+        #expect(progress.apps.map(\.state) == [.finished(removed: true), .finished(removed: false)])
+        #expect(progress.apps[0].items.allSatisfy { if case .finished(.movedToTrash) = $0.state { true } else { false } })
+        #expect(progress.current == nil)
+        let result = try #require(model.result)
+        #expect(result.records == records)
+        #expect(result.stopped.isEmpty)
+        let summary = UninstallSummary.make(records: result.records, stopped: result.stopped, home: rig.environment.home)
+        #expect(summary.sentence == "1 app moved to the Trash. Beta was left alone: still running.")
+        #expect(summary.movedBytes == records[0].bytesMovedToTrash)
+        model.dismissResult()
+        #expect(model.result == nil && model.progress == nil)
+    }
+
+    @Test func stopLeavesTheAppsNotYetStartedAlone() async throws {
+        let rig = try ModelRig()
+        let alpha = try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let beta = try rig.makeApp("Beta", bundleID: "com.test.beta")
+        let running = FakeRunning()
+        running.set(alpha, running: true)
+        let model = rig.uninstallerModel(running: running)
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        // Stop is pressed while Alpha is being quit.
+        let quitter = HookQuitter(running: running) { await MainActor.run { model.stop() } }
+
+        let records = await model.uninstallSelected(confirmed: model.confirmation, quit: quitter)
+
+        #expect(records.map(\.kind) == [.uninstall(appName: "Alpha")])
+        #expect(!FileManager.default.fileExists(atPath: alpha.path))
+        #expect(FileManager.default.fileExists(atPath: beta.path))
+        #expect(model.result?.stopped == ["Beta"])
+        #expect(model.progress?.apps.map(\.state) == [.finished(removed: true), .stopped])
+    }
+
+    @Test func putBackRestoresTheAppAndRefreshesTheLastRun() async throws {
+        let rig = try ModelRig()
+        let alpha = try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let cache = try rig.file(rig.environment.userLibrary.appending(path: "Caches/com.test.alpha/c.bin"), bytes: 512)
+        let completed = Counter()
+        let model = rig.uninstallerModel(onRunCompleted: { completed.bump() })
+        model.canTakeOutOfTrash = true
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        let records = await model.uninstallSelected(confirmed: model.confirmation, quit: FakeQuitter(running: FakeRunning()))
+        #expect(!FileManager.default.fileExists(atPath: alpha.path))
+        #expect(completed.value == 1)
+
+        let outcomes = try await model.putBack(records[0])
+
+        #expect(outcomes.count == 2)
+        #expect(outcomes.allSatisfy { if case .restored = $0 { true } else { false } })
+        #expect(FileManager.default.fileExists(atPath: alpha.path))
+        #expect(FileManager.default.fileExists(atPath: cache.path))
+        #expect(completed.value == 2)
+        #expect(model.restoreOutcomes[records[0].id] == outcomes)
+        await #expect(throws: UninstallerModelError.alreadyPutBack) { try await model.putBack(records[0]) }
+        #expect(await waitUntil { model.apps.contains { $0.app.displayName == "Alpha" } })
+    }
+
+    @Test func putBackIsRefusedWithoutTrashAccess() async throws {
+        let rig = try ModelRig()
+        let alpha = try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let model = rig.uninstallerModel()
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        let records = await model.uninstallSelected(confirmed: model.confirmation, quit: FakeQuitter(running: FakeRunning()))
+        #expect(records.count == 1)
+
+        await #expect(throws: UninstallerModelError.cantTakeOutOfTrash) { try await model.putBack(records[0]) }
+        #expect(!FileManager.default.fileExists(atPath: alpha.path))
+    }
 }

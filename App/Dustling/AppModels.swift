@@ -110,7 +110,12 @@ final class AppModels {
             finder: LeftoverFinder(environment: environment, sizer: DirectorySizer(), commands: commands),
             uninstaller: Uninstaller(runner: runner, commands: commands, running: running, environment: environment),
             running: running, protectedPaths: protectedPaths, journal: journal, logger: logger,
-            onRunCompleted: { health.refreshLastRun() })
+            onRunCompleted: {
+                // After every uninstall and every Put back.
+                health.refreshLastRun()
+                Task { await trash.refresh() }
+                Task { await storage.refresh() }
+            })
         // The owner app names come with the Startup items screen (Task 14); Home only counts items.
         let startupScanner = StartupItemScanner(environment: environment, commands: commands, apps: [])
         startup = StartupModel(
@@ -127,6 +132,7 @@ final class AppModels {
         if let text = UserDefaults.standard.string(forKey: "DustlingDebugGoalBytes"), let forced = Int64(text), forced > 0 {
             goal = UpdateGoal(neededBytes: forced)
         }
+        applyUninstallerFixtureFromLaunchArguments()
         #endif
     }
 
@@ -276,6 +282,23 @@ final class AppModels {
         return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
     }
 
+    /// The Uninstaller lists apps only with Full Disk Access (or the DEBUG screenshot fixture).
+    var uninstallerAllowed: Bool {
+        #if DEBUG
+        if uninstallerFixture { return true }
+        #endif
+        return health.fullDiskAccess == .granted
+    }
+
+    #if DEBUG
+    /// `-DustlingUninstallerFixture <state>`: fake apps for screenshots, never read from disk.
+    var uninstallerFixture = false
+    /// The fixture's stand-in for "Dustling can take things out of the Trash".
+    var fixtureTrashAccess: Bool?
+    /// The fixture opens the confirm sheet.
+    var uninstallerFixtureConfirm = false
+    #endif
+
     /// Loads the apps once Full Disk Access is on; never without it (see `uninstallerLoaded`).
     func loadUninstallerIfAllowed(force: Bool = false) {
         guard health.fullDiskAccess == .granted, force || !uninstallerLoaded else { return }
@@ -325,6 +348,10 @@ final class AppModels {
     func refreshPlaces() async {
         // Without Full Disk Access macOS won't let Dustling take anything out of the Trash.
         junk.canTakeOutOfTrash = health.fullDiskAccess == .granted
+        uninstaller.canTakeOutOfTrash = health.fullDiskAccess == .granted
+        #if DEBUG
+        if let fixtureTrashAccess { uninstaller.canTakeOutOfTrash = fixtureTrashAccess }
+        #endif
         guard hasProbedFullDiskAccess else { return }
         await places.refresh(fullDiskAccessGranted: health.fullDiskAccess == .granted)
     }

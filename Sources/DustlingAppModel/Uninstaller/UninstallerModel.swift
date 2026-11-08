@@ -32,6 +32,17 @@ public struct AppRow: Identifiable, Equatable, Sendable {
     /// A warning about the app as a whole (a shortcut only removes the link).
     public let warning: String?
     public var id: URL { app.id }
+
+    public init(
+        app: InstalledApp, isCounting: Bool, leftoverCount: Int, totalBytes: UInt64, label: String?, warning: String?
+    ) {
+        self.app = app
+        self.isCounting = isCounting
+        self.leftoverCount = leftoverCount
+        self.totalBytes = totalBytes
+        self.label = label
+        self.warning = warning
+    }
 }
 
 public struct LeftoverRow: Identifiable, Equatable, Sendable {
@@ -46,7 +57,7 @@ public struct LeftoverRow: Identifiable, Equatable, Sendable {
     public var id: URL { leftover.id }
 }
 
-public struct ConfirmModel: Equatable, Sendable {
+public struct ConfirmModel: Identifiable, Equatable, Sendable {
     public struct PerApp: Equatable, Sendable {
         public let name: String
         /// Items that are not the user's own data (the app itself counts).
@@ -61,6 +72,8 @@ public struct ConfirmModel: Equatable, Sendable {
     public struct DataWarning: Equatable, Sendable {
         public let appName: String
         public let itemName: String
+        public let kind: LeftoverKind
+        public let bytes: UInt64
         public let text: String
     }
 
@@ -80,11 +93,33 @@ public struct ConfirmModel: Equatable, Sendable {
     public let dataWarnings: [DataWarning]
     /// Selected apps that are open now; they are asked to quit first.
     public let runningApps: [String]
+    /// Checked launch agents; they are unloaded before they move.
+    public let launchAgents: Int
     /// Total of the helper-only leftovers across apps, counted apart from what will be freed.
     public let adminItems: Int
     /// "Needs the cleanup helper" when `adminItems > 0`.
     public let adminNote: String?
     public let totalBytes: UInt64
+    /// Set while Dustling can't take things back out of the Trash (no Full Disk Access). The sheet
+    /// shows it, and `uninstallSelected` refuses a confirmation made without it in that state.
+    public let limitedNote: String?
+    /// Each confirmation is used at most once (`uninstallSelected` refuses it again).
+    public let id = UUID()
+}
+
+/// What the last uninstall did: one record per app that was tried, and the apps Stop left alone.
+public struct UninstallResult: Equatable, Sendable {
+    public let records: [RunRecord]
+    public let stopped: [String]
+
+    public init(records: [RunRecord], stopped: [String]) {
+        self.records = records
+        self.stopped = stopped
+    }
+}
+
+public enum UninstallerModelError: Error, Equatable {
+    case cantTakeOutOfTrash, busy, alreadyPutBack
 }
 
 /// Drives the Uninstaller screen: the app list with leftover counts, per-app leftover checklists,
@@ -101,6 +136,16 @@ public final class UninstallerModel {
     public private(set) var unreadableAppFolders: [URL] = []
     /// Items finished so far in the current uninstall.
     public private(set) var itemsDone = 0
+    /// The Removing state, app by app. Kept after the uninstall for the summary, until `dismissResult()`.
+    public private(set) var progress: UninstallProgress?
+    /// The last uninstall's records, for the summary.
+    public private(set) var result: UninstallResult?
+    /// Put back results per run.
+    public private(set) var restoreOutcomes: [UUID: [RestoreOutcome]] = [:]
+    public private(set) var isRestoring = false
+    /// Without Full Disk Access macOS won't let Dustling take anything out of `~/.Trash`: the confirm
+    /// sheet warns first and the summary offers Show in Trash instead of Put back.
+    public var canTakeOutOfTrash = false
 
     @ObservationIgnored private let scout: AppScout
     @ObservationIgnored private let finder: LeftoverFinder
@@ -116,6 +161,13 @@ public final class UninstallerModel {
     private var appList: [InstalledApp] = []
     private var counted: Set<URL> = []
     @ObservationIgnored private var loadPending = false
+    @ObservationIgnored private var stopRequested = false
+    @ObservationIgnored private var usedConfirmations: Set<UUID> = []
+    #if DEBUG
+    /// Set by the screenshot fixture: which fixture apps read as running. Non-nil means fixture mode,
+    /// in which nothing is ever moved.
+    @ObservationIgnored private var fixtureRunning: Set<URL>?
+    #endif
 
     public init(
         scout: AppScout, finder: LeftoverFinder, uninstaller: Uninstaller, running: RunningAppsProviding,
@@ -141,6 +193,9 @@ public final class UninstallerModel {
     /// older one stop. Refused while an uninstall is running. Check marks the user made are kept for
     /// leftovers that are found again.
     public func load() async {
+        #if DEBUG
+        guard fixtureRunning == nil else { return }
+        #endif
         guard !isUninstalling else { loadPending = true; return }
         generation += 1
         let mine = generation
@@ -251,6 +306,7 @@ public final class UninstallerModel {
         var runningNames: [String] = []
         var total: UInt64 = 0
         var adminTotal = 0
+        var agents = 0
         let planned = plan()
         for (app, checked) in planned {
             let admin = checked.filter(\.requiresAdmin)
@@ -262,19 +318,29 @@ public final class UninstallerModel {
                 adminItems: admin.count, bytes: bytes))
             for leftover in data {
                 warnings.append(.init(
-                    appName: app.displayName, itemName: leftover.url.lastPathComponent,
-                    text: Self.dataWarning(for: leftover)))
+                    appName: app.displayName, itemName: leftover.url.lastPathComponent, kind: leftover.kind,
+                    bytes: leftover.bytes, text: Self.dataWarning(for: leftover)))
             }
-            if running.isRunning(app) { runningNames.append(app.displayName) }
+            if isRunning(app) { runningNames.append(app.displayName) }
             total += bytes
             adminTotal += admin.count
+            agents += movable.filter { $0.kind == .launchAgent }.count
         }
         let counting = selectedApps.contains { $0.isCounting }
         return ConfirmModel(
             plan: planned.map { .init(app: $0.app, leftovers: $0.leftovers) },
             ready: !counting && !planned.isEmpty, note: counting ? "Still looking for leftovers" : nil,
-            perApp: perApp, dataWarnings: warnings, runningApps: runningNames, adminItems: adminTotal,
-            adminNote: adminTotal > 0 ? "Needs the cleanup helper" : nil, totalBytes: total)
+            perApp: perApp, dataWarnings: warnings, runningApps: runningNames, launchAgents: agents,
+            adminItems: adminTotal, adminNote: adminTotal > 0 ? "Needs the cleanup helper" : nil, totalBytes: total,
+            limitedNote: canTakeOutOfTrash ? nil : CleanupGate.limitedNote)
+    }
+
+    /// Whether the app is open now (the detail header's "Running now.").
+    public func isRunning(_ app: InstalledApp) -> Bool {
+        #if DEBUG
+        if let fixtureRunning { return fixtureRunning.contains(app.url) }
+        #endif
+        return running.isRunning(app)
     }
 
     nonisolated static func dataWarning(for leftover: Leftover) -> String {
@@ -294,21 +360,40 @@ public final class UninstallerModel {
 
     // MARK: uninstall
 
-    /// Uninstalls exactly the apps and leftovers in `confirmed` (the plan the user was shown), one at a time and returns one record per app. A running app is
-    /// asked to quit; if it is not gone within the timeout it is recorded as skipped ("still
-    /// running") and the others carry on.
+    /// Uninstalls exactly the apps and leftovers in `confirmed` (the plan the user was shown), one at
+    /// a time, and returns one record per app. A running app is asked to quit; if it is not gone
+    /// within the timeout it is recorded as skipped ("still running") and the others carry on.
+    ///
+    /// Refused when the confirmation was already used, or when Dustling can't take things back out of
+    /// the Trash and the confirmation didn't say so (access was lost after the sheet opened).
     public func uninstallSelected(confirmed: ConfirmModel, quit: AppQuitter) async -> [RunRecord] {
-        guard !isUninstalling, confirmed.ready else { return [] }
+        guard !isUninstalling, !isRestoring, confirmed.ready, !usedConfirmations.contains(confirmed.id) else { return [] }
+        guard canTakeOutOfTrash || confirmed.limitedNote != nil else { return [] }
+        #if DEBUG
+        // The screenshot fixture's apps don't exist; nothing is ever moved for them.
+        guard fixtureRunning == nil else { return [] }
+        #endif
+        usedConfirmations.insert(confirmed.id)
         isUninstalling = true
+        stopRequested = false
+        result = nil
+        restoreOutcomes = [:]
         // A load in flight is cut off by the generation bump; it is run again once this is done.
         if isLoading { loadPending = true }
         generation += 1
         isLoading = false
         itemsDone = 0
+        progress = UninstallProgress(plan: confirmed.plan)
         var records: [RunRecord] = []
+        var stopped: [String] = []
         for planned in confirmed.plan {
             let app = planned.app
+            if stopRequested {
+                stopped.append(app.displayName)
+                continue
+            }
             let record = await uninstallOne(app, leftovers: planned.leftovers, quit: quit)
+            progress?.finish(app.url, record: record)
             records.append(record)
             if record.entries.first.map({ if case .movedToTrash = $0.outcome { true } else { false } }) == true {
                 selection.remove(app.url)
@@ -319,6 +404,8 @@ public final class UninstallerModel {
             }
             onRunCompleted()
         }
+        if stopRequested { progress?.stopRemaining() }
+        result = UninstallResult(records: records, stopped: stopped)
         isUninstalling = false
         if loadPending {
             loadPending = false
@@ -328,18 +415,38 @@ public final class UninstallerModel {
         return records
     }
 
+    /// Stop: the app being removed now finishes (half an app is worse than either), the rest are left alone.
+    public func stop() {
+        guard isUninstalling else { return }
+        stopRequested = true
+    }
+
+    /// Back to the list after the summary.
+    public func dismissResult() {
+        guard !isUninstalling, !isRestoring else { return }
+        result = nil
+        progress = nil
+        restoreOutcomes = [:]
+    }
+
     private func uninstallOne(_ app: InstalledApp, leftovers: [Leftover], quit: AppQuitter) async -> RunRecord {
         if running.isRunning(app) {
+            progress?.quitting(app.url)
             _ = await Self.quitWithTimeout(app, quit: quit, timeout: quitTimeout)
             if running.isRunning(app) { return recordStillRunning(app, leftovers: leftovers) }
         }
+        progress?.begin(app.url)
         let uninstaller = self.uninstaller
-        let counter = ProgressSink { [weak self] in
-            Task { @MainActor in self?.itemsDone += 1 }
+        let id = app.url
+        let sink = ProgressSink { [weak self] url, outcome in
+            Task { @MainActor in
+                self?.itemsDone += 1
+                self?.progress?.record(url, outcome, in: id)
+            }
         }
         do {
             return try await Task.detached(priority: .userInitiated) {
-                try await uninstaller.uninstall(app, leftovers: leftovers) { _, _ in counter.tick() }
+                try await uninstaller.uninstall(app, leftovers: leftovers) { url, outcome in sink.tick(url, outcome) }
             }.value
         } catch {
             // The app opened between the check and the move.
@@ -348,8 +455,42 @@ public final class UninstallerModel {
     }
 
     private final class ProgressSink: Sendable {
-        let tick: @Sendable () -> Void
-        init(_ tick: @escaping @Sendable () -> Void) { self.tick = tick }
+        let tick: @Sendable (URL, DeletionOutcome) -> Void
+        init(_ tick: @escaping @Sendable (URL, DeletionOutcome) -> Void) { self.tick = tick }
+    }
+
+    // MARK: put back
+
+    /// Puts back what one app's run moved to the Trash (the app and its leftovers), then lists the
+    /// apps again. Needs access to the Trash (`canTakeOutOfTrash`); without it the screen offers Show
+    /// in Trash instead.
+    public func putBack(_ record: RunRecord) async throws -> [RestoreOutcome] {
+        guard canTakeOutOfTrash else { throw UninstallerModelError.cantTakeOutOfTrash }
+        #if DEBUG
+        guard fixtureRunning == nil else { throw UninstallerModelError.busy }
+        #endif
+        guard !isUninstalling, !isRestoring else { throw UninstallerModelError.busy }
+        guard restoreOutcomes[record.id] == nil || !(restoreOutcomes[record.id] ?? []).contains(where: {
+            if case .restored = $0 { true } else { false }
+        }) else { throw UninstallerModelError.alreadyPutBack }
+        let paths = Set(record.entries.compactMap { entry -> String? in
+            if case .movedToTrash = entry.outcome { entry.originalPath } else { nil }
+        })
+        guard !paths.isEmpty else { throw RunJournalError.notRestorable(record.id) }
+        let journal = self.journal
+        let id = record.id
+        isRestoring = true
+        defer { isRestoring = false }
+        do {
+            let outcomes = try await Blocking.run { try journal.restore(runID: id, paths: paths) }
+            restoreOutcomes[id] = outcomes
+            onRunCompleted()
+            Task { await self.load() }
+            return outcomes
+        } catch {
+            onRunCompleted()
+            throw error
+        }
     }
 
     private func recordStillRunning(_ app: InstalledApp, leftovers: [Leftover], error: Error? = nil) -> RunRecord {
@@ -410,6 +551,64 @@ public final class UninstallerModel {
         }
     }
 }
+
+#if DEBUG
+extension UninstallerModel {
+    /// Screenshot fixture (DEBUG only): shows these apps and leftovers without reading the disk. The
+    /// model then refuses to load, uninstall or put back anything.
+    public func showFixture(
+        apps: [InstalledApp], leftovers: [URL: [Leftover]], running: Set<URL>, selection: Set<URL>,
+        checked: [URL] = [], excluded: [URL: String] = [:]
+    ) {
+        generation += 1
+        fixtureRunning = running
+        isLoading = false
+        appList = apps
+        rows = [:]
+        for app in apps {
+            rows[app.url] = (leftovers[app.url] ?? []).map { leftover in
+                var row = Self.makeRow(leftover, for: app, protectedPaths: protectedPaths)
+                if let reason = excluded[leftover.url] {
+                    row = LeftoverRow(leftover: leftover, checked: false, badges: row.badges, warning: nil,
+                                      disabledReason: reason)
+                }
+                if checked.contains(leftover.url), !row.isDisabled { row.checked = true }
+                return row.withWarning()
+            }
+        }
+        counted = Set(apps.map(\.url))
+        self.selection = selection
+        rebuildApps()
+    }
+
+    /// Screenshot fixture: the Removing state (`removing`) or the summary (`result`).
+    public func showFixtureRun(progress: UninstallProgress?, result: UninstallResult?, uninstalling: Bool) {
+        self.progress = progress
+        self.result = result
+        isUninstalling = uninstalling
+    }
+
+    /// Screenshot fixture: a progress that has reached this point.
+    public static func fixtureProgress(
+        plan: [ConfirmModel.Planned], records: [URL: RunRecord], current: URL?, doneInCurrent: Int
+    ) -> UninstallProgress {
+        var progress = UninstallProgress(plan: plan)
+        for planned in plan {
+            if let record = records[planned.app.url] {
+                progress.begin(planned.app.url)
+                progress.finish(planned.app.url, record: record)
+            } else if planned.app.url == current {
+                progress.begin(planned.app.url)
+                let items = progress.apps.first { $0.id == planned.app.url }?.items ?? []
+                for item in items.prefix(doneInCurrent) {
+                    progress.record(item.url, .movedToTrash(trashedPath: "/fixture"), in: planned.app.url)
+                }
+            }
+        }
+        return progress
+    }
+}
+#endif
 
 private extension LeftoverRow {
     /// A checked row that may hold the user's data carries the warning text.

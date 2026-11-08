@@ -31,8 +31,8 @@ struct RootView: View {
     }
 }
 
-/// The screen for a destination. Home (Task 11) and Junk scan (Task 12) are built; the others are
-/// placeholders until their own task builds them (Uninstaller: 13, Startup items and History: 14).
+/// The screen for a destination. Home (Task 11), Junk scan (Task 12) and Uninstaller (Task 13) are
+/// built; the others are placeholders until their own task builds them (Startup items and History: 14).
 struct DestinationView: View {
     let destination: Destination
 
@@ -41,6 +41,8 @@ struct DestinationView: View {
             HomeView()
         } else if destination == .junkScan {
             JunkScanView()
+        } else if destination == .uninstaller {
+            UninstallerView()
         } else {
             VStack(spacing: 0) {
                 ScreenToolbar(title: destination.title, subtitle: destination.placeholderSubtitle)
