@@ -107,7 +107,29 @@ public struct ConfirmModel: Identifiable, Equatable, Sendable {
     public let id = UUID()
     /// The apps that were open when the user confirmed. Only these are asked to quit; one that opened
     /// afterwards is left alone.
-    public var runningAppURLs: Set<URL> = []
+    public let runningAppURLs: Set<URL>
+    /// Checked leftovers that stay where they are because Full Disk Access is off; not in the totals.
+    public let accessSkipped: Int
+
+    init(
+        plan: [Planned], ready: Bool, note: String?, perApp: [PerApp], dataWarnings: [DataWarning],
+        runningApps: [String], launchAgents: Int, adminItems: Int, adminNote: String?, totalBytes: UInt64,
+        limitedNote: String?, runningAppURLs: Set<URL> = [], accessSkipped: Int = 0
+    ) {
+        self.plan = plan
+        self.ready = ready
+        self.note = note
+        self.perApp = perApp
+        self.dataWarnings = dataWarnings
+        self.runningApps = runningApps
+        self.launchAgents = launchAgents
+        self.adminItems = adminItems
+        self.adminNote = adminNote
+        self.totalBytes = totalBytes
+        self.limitedNote = limitedNote
+        self.runningAppURLs = runningAppURLs
+        self.accessSkipped = accessSkipped
+    }
 }
 
 /// What the last uninstall did: one record per app that was tried, and the apps Stop left alone.
@@ -160,7 +182,7 @@ public final class UninstallerModel {
     /// Without Full Disk Access other apps' data (Containers, Group Containers) and the consent folders
     /// can't be opened without a prompt: the list doesn't load, and an uninstall records leftovers
     /// there as skipped ("needs Full Disk Access") and never touches them.
-    public var canReadAppData = true
+    public var canReadAppData = false
     /// Folders that can't be read now (set with `canReadAppData`); leftovers inside them are skipped.
     @ObservationIgnored public var lockedFolders: [URL] = []
     /// Why the last uninstall request was refused, shown above the list until the next one.
@@ -329,10 +351,14 @@ public final class UninstallerModel {
         var adminTotal = 0
         var agents = 0
         var runningURLs: Set<URL> = []
+        var accessSkipped = 0
         let planned = plan()
         for (app, checked) in planned {
             let admin = checked.filter(\.requiresAdmin)
-            let movable = checked.filter { !$0.requiresAdmin }
+            // Left where they are without Full Disk Access: not counted as moving.
+            let skipped = checked.filter { !$0.requiresAdmin && mustSkip($0) }
+            accessSkipped += skipped.count
+            let movable = checked.filter { !$0.requiresAdmin && !mustSkip($0) }
             let data = movable.filter(\.mayContainUserData)
             let bytes = (app.linkTarget == nil ? app.bytes : 0) + movable.reduce(0) { $0 + $1.bytes }
             perApp.append(.init(
@@ -357,7 +383,8 @@ public final class UninstallerModel {
             ready: !counting && !planned.isEmpty, note: counting ? "Still looking for leftovers" : nil,
             perApp: perApp, dataWarnings: warnings, runningApps: runningNames, launchAgents: agents,
             adminItems: adminTotal, adminNote: adminTotal > 0 ? "Needs the cleanup helper" : nil, totalBytes: total,
-            limitedNote: canTakeOutOfTrash ? nil : CleanupGate.limitedNote, runningAppURLs: runningURLs)
+            limitedNote: canTakeOutOfTrash ? nil : CleanupGate.limitedNote, runningAppURLs: runningURLs,
+            accessSkipped: accessSkipped)
     }
 
     /// Whether the app is open now (the detail header's "Running now.").
@@ -460,6 +487,10 @@ public final class UninstallerModel {
     /// Leftovers that must not be touched now: other apps' data without Full Disk Access, and anything
     /// in a folder that can't be read.
     func mustSkip(_ leftover: Leftover) -> Bool {
+        #if DEBUG
+        // The screenshot fixture shows the plan as with access; it never moves anything.
+        if fixtureRunning != nil { return false }
+        #endif
         if !canReadAppData && (leftover.kind == .container || leftover.kind == .groupContainer) { return true }
         let path = leftover.url.standardizedFileURL.path(percentEncoded: false)
         return lockedFolders.contains { folder in
@@ -497,10 +528,6 @@ public final class UninstallerModel {
         }
         let skipped = leftovers.filter(mustSkip)
         let moving = leftovers.filter { !mustSkip($0) }
-        let extra = skipped.map {
-            JournalEntry(originalPath: $0.url.path(percentEncoded: false), bytes: $0.bytes,
-                         outcome: .skipped(reason: Self.needsAccessReason))
-        }
         progress?.begin(app.url)
         for leftover in skipped { progress?.record(leftover.url, .skipped(reason: Self.needsAccessReason), in: app.url) }
         let uninstaller = self.uninstaller
@@ -513,7 +540,9 @@ public final class UninstallerModel {
         }
         do {
             return try await Task.detached(priority: .userInitiated) {
-                try await uninstaller.uninstall(app, leftovers: moving, extraEntries: extra) { url, outcome in
+                try await uninstaller.uninstall(
+                    app, leftovers: moving, skipped: skipped, skipReason: Self.needsAccessReason
+                ) { url, outcome in
                     sink.tick(url, outcome)
                 }
             }.value

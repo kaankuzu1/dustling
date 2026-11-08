@@ -82,13 +82,16 @@ extension ModelRig {
         onRunCompleted: @escaping @MainActor () -> Void = {}
     ) -> UninstallerModel {
         let runner = runner()
-        return UninstallerModel(
+        let model = UninstallerModel(
             scout: AppScout(environment: environment),
             finder: LeftoverFinder(environment: environment, sizer: DirectorySizer(), commands: commands),
             uninstaller: Uninstaller(runner: runner, commands: commands, running: running, environment: environment),
             running: running, protectedPaths: protectedPaths ?? runner.protectedPaths, journal: journal,
             logger: RunLogger(directory: environment.logsDirectory), quitTimeout: quitTimeout,
             onRunCompleted: onRunCompleted)
+        // Tests run as if Full Disk Access were on; the default (off) is tested on its own.
+        model.canReadAppData = true
+        return model
     }
 
     func startupScanner(commands: FakeCommands = FakeCommands()) -> StartupItemScanner {

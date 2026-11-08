@@ -51,18 +51,26 @@ public struct Uninstaller: Sendable {
 
     /// `leftovers` is the set the user selected; it is not re-filtered here, but each one must be a
     /// direct child of a declared leftover location (and not a declared location itself) or it is
-    /// skipped as outside the cleanup area. `extraEntries` (items the caller decided not to touch,
-    /// e.g. skipped without Full Disk Access) are added to the record as they are.
+    /// skipped as outside the cleanup area. `skipped` are leftovers the caller decided not to touch
+    /// (e.g. without Full Disk Access): they are never attempted and are recorded here as
+    /// `.skipped(reason: skipReason)`, so a caller can't put anything else in the record.
     public func uninstall(
         _ app: InstalledApp,
         leftovers: [Leftover],
-        extraEntries: [JournalEntry] = [],
+        skipped: [Leftover] = [],
+        skipReason: String = "skipped by request",
         onItem: @Sendable (URL, DeletionOutcome) -> Void
     ) async throws -> RunRecord {
         if running.isRunning(app) { throw UninstallError.appIsRunning(app.displayName) }
 
         let startedAt = Date()
         let kind = RunKind.uninstall(appName: app.displayName)
+        let skippedPaths = Set(skipped.map { $0.url.standardizedFileURL.path(percentEncoded: false) })
+        let leftovers = leftovers.filter { !skippedPaths.contains($0.url.standardizedFileURL.path(percentEncoded: false)) }
+        let skipEntries = skipped.map {
+            JournalEntry(originalPath: $0.url.path(percentEncoded: false), bytes: $0.bytes,
+                         outcome: .skipped(reason: skipReason))
+        }
         let locations = LeftoverFinder.locationDirectories(environment)
         let roots = environment.applicationDirectories + locations
 
@@ -77,7 +85,7 @@ public struct Uninstaller: Sendable {
                     originalPath: leftover.url.path(percentEncoded: false), bytes: leftover.bytes, outcome: outcome))
                 onItem(leftover.url, outcome)
             }
-            return runner.finish(entries + extraEntries, kind: kind, startedAt: startedAt)
+            return runner.finish(entries + skipEntries, kind: kind, startedAt: startedAt)
         }
 
         let locationPaths = Set(locations.map { Self.key($0) })
@@ -116,7 +124,7 @@ public struct Uninstaller: Sendable {
                 originalPath: leftover.url.path(percentEncoded: false),
                 bytes: leftover.bytes, outcome: .needsAdmin))
         }
-        return runner.finish(entries + extraEntries + extra, kind: kind, startedAt: startedAt)
+        return runner.finish(entries + skipEntries + extra, kind: kind, startedAt: startedAt)
     }
 
     private static func key(_ url: URL) -> String {

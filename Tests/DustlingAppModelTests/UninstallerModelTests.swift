@@ -581,4 +581,44 @@ struct UninstallerModelTests {
         #expect(records.first?.entries.first?.outcome == .skipped(reason: "opened after you confirmed"))
         #expect(FileManager.default.fileExists(atPath: alpha.path))
     }
+
+    // MARK: fix round 2
+
+    @Test func appDataReadingIsOffUntilAccessIsKnown() async throws {
+        let rig = try ModelRig()
+        let runner = rig.runner()
+        let model = UninstallerModel(
+            scout: AppScout(environment: rig.environment),
+            finder: LeftoverFinder(environment: rig.environment, sizer: DirectorySizer(), commands: FakeCommands()),
+            uninstaller: Uninstaller(runner: runner, commands: FakeCommands(), running: FakeRunning(),
+                                     environment: rig.environment),
+            running: FakeRunning(), protectedPaths: runner.protectedPaths, journal: rig.journal,
+            logger: RunLogger(directory: rig.environment.logsDirectory))
+        #expect(!model.canReadAppData)
+    }
+
+    @Test func confirmationLeavesOutWhatWillBeSkipped() async throws {
+        let rig = try ModelRig()
+        try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let lib = rig.environment.userLibrary
+        try rig.file(lib.appending(path: "Containers/com.test.alpha/Data/doc.bin"), bytes: 50_000)
+        let model = rig.uninstallerModel()
+        await model.load()
+        let row = try #require(model.apps.first)
+        let container = try #require(model.leftovers(for: row.app).first { $0.leftover.kind == .container })
+        model.setChecked(true, leftover: container.leftover, in: row.app)
+        model.selection = [row.app.url]
+        let withAccess = model.confirmation
+        #expect(withAccess.dataWarnings.count == 1)
+        #expect(withAccess.accessSkipped == 0)
+
+        model.canReadAppData = false
+        let without = model.confirmation
+        #expect(without.dataWarnings.isEmpty)
+        #expect(without.accessSkipped == 1)
+        #expect(without.totalBytes == withAccess.totalBytes - container.leftover.bytes)
+        #expect(without.perApp[0].items + without.perApp[0].dataItems
+            == withAccess.perApp[0].items + withAccess.perApp[0].dataItems - 1)
+        #expect(ConfirmText.make(without).notes.contains("1 item needs Full Disk Access and stays where it is."))
+    }
 }

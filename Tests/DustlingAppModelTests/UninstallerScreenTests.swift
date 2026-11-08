@@ -308,4 +308,12 @@ extension UninstallerScreenTests {
             == "~/Library/Caches/x")
         #expect(UninstallerScreen.path(URL(filePath: "/Applications/A.app/"), home: home) == "/Applications/A.app")
     }
+
+    @Test func accessSkippedNoteIsPlural() {
+        let confirm = ConfirmModel(
+            plan: [], ready: true, note: nil, perApp: [per("A", items: 1, bytes: gb)], dataWarnings: [],
+            runningApps: [], launchAgents: 0, adminItems: 0, adminNote: nil, totalBytes: gb, limitedNote: nil,
+            accessSkipped: 3)
+        #expect(ConfirmText.make(confirm).notes == ["3 items need Full Disk Access and stay where they are."])
+    }
 }

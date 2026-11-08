@@ -221,6 +221,11 @@ public struct ConfirmText: Equatable, Sendable {
         } else if confirm.launchAgents > 1 {
             notes.append("\(confirm.launchAgents) launch agents are unloaded before they move.")
         }
+        if confirm.accessSkipped == 1 {
+            notes.append("1 item needs Full Disk Access and stays where it is.")
+        } else if confirm.accessSkipped > 1 {
+            notes.append("\(confirm.accessSkipped) items need Full Disk Access and stay where they are.")
+        }
         if confirm.adminItems == 1 {
             notes.append("1 item needs the cleanup helper (coming in a later version) and stays where it is.")
         } else if confirm.adminItems > 1 {
