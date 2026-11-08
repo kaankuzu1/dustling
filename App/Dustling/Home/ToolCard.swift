@@ -77,6 +77,9 @@ struct ToolCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private typealias Palette = DustlingTheme.Palette
 
+    /// What the loading skeleton stands in for: a figure and a one-line sentence.
+    private static let placeholder = ToolCardText(figure: "00.0 GB", line: Placeholder.text(0, base: 26, spread: 0))
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
@@ -90,19 +93,22 @@ struct ToolCard: View {
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
                     .foregroundStyle(Palette.muted)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if let text {
-                Text(text.figure)
+            } else {
+                // While loading, the same two lines with placeholder text, drawn as the skeleton.
+                let shown = text ?? Self.placeholder
+                Text(shown.figure)
                     .font(DustlingTheme.Typography.figure)
                     .foregroundStyle(Palette.ink)
                     .contentTransition(reduceMotion ? .identity : .numericText())
-                Text(text.line)
+                    .skeletonText()
+                    .skeleton(text == nil)
+                Text(shown.line)
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
                     .foregroundStyle(Palette.muted)
                     .monospacedDigit()
                     .fixedSize(horizontal: false, vertical: true)
-            } else {
-                SkeletonBlock(width: 110, height: 26)
-                SkeletonBlock(width: 180, height: 12, index: 1)
+                    .skeletonText()
+                    .skeleton(text == nil, index: 1)
             }
             let button = Button(self.button, action: action).controlSize(.small)
             if primary {
@@ -116,6 +122,7 @@ struct ToolCard: View {
         .background(
             highlighted ? Palette.rowSelection : Palette.panel,
             in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))
+        .skeletonSurfaceIsPanel()
         .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.hover, reduceMotion: reduceMotion), value: highlighted)
         .accessibilityElement(children: .contain)
     }

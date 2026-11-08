@@ -22,15 +22,18 @@ struct AppListRow: View {
     var body: some View {
         HStack(spacing: 10) {
             leading
+                .skeletonBlock()
                 .frame(width: 20)
             AppIconView(app: row.app, size: 32)
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.app.displayName)
                     .font(DustlingTheme.Typography.rowTitle)
                     .foregroundStyle(Palette.ink)
+                    .skeletonText()
                 Text(UninstallerScreen.appCaption(row))
                     .font(DustlingTheme.Typography.caption)
                     .foregroundStyle(isCurrent ? Palette.ink2 : Palette.muted)
+                    .skeletonText()
             }
             .lineLimit(1)
             .truncationMode(.tail)
@@ -39,10 +42,12 @@ struct AppListRow: View {
                 Text(Bytes.format(row.totalBytes))
                     .font(DustlingTheme.Typography.size)
                     .foregroundStyle(row.isCounting ? Palette.muted : Palette.ink)
+                    .skeletonText()
                 if let used = UninstallerScreen.lastUsed(row.app.lastUsed, now: .now) {
                     Text(used)
                         .font(DustlingTheme.Typography.caption)
                         .foregroundStyle(isCurrent ? Palette.ink2 : Palette.muted)
+                        .skeletonText()
                 }
             }
             .lineLimit(1)
@@ -50,7 +55,7 @@ struct AppListRow: View {
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 9)
-        .frame(minHeight: 54)
+        .frame(minHeight: Self.minHeight)
         .background(
             isCurrent ? Palette.rowSelection : Color.clear,
             in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius, style: .continuous))
@@ -61,6 +66,17 @@ struct AppListRow: View {
         .accessibilityAddTraits(isCurrent ? [.isSelected, .isButton] : .isButton)
         .accessibilityAction(named: "Show details", onSelect)
     }
+
+    /// The row's loading skeleton: this row with a placeholder app, drawn in placeholder mode.
+    static func placeholder(_ index: Int) -> some View {
+        AppListRow(
+            row: .placeholder(index), isCurrent: false, isSelected: false, progress: nil, isLocked: true,
+            onToggle: { _ in }, onSelect: {})
+            .skeleton(true, index: index)
+    }
+
+    /// Every row is at least this tall: the skeleton counts rows by it.
+    static let minHeight: CGFloat = 54
 
     @ViewBuilder private var leading: some View {
         switch progress {
@@ -102,6 +118,8 @@ struct AppIconView: View {
     let app: InstalledApp
     let size: CGFloat
     @State private var image: NSImage?
+    /// In a loading skeleton the icon is a block and nothing is looked up.
+    @Environment(\.skeletonIndex) private var skeletonIndex
 
     var body: some View {
         Group {
@@ -112,8 +130,12 @@ struct AppIconView: View {
             }
         }
         .frame(width: size, height: size)
+        .skeletonBlock(cornerRadius: (size * 0.2).rounded())
         .accessibilityHidden(true)
-        .task(id: app.url) { image = AppIconView.icon(for: app.url) }
+        .task(id: app.url) {
+            guard skeletonIndex == nil else { return }
+            image = AppIconView.icon(for: app.url)
+        }
     }
 
     @MainActor static func icon(for url: URL) -> NSImage {

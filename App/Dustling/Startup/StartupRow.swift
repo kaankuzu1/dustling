@@ -19,6 +19,22 @@ struct StartupRowView: View {
     @Environment(AppModels.self) private var models
     private typealias Palette = DustlingTheme.Palette
 
+    /// Every row is at least this tall: the skeleton counts rows by it.
+    static let minHeight: CGFloat = 42
+    static let kindWidth: CGFloat = 130
+    static let ownerWidth: CGFloat = 170
+    /// The skeleton's stand-in for the small switch: the switch's drawn track, measured on a 2x
+    /// screenshot (the control's own frame is wider, for its focus ring, and ran into the icon).
+    static let switchSkeleton = CGSize(width: 42, height: 19)
+    @Environment(\.skeletonIndex) private var skeletonIndex
+
+    /// The row's loading skeleton: this row with a placeholder item, drawn in placeholder mode.
+    static func placeholder(_ index: Int) -> some View {
+        StartupRowView(
+            row: .placeholder(index), isBusy: false, isLocked: true, canRemove: false, onToggle: {}, onRemove: {})
+            .skeleton(true, index: index)
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             leading
@@ -30,6 +46,7 @@ struct StartupRowView: View {
                         .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5).weight(.semibold))
                         .foregroundStyle(Palette.ink)
                         .lineLimit(1)
+                        .skeletonText()
                     if let badge = row.badge { BadgeChip(badge: badge) }
                 }
                 Text(row.item.label)
@@ -38,19 +55,22 @@ struct StartupRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+                    .skeletonText()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Text(row.kindName)
-                .frame(width: 130, alignment: .leading)
+                .skeletonText()
+                .frame(width: Self.kindWidth, alignment: .leading)
                 .foregroundStyle(Palette.ink)
             Text(row.owner ?? "Not known")
-                .frame(width: 170, alignment: .leading)
-                .foregroundStyle(row.owner == nil ? Palette.muted : Palette.ink2)
                 .lineLimit(1)
+                .skeletonText()
+                .frame(width: Self.ownerWidth, alignment: .leading)
+                .foregroundStyle(row.owner == nil ? Palette.muted : Palette.ink2)
         }
         .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
         .padding(.horizontal, 10)
-        .frame(minHeight: 42)
+        .frame(minHeight: Self.minHeight)
         .background(row.isOrphaned ? Palette.warning.opacity(0.06) : Color.clear)
         .overlay(alignment: .bottom) { Hairline() }
         .contentShape(Rectangle())
@@ -76,7 +96,12 @@ struct StartupRowView: View {
     }
 
     @ViewBuilder private var leading: some View {
-        if isBusy {
+        if let skeletonIndex {
+            // The small switch's capsule, leading in its column like the switch.
+            SkeletonBlock(
+                width: Self.switchSkeleton.width, height: Self.switchSkeleton.height,
+                cornerRadius: Self.switchSkeleton.height / 2, index: skeletonIndex)
+        } else if isBusy {
             BusyIndicator(label: "Changing…")
         } else if row.showsSystemSettingsLink {
             Button {
@@ -134,6 +159,7 @@ private struct BadgeChip: View {
 private struct StartupIcon: View {
     let row: StartupRow
     @State private var image: NSImage?
+    @Environment(\.skeletonIndex) private var skeletonIndex
 
     var body: some View {
         Group {
@@ -148,8 +174,10 @@ private struct StartupIcon: View {
             }
         }
         .frame(width: 24, height: 24)
+        .skeletonBlock(cornerRadius: DustlingTheme.Metrics.controlRadius)
         .accessibilityHidden(true)
         .task(id: row.ownerAppURL) {
+            guard skeletonIndex == nil else { return }
             image = row.ownerAppURL.map { AppIconView.icon(for: $0) }
         }
     }

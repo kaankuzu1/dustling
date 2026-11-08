@@ -58,12 +58,7 @@ struct FullDiskAccessStep: View {
             // The mockup draws Mote 40 pt wide; integer scales give 32 or 48, so 48 (3 pt per pixel).
             MoteView(models.places.places != nil && models.places.readableCount == models.places.total ? .happy : .worried, pixel: 3)
             if models.places.places == nil {
-                VStack(alignment: .leading, spacing: 8) {
-                    SkeletonBlock(width: 320, height: 22)
-                    SkeletonBlock(width: 420, height: 12, index: 1)
-                }
-                .accessibilityElement()
-                .accessibilityLabel("Checking which places Dustling can see")
+                StepHeadline.placeholder
             } else if models.places.readableCount == models.places.total {
                 StepHeadline(
                     title: "Dustling can see everything now",

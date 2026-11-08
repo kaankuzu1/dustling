@@ -25,7 +25,7 @@ struct AboutSection: View {
                     let alert = NSAlert()
                     alert.messageText = "The link didn't open"
                     alert.informativeText = "Dustling's source code is at \(Self.repository.absoluteString)."
-                    alert.runModal()
+                    ModalAlert.show(alert)
                 }
             }
             .help(Self.repository.absoluteString)

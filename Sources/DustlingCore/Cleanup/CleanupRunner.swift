@@ -26,7 +26,7 @@ public struct CleanupRunner: Sendable {
     /// `inProgress` until the end, so a crash is recorded up to the last finished item
     /// (`recoverInterrupted` clears the flag on the next launch). On cooperative cancellation
     /// (cancelling the task is checked before each item) the items not attempted are recorded as
-    /// `.skipped(reason: "cleanup stopped")` and the run ends normally with `inProgress == false`.
+    /// `.skipped(reason: "cleanup stopped")` in one save, and the run ends normally with `inProgress == false`.
     /// `onItemStart` fires before each move, `onItem` after it. The work runs on a GCD queue
     /// (`FileWork`), so the callbacks arrive on that queue.
     public func run(
@@ -84,16 +84,30 @@ public struct CleanupRunner: Sendable {
             save()
             log(entry)
         }
+        /// Entries that need no move (a stopped run's remaining items, the caller's extra in-use and
+        /// unmovable entries): one save and one log write for all of them, so stopping a cleanup of
+        /// thousands of items takes as long as one item, not thousands of saves.
+        func addBatch(_ entries: [JournalEntry]) {
+            guard !entries.isEmpty else { return }
+            record.entries.append(contentsOf: entries)
+            if entries.contains(where: { if case .movedToTrash = $0.outcome { true } else { false } }) {
+                record.restorable = true
+            }
+            save()
+            guard !logFailed else { return }
+            do { try logger.append(entries, to: record) } catch {
+                logFailed = true
+                record.entries.append(Self.failure("<log>", error))
+            }
+        }
 
         log(nil)
         save()
         for (index, url) in urls.enumerated() {
             if isCancelled() {
-                for rest in urls[index...] {
-                    add(JournalEntry(
-                        originalPath: rest.path(percentEncoded: false), bytes: 0,
-                        outcome: .skipped(reason: "cleanup stopped")))
-                }
+                addBatch(urls[index...].map {
+                    JournalEntry(originalPath: $0.path(percentEncoded: false), bytes: 0, outcome: .skipped(reason: "cleanup stopped"))
+                })
                 break
             }
             onItemStart(url)
@@ -101,7 +115,7 @@ public struct CleanupRunner: Sendable {
             add(entry)
             onItem(url, entry.outcome)
         }
-        for entry in extraEntries { add(entry) }
+        addBatch(extraEntries)
 
         record.inProgress = false
         save()
@@ -118,6 +132,12 @@ public struct CleanupRunner: Sendable {
     /// How long a run's file must have been left alone before recovery treats it as interrupted. A
     /// live run saves after every item, so one the app or the CLI is still writing is never closed.
     public static let recoveryQuietPeriod: TimeInterval = 5 * 60
+
+    /// The quiet period to recover with: the full period while another writer (the app or the CLI)
+    /// runs, none when this process is the only one, because then nothing else can still be writing.
+    public static func recoveryQuietPeriod(otherWritersRunning: Bool) -> TimeInterval {
+        otherWritersRunning ? recoveryQuietPeriod : 0
+    }
 
     /// Marks runs left `inProgress` (the process died mid-cleanup) as finished and returns their ids.
     /// Their entries are exactly the items that finished before the interruption. A run whose file
@@ -142,6 +162,17 @@ public struct CleanupRunner: Sendable {
         journal: RunJournal, quietFor: TimeInterval = recoveryQuietPeriod
     ) async throws -> [UUID] {
         try await FileWork.run { try recoverInterrupted(journal: journal, quietFor: quietFor) }
+    }
+
+    /// `recoverInterrupted` on the file-work queue with the quiet period chosen by
+    /// `otherWritersRunning` (asked there, since listing processes is a system call).
+    public static func recoverInterruptedInBackground(
+        journal: RunJournal, otherWritersRunning: @escaping @Sendable () -> Bool
+    ) async throws -> [UUID] {
+        try await FileWork.run {
+            try recoverInterrupted(
+                journal: journal, quietFor: recoveryQuietPeriod(otherWritersRunning: otherWritersRunning()))
+        }
     }
 
     /// Measures and moves one item, without journaling. Callers that need to decide between items

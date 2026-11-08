@@ -26,9 +26,7 @@ struct ReadyStep: View {
             // 96 pt (6 pt per pixel): the integer scale the design chose for the mockups' 72 pt Mote.
             MoteView(seesEverything ? .happy : .worried, pixel: 6)
             if models.places.places == nil {
-                SkeletonBlock(width: 420, height: 22)
-                    .accessibilityElement()
-                    .accessibilityLabel("Checking which places Dustling can see")
+                StepHeadline.placeholder
             } else if seesEverything {
                 StepHeadline(
                     title: "Dustling can see everything now",

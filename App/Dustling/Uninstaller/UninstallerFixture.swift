@@ -4,7 +4,9 @@ import DustlingCore
 import Foundation
 
 /// DEBUG only. `-DustlingUninstallerFixture list|detail|review|confirm|confirm-all|confirm-limited|removing|done`
-/// shows the Uninstaller with the approved mockup's sample apps for screenshots. Nothing here reads or touches
+/// shows the Uninstaller with the approved mockup's sample apps for screenshots. `loading` shows the list
+/// still loading with nothing found yet, and `counting` the sample apps listed with their leftovers
+/// still being looked for (the loading skeletons). Nothing here reads or touches
 /// the disk: the apps carry plain display paths that are never read (generated icons, no sizes or
 /// signatures), and the model refuses to load, uninstall or put back anything while the fixture is on.
 extension AppModels {
@@ -20,6 +22,12 @@ extension AppModels {
         AppIconView.usesFixtureIcons = true
         selection = .uninstaller
         let fixture = UninstallerFixtureData(home: homeDirectory)
+        if state == "loading" || state == "counting" {
+            fixtureTrashAccess = true
+            uninstaller.showFixtureLoading(apps: state == "counting" ? fixture.apps : [])
+            AppVersion.fixture = fixture.versions
+            return
+        }
         fixtureTrashAccess = state != "confirm-limited"
         uninstaller.canTakeOutOfTrash = fixtureTrashAccess ?? false
         let checked = state == "list" ? [] : [fixture.dockerData]

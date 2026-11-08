@@ -68,6 +68,7 @@ struct LeftoverLine<Status: View, Badges: View, Detail: View>: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             status()
+                .skeletonBlock()
                 .frame(width: 20, alignment: .center)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 2) {
@@ -75,6 +76,7 @@ struct LeftoverLine<Status: View, Badges: View, Detail: View>: View {
                     Text(title)
                         .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5).weight(.semibold))
                         .foregroundStyle(Palette.ink)
+                        .skeletonText()
                     badges()
                 }
                 .lineLimit(1)
@@ -84,6 +86,7 @@ struct LeftoverLine<Status: View, Badges: View, Detail: View>: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+                    .skeletonText()
                 detail()
                     .padding(.top, 2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -94,6 +97,7 @@ struct LeftoverLine<Status: View, Badges: View, Detail: View>: View {
                 .monospacedDigit()
                 .foregroundStyle(Palette.ink)
                 .lineLimit(1)
+                .skeletonText()
                 .frame(width: 76, alignment: .trailing)
                 .padding(.top, 2)
         }
@@ -103,6 +107,29 @@ struct LeftoverLine<Status: View, Badges: View, Detail: View>: View {
             warned ? Palette.warning.opacity(0.07) : Color.clear,
             in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius, style: .continuous))
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// A leftover row's loading skeleton: `LeftoverLine` with placeholder text, in placeholder mode.
+struct LeftoverLineSkeleton: View {
+    let index: Int
+
+    var body: some View {
+        LeftoverLine(
+            title: Placeholder.text(index, base: 11, spread: 8, step: 5),
+            path: "~/" + Placeholder.text(index, base: 30, spread: 24, step: 11),
+            size: "000 MB"
+        ) { LeftoverCheckbox() } detail: { EmptyView() }
+            .skeleton(true, index: index)
+    }
+}
+
+/// A checkbox that only stands in for a leftover's, in the loading skeleton.
+struct LeftoverCheckbox: View {
+    var body: some View {
+        Toggle(isOn: .constant(false)) { EmptyView() }
+            .toggleStyle(.checkbox)
+            .labelsHidden()
     }
 }
 

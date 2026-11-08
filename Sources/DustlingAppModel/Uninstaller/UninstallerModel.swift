@@ -758,6 +758,19 @@ extension UninstallerModel {
         rebuildApps()
     }
 
+    /// Screenshot fixture (DEBUG only): a load that is still running. With no `apps` nothing is listed
+    /// yet; with `apps` they are listed and none is counted yet. Nothing is read from the disk.
+    public func showFixtureLoading(apps: [InstalledApp] = []) {
+        generation += 1
+        fixtureRunning = []
+        isLoading = true
+        appList = apps
+        rows = [:]
+        counted = []
+        selection = []
+        rebuildApps()
+    }
+
     /// Screenshot fixture: the Removing state (`removing`) or the summary (`result`).
     public func showFixtureRun(progress: UninstallProgress?, result: UninstallResult?, uninstalling: Bool) {
         self.progress = progress
