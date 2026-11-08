@@ -30,11 +30,7 @@ struct UninstallConfirmSheet: View {
                         .foregroundStyle(Palette.muted)
                 }
             }
-            VStack(spacing: 4) {
-                ForEach(Array(zip(confirm.plan, text.apps).enumerated()), id: \.offset) { _, pair in
-                    appRow(pair.0.app, pair.1)
-                }
-            }
+            appList(text)
             if let heading = text.dataHeading {
                 DataWarningBlock(text: text.dataLines.joined(separator: " "), heading: heading)
             }
@@ -67,6 +63,27 @@ struct UninstallConfirmSheet: View {
         .background(Palette.ground)
     }
 
+    /// One row per app, held to a few rows: a sheet sizes itself to its content and isn't clipped to
+    /// the window, so a long list would push the buttons out of reach. Past that it scrolls.
+    private func appList(_ text: ConfirmText) -> some View {
+        let list = UninstallerScreen.confirmList(apps: text.apps.count)
+        return VStack(alignment: .leading, spacing: 4) {
+            ScrollView(.vertical) {
+                VStack(spacing: UninstallerScreen.confirmRowSpacing) {
+                    ForEach(Array(zip(confirm.plan, text.apps).enumerated()), id: \.offset) { _, pair in
+                        appRow(pair.0.app, pair.1)
+                    }
+                }
+            }
+            .scrollDisabled(!list.scrolls)
+            .scrollIndicators(list.scrolls ? .visible : .hidden)
+            .frame(height: list.height)
+            if let more = list.moreLine(one: "app", many: "apps") {
+                MoreLine(text: more)
+            }
+        }
+    }
+
     private func appRow(_ app: InstalledApp, _ line: ConfirmText.AppLine) -> some View {
         HStack(spacing: 10) {
             AppIconView(app: app, size: 24)
@@ -83,8 +100,8 @@ struct UninstallConfirmSheet: View {
                 .font(DustlingTheme.Typography.size)
                 .foregroundStyle(Palette.ink)
         }
-        .padding(.vertical, 8)
         .padding(.horizontal, 10)
+        .frame(height: UninstallerScreen.confirmRowHeight)
         .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.controlRadius, style: .continuous))
         .accessibilityElement(children: .combine)
     }

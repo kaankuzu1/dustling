@@ -32,6 +32,18 @@ public enum UninstallerScreen {
         }
     }
 
+    // MARK: confirm sheet
+
+    public static let confirmRowHeight: Double = 40
+    public static let confirmRowSpacing: Double = 4
+    /// Apps the confirm sheet shows before its list scrolls.
+    public static let confirmVisibleApps = 6
+
+    /// The confirm sheet's app list (one row per selected app).
+    public static func confirmList(apps: Int) -> SheetList {
+        SheetList(rows: apps, rowHeight: confirmRowHeight, spacing: confirmRowSpacing, maxVisible: confirmVisibleApps)
+    }
+
     /// "Today", "Yesterday", "5 days ago", "2 weeks ago", "4 months ago". Nil when unknown.
     public static func lastUsed(_ date: Date?, now: Date, calendar: Calendar = .current) -> String? {
         guard let date else { return nil }
@@ -188,6 +200,11 @@ public struct ConfirmText: Equatable, Sendable {
     public let total: String
     public let button: String
 
+    /// Checked data items named one by one; more are counted in one line.
+    public static let maxDataLines = 3
+    /// Running apps named in the note; more are counted.
+    static let maxNamedRunning = 3
+
     public static func make(_ confirm: ConfirmModel) -> ConfirmText {
         let count = confirm.perApp.count
         let title = count == 1
@@ -204,9 +221,11 @@ public struct ConfirmText: Equatable, Sendable {
         let data = confirm.dataWarnings
         if !data.isEmpty {
             heading = data.count == 1 ? "1 item may contain your data:" : "\(data.count) items may contain your data:"
-            lines = data.map {
+            // The first few are named; the rest are counted, so the sheet stays inside the window.
+            lines = data.prefix(maxDataLines).map {
                 "\($0.appName) \(UninstallerScreen.kindName($0.kind).lowercased()), \(Bytes.format($0.bytes))."
             }
+            if data.count > maxDataLines { lines.append("And \(data.count - maxDataLines) more.") }
             let why = data.count == 1 ? "It is included because you checked it." : "They are included because you checked them."
             lines[lines.count - 1] += " " + why
         }
@@ -215,7 +234,11 @@ public struct ConfirmText: Equatable, Sendable {
         if running.count == 1 {
             notes.append("\(running[0]) is running. Dustling will quit it first.")
         } else if running.count > 1 {
-            notes.append("\(UninstallerScreen.names(running)) are running. Dustling will quit them first.")
+            let named = running.count > maxNamedRunning
+                ? running.prefix(maxNamedRunning).joined(separator: ", ")
+                    + " and \(running.count - maxNamedRunning) other \(running.count - maxNamedRunning == 1 ? "app" : "apps")"
+                : UninstallerScreen.names(running)
+            notes.append("\(named) are running. Dustling will quit them first.")
         }
         if confirm.launchAgents == 1 {
             notes.append("1 launch agent is unloaded before it moves.")

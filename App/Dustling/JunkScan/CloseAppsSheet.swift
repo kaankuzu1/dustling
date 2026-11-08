@@ -52,12 +52,24 @@ struct CloseAppsSheet: View {
                 .font(.custom(DustlingTheme.Typography.sansFamily, size: 15).weight(.semibold))
                 .foregroundStyle(Palette.ink)
                 .accessibilityAddTraits(.isHeader)
-            VStack(spacing: 0) {
-                ForEach(run.holders) { holder in
-                    AppRow(holder: holder, status: status(holder))
+            // Held to a few rows: past that it scrolls, so the buttons stay in the window.
+            let list = CloseApps.list(holders: run.holders.count)
+            VStack(alignment: .leading, spacing: 4) {
+                ScrollView(.vertical) {
+                    VStack(spacing: 0) {
+                        ForEach(run.holders) { holder in
+                            AppRow(holder: holder, status: status(holder))
+                        }
+                    }
+                }
+                .scrollDisabled(!list.scrolls)
+                .scrollIndicators(list.scrolls ? .visible : .hidden)
+                .frame(height: list.height)
+                .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))
+                if let more = list.moreLine(one: "app", many: "apps") {
+                    MoreLine(text: more)
                 }
             }
-            .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))
             Text(CloseApps.note)
                 .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
                 .foregroundStyle(Palette.ink2)
@@ -165,7 +177,7 @@ private struct AppRow: View {
             statusView
         }
         .padding(DustlingTheme.Metrics.rowPadding)
-        .frame(minHeight: DustlingTheme.Metrics.rowMinHeight)
+        .frame(height: CloseApps.rowHeight)
         .accessibilityElement(children: .combine)
     }
 
@@ -192,5 +204,22 @@ private struct AppRow: View {
                 .font(DustlingTheme.Typography.caption)
                 .foregroundStyle(Palette.warning)
         }
+    }
+}
+
+/// "and 15 more apps" under a sheet's list that scrolls.
+struct MoreLine: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .accessibilityHidden(true)
+            Text(text)
+        }
+        .font(DustlingTheme.Typography.caption)
+        .foregroundStyle(DustlingTheme.Palette.muted)
+        .padding(.leading, 10)
     }
 }

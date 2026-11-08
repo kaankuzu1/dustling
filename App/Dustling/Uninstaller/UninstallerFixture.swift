@@ -3,8 +3,8 @@ import DustlingAppModel
 import DustlingCore
 import Foundation
 
-/// DEBUG only. `-DustlingUninstallerFixture list|detail|review|confirm|confirm-limited|removing|done` shows the
-/// Uninstaller with the approved mockup's sample apps for screenshots. Nothing here reads or touches
+/// DEBUG only. `-DustlingUninstallerFixture list|detail|review|confirm|confirm-all|confirm-limited|removing|done`
+/// shows the Uninstaller with the approved mockup's sample apps for screenshots. Nothing here reads or touches
 /// the disk: the apps carry plain display paths that are never read (generated icons, no sizes or
 /// signatures), and the model refuses to load, uninstall or put back anything while the fixture is on.
 extension AppModels {
@@ -23,8 +23,10 @@ extension AppModels {
         fixtureTrashAccess = state != "confirm-limited"
         uninstaller.canTakeOutOfTrash = fixtureTrashAccess ?? false
         let checked = state == "list" ? [] : [fixture.dockerData]
-        // "confirm" shows the sheet for one app; the others select the mockup's three.
-        let selected = state == "confirm" ? [fixture.docker.url] : fixture.apps.prefix(3).map(\.url)
+        // "confirm" shows the sheet for one app, "confirm-all" for every app (its list scrolls); the
+        // others select the mockup's three.
+        let selected = state == "confirm" ? [fixture.docker.url]
+            : state == "confirm-all" ? fixture.apps.map(\.url) : fixture.apps.prefix(3).map(\.url)
         uninstaller.showFixture(
             apps: fixture.apps, leftovers: fixture.leftovers, running: [fixture.docker.url],
             selection: Set(selected), checked: checked, excluded: fixture.excluded)
