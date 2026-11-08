@@ -140,4 +140,56 @@ struct ProtectedPathsTests {
         #expect(q.verdict(for: sb.root.appending(path: "home/Library/Cachés/x"), allowedRoots: [caches])
             == .denied(reason: "outside the cleanup area"))
     }
+    // MARK: - Home and ~/Library themselves (T2), CloudStorage (Minor 4)
+
+    @Test func homeFolderItselfIsDenied() throws {
+        let (sb, p) = try make()
+        let home = sb.environment.home
+        let denied = PathVerdict.denied(reason: "protected location")
+        #expect(p.verdict(for: home, allowedRoots: [home.deletingLastPathComponent()]) == denied)
+        #expect(p.verdict(for: home, allowedRoots: [URL(filePath: "/")]) == denied)
+        #expect(p.verdict(for: home.appending(path: "/"), allowedRoots: [sb.root]) == denied)
+    }
+
+    @Test func libraryFolderItselfIsDenied() throws {
+        let (sb, p) = try make()
+        let home = sb.environment.home
+        try sb.directory("home/Library")
+        let denied = PathVerdict.denied(reason: "protected location")
+        #expect(p.verdict(for: home.appending(path: "Library"), allowedRoots: [home]) == denied)
+        #expect(p.verdict(for: home.appending(path: "library"), allowedRoots: [home]) == denied)
+    }
+
+    @Test func homeAndLibraryAreDeniedByEqualityOnly() throws {
+        let (sb, p) = try make()
+        let home = sb.environment.home
+        try sb.directory("home/Downloads")
+        try sb.directory("home/Library/Caches")
+        #expect(p.verdict(for: home.appending(path: "Downloads/x"), allowedRoots: [home]) == .allowed)
+        #expect(p.verdict(for: home.appending(path: "Library/Caches"), allowedRoots: [home.appending(path: "Library")])
+            == .allowed)
+    }
+
+    @Test func ownHomeUnderUsersIsDeniedItself() throws {
+        let sb = try TestSandbox()
+        var env = sb.environment
+        env.home = URL(filePath: "/Users/alice")
+        let p = ProtectedPaths(environment: env)
+        #expect(p.verdict(for: URL(filePath: "/Users/alice"), allowedRoots: [URL(filePath: "/Users")])
+            == .denied(reason: "protected location"))
+        #expect(p.verdict(for: URL(filePath: "/Users/alice/Library"), allowedRoots: [URL(filePath: "/Users/alice")])
+            == .denied(reason: "protected location"))
+    }
+
+    @Test func cloudStorageIsDenied() throws {
+        let (sb, p) = try make()
+        let lib = sb.environment.home.appending(path: "Library")
+        try sb.file("home/Library/CloudStorage/OneDrive-Personal/report.docx")
+        let denied = PathVerdict.denied(reason: "protected location")
+        #expect(p.verdict(for: lib.appending(path: "CloudStorage"), allowedRoots: [lib]) == denied)
+        #expect(p.verdict(for: lib.appending(path: "CloudStorage/OneDrive-Personal"), allowedRoots: [lib]) == denied)
+        #expect(p.verdict(for: lib.appending(path: "CloudStorage/OneDrive-Personal/report.docx"),
+                          allowedRoots: [lib.appending(path: "CloudStorage")]) == denied)
+    }
 }
+

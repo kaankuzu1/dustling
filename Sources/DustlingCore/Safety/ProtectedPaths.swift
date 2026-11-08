@@ -12,10 +12,13 @@ public struct ProtectedPaths: Sendable {
     private static let systemDenied = ["/System", "/bin", "/sbin", "/usr", "/private/var/db", "/Library/Apple"]
     private static let homeDenied = [
         "Documents", "Desktop", "Pictures", "Music", "Movies",
-        "Library/Mobile Documents", "Library/Keychains", "Library/Mail",
+        "Library/Mobile Documents", "Library/Keychains", "Library/Mail", "Library/CloudStorage",
     ]
+    /// Denied themselves (by equality only): their children are decided by the rules below.
+    private static let homeExactDenied = ["", "Library"]
 
     private let denied: [[String]]
+    private let exactDenied: [[String]]
     private let home: [String]
     private let usersRoot: [String]
 
@@ -24,22 +27,29 @@ public struct ProtectedPaths: Sendable {
         usersRoot = Self.key(Self.resolve(URL(filePath: "/Users")))
         let entries = Self.systemDenied.map { URL(filePath: $0) }
             + Self.homeDenied.map { environment.home.appending(path: $0) }
+        denied = Self.keys(for: entries)
+        exactDenied = Self.keys(for: Self.homeExactDenied.map {
+            $0.isEmpty ? environment.home : environment.home.appending(path: $0)
+        })
+    }
+
+    /// Each entry as resolved like a candidate, plus (for a symlinked entry) where it really lives.
+    private static func keys(for entries: [URL]) -> [[String]] {
         var list: [[String]] = []
         for entry in entries {
-            list.append(Self.key(Self.resolve(entry)))
-            // A symlinked entry stays protected where its files really live.
-            if let real = Self.realpathString(entry.path(percentEncoded: false)) {
-                list.append(Self.key(real.split(separator: "/").map(String.init)))
+            list.append(key(resolve(entry)))
+            if let real = realpathString(entry.path(percentEncoded: false)) {
+                list.append(key(real.split(separator: "/").map(String.init)))
             }
         }
-        denied = list
+        return list
     }
 
     public func verdict(for url: URL, allowedRoots: [URL]) -> PathVerdict {
         let resolved = Self.resolve(url)
         let path = Self.key(resolved)
         let casePath = Self.caseKey(resolved)
-        if denied.contains(where: { Self.isEqualOrInside(path, $0) }) {
+        if denied.contains(where: { Self.isEqualOrInside(path, $0) }) || exactDenied.contains(path) {
             return .denied(reason: "protected location")
         }
         if Self.isStrictlyInside(path, usersRoot), !Self.isEqualOrInside(casePath, home) {
