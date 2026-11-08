@@ -154,11 +154,9 @@ final class AppModels {
     /// Scans again when places opened that the last scan couldn't cover (Full Disk Access arrived),
     /// unless a scan or cleanup is running or a cleanup summary is showing.
     func rescanIfPlacesOpened() {
-        guard homeLoaded, let scope = lastScanScope, scope.isOutgrown(by: places.places) else { return }
-        switch junk.state {
-        case .ready, .idle, .problem: scanJunk()
-        case .scanning, .moving, .done: break
-        }
+        guard homeLoaded, let scope = lastScanScope,
+              scope.shouldRescan(places: places.places, phase: homeFigures.phase) else { return }
+        scanJunk()
     }
 
     /// Re-reads the Trash; other volumes' Trash folders only with Full Disk Access.
@@ -170,8 +168,7 @@ final class AppModels {
     /// Folders whose programs aren't looked at when judging startup items: without Full Disk Access,
     /// the consent folders and other volumes (looking could raise a prompt).
     private var unjudgedProgramFolders: [URL] {
-        guard health.fullDiskAccess != .granted else { return [] }
-        return PlaceAccessChecker.consentFolders(environment) + [URL(filePath: "/Volumes")]
+        ProgramPresence.unjudgedFolders(environment, fullDiskAccessGranted: health.fullDiskAccess == .granted)
     }
 
     /// Home's numbers from the shared models.
@@ -253,11 +250,15 @@ final class AppModels {
         // Until the launch probe finishes it already covers this activation. Starting a second
         // probe now would supersede it, and the light would show before any result was published.
         guard hasProbedFullDiskAccess else { return }
-        health.appBecameActive()
         Task { await storage.refresh() }
-        // The Trash may have been emptied or filled in Finder meanwhile.
-        if homeLoaded { refreshTrash() }
-        Task { await refreshPlaces() }
+        Task {
+            // Probe first: places and the Trash must be checked with the access macOS gives now, or
+            // a revoked grant could still open other volumes' Trash folders once.
+            await health.refresh()
+            await refreshPlaces()
+            // The Trash may have been emptied or filled in Finder meanwhile.
+            if homeLoaded { refreshTrash() }
+        }
     }
 
     /// The newest run in the history journal, for the last-run health light. An unreadable journal

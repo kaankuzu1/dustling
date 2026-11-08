@@ -173,6 +173,15 @@ public enum ProgramPresence: Equatable, Sendable {
     /// It couldn't be looked at (EPERM, EACCES, …). Never counted as gone.
     case unknown
 
+    /// Folders whose programs aren't looked at when judging startup items without Full Disk Access:
+    /// the consent folders, iCloud Drive (`~/Library/Mobile Documents`) and other volumes. Looking
+    /// there could raise a prompt. With access, everything is judged.
+    public static func unjudgedFolders(_ environment: SystemEnvironment, fullDiskAccessGranted: Bool) -> [URL] {
+        guard !fullDiskAccessGranted else { return [] }
+        return PlaceAccessChecker.consentFolders(environment)
+            + [environment.userLibrary.appending(path: "Mobile Documents"), URL(filePath: "/Volumes")]
+    }
+
     public static func check(_ path: String) -> ProgramPresence {
         var info = stat()
         if lstat(path, &info) == 0 { return .present }

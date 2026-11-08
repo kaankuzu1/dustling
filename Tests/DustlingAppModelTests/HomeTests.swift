@@ -289,6 +289,17 @@ struct HomeScanScopeTests {
         // Losing access never asks for a rescan.
         #expect(!HomeScanScope.make(places: granted).isOutgrown(by: limited))
     }
+
+    @Test func rescanOnlyWhileTheJunkModelIsAtRest() {
+        let scope = HomeScanScope(full: [.userLogs])
+        let opened = [Place(id: .userLogs, access: .readable), Place(id: .xcodeJunk, access: .readable)]
+        #expect(scope.shouldRescan(places: opened, phase: .ready))
+        #expect(scope.shouldRescan(places: opened, phase: .notScanned))
+        #expect(!scope.shouldRescan(places: opened, phase: .scanning))
+        #expect(!scope.shouldRescan(places: opened, phase: .moving))
+        #expect(!scope.shouldRescan(places: opened, phase: .done))
+        #expect(!scope.shouldRescan(places: [Place(id: .userLogs, access: .readable)], phase: .ready))
+    }
 }
 
 struct HomeFiguresTests {
@@ -373,5 +384,29 @@ struct HomeFiguresTests {
         let figures = HomeFigures.make(input(places: [Place(id: .xcodeJunk, access: .locked)]))
         #expect(figures.lockedCells == 1)
         #expect(figures.isLowerBound)
+    }
+
+    @Test func revokedPlaceIsOnlyALockedCellNotItsOldBytes() {
+        // Scanned with access; access was revoked since.
+        let figures = HomeFigures.make(input(
+            tiles: [tile(.userLogs, quarter), tile(.xcodeJunk, 4 * quarter)], selected: 0,
+            places: [Place(id: .userLogs, access: .readable), Place(id: .xcodeJunk, access: .locked)],
+            scope: HomeScanScope(full: [.userLogs, .xcodeJunk])))
+        #expect(!figures.mosaic.cells.contains(.category(.xcodeJunk)))
+        #expect(figures.mosaic.cells.filter { $0 == .locked }.count == 1)
+        #expect(figures.reclaimable == quarter)
+    }
+}
+
+struct UnjudgedProgramFoldersTests {
+    @Test func iCloudDriveConsentFoldersAndVolumesAreSkippedWithoutAccess() throws {
+        let rig = try ModelRig()
+        let folders = ProgramPresence.unjudgedFolders(rig.environment, fullDiskAccessGranted: false)
+        #expect(folders.contains(rig.environment.userLibrary.appending(path: "Mobile Documents")))
+        #expect(folders.contains(URL(filePath: "/Volumes")))
+        #expect(folders.contains(rig.environment.home.appending(path: "Downloads")))
+        let program = rig.environment.userLibrary.appending(path: "Mobile Documents/com~apple~CloudDocs/tool")
+        #expect(!ProgramPresence.isOrphan(program.path(percentEncoded: false), unjudged: folders, presence: { _ in .missing }))
+        #expect(ProgramPresence.unjudgedFolders(rig.environment, fullDiskAccessGranted: true).isEmpty)
     }
 }

@@ -286,6 +286,15 @@ public struct HomeScanScope: Equatable, Sendable {
         let now = Self.make(places: places)
         return !now.full.isSubset(of: full) || !now.partial.isSubset(of: full.union(partial))
     }
+
+    /// Home scans again when places opened that this scope didn't cover, but only while the junk
+    /// model is at rest: never during a scan or a cleanup, and never over a cleanup's summary.
+    public func shouldRescan(places: [Place]?, phase: HomeFigures.Phase) -> Bool {
+        switch phase {
+        case .notScanned, .ready: isOutgrown(by: places)
+        case .scanning, .moving, .done: false
+        }
+    }
 }
 
 /// What Home shows, worked out from the shared models' state in one place.
@@ -352,6 +361,7 @@ public struct HomeFigures: Equatable, Sendable {
     public let cleaned: Set<JunkCategoryID>
     /// Categories being moved right now; their cells nibble away.
     public let nibbling: Set<JunkCategoryID>
+    public let phase: Phase
 
     public var shortfall: Int64 {
         if case .needMore(let shortfall) = hero { return shortfall }
@@ -359,6 +369,11 @@ public struct HomeFigures: Equatable, Sendable {
     }
 
     public static func make(_ input: Input) -> HomeFigures {
+        var input = input
+        // A place that can't be read now (access revoked since the scan) is a locked cell; its old
+        // scan numbers would count it twice.
+        let unreadableNow = Set((input.places ?? []).filter { $0.access != .readable }.map(\.id))
+        input.tiles = input.tiles.filter { !unreadableNow.contains($0.id) }
         let selected = Set(input.tiles.filter { $0.isSelected && !$0.stopped }.map(\.id))
         let finished: Bool
         var cleaned: Set<JunkCategoryID> = [], moving: Set<JunkCategoryID> = []
@@ -398,7 +413,7 @@ public struct HomeFigures: Equatable, Sendable {
             mosaic: HomeMosaic.layout(tiles: input.tiles, excluding: cleaned, trashBytes: trashBytes, lockedCells: locked),
             mosaicSummary: HomeMosaic.accessibilitySummary(
                 reclaimable: reclaim, categories: open.filter { $0.bytes > 0 }.count, locked: locked),
-            cleaned: cleaned, nibbling: moving)
+            cleaned: cleaned, nibbling: moving, phase: input.phase)
     }
 
     /// One hatched cell per place Dustling couldn't read (locked or unreadable), per place the last
