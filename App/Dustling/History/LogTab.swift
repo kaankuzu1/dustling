@@ -138,6 +138,8 @@ private struct LogLineView: View {
                 .skeletonText()
         }
         .padding(.vertical, 3)
-        .accessibilityElement(children: .combine)
+        // Spelled out: combining the selectable text left the line without anything for VoiceOver to read.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(row.result), \(row.path), \(row.note)")
     }
 }

@@ -16,6 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Loading placeholders now line up with the content that replaces them on every screen, show up on panels in light and dark, and fill the space without spilling over.
 - On a first launch the sidebar opened too narrow, cutting off "Startup items" and the Full Disk Access line. It now always opens at its full width.
 - Icons on buttons such as Move to Trash and Empty Trash stay visible in light mode when Dustling isn't the active app, and dim with their button when it can't be used.
+- VoiceOver reads every line in a run's log in History, which it skipped before, and says whether each app in the Uninstaller was moved, left alone or is still waiting.
 
 ## [0.1.0] - 2026-11-08
 
