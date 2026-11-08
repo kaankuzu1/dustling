@@ -86,31 +86,47 @@ public struct StartupRemover: Sendable {
         return parent == agentsDirectory.standardizedFileURL.pathComponents
     }
 
-    /// nil when the item doesn't qualify (nothing is touched or recorded).
-    public func remove(_ item: StartupItem) async -> RunRecord? {
-        guard canRemove(item), let plist = item.plistURL else { return nil }
-        var extra: [JournalEntry] = []
-        // Unload first, but only what the guard lets the runner move.
-        if runner.protectedPaths.verdict(for: plist, allowedRoots: [agentsDirectory]) == .allowed,
-           let failure = unload(plist) {
-            extra.append(failure)
-        }
-        return await runner.run(
-            [plist], kind: .startupChange, allowedRoots: [agentsDirectory], extraEntries: extra, onItem: { _, _ in })
+    /// What a remove did: the saved record, and whether the agent was stopped (booted out) first.
+    public struct Removal: Sendable {
+        public let record: RunRecord
+        /// launchctl stopped a loaded agent. If the move then failed, it starts again at next login.
+        public let stopped: Bool
     }
 
-    /// A failure entry, or nil when it was unloaded (or wasn't loaded at all).
-    private func unload(_ plist: URL) -> JournalEntry? {
+    /// nil when the item doesn't qualify (nothing is touched or recorded).
+    public func remove(_ item: StartupItem) async -> Removal? {
+        guard canRemove(item), let plist = item.plistURL else { return nil }
+        var extra: [JournalEntry] = []
+        var stopped = false
+        // Unload first, but only what the guard lets the runner move.
+        if runner.protectedPaths.verdict(for: plist, allowedRoots: [agentsDirectory]) == .allowed {
+            switch unload(plist) {
+            case .stopped: stopped = true
+            case .notLoaded: break
+            case .failed(let entry): extra.append(entry)
+            }
+        }
+        let record = await runner.run(
+            [plist], kind: .startupChange, allowedRoots: [agentsDirectory], extraEntries: extra, onItem: { _, _ in })
+        return Removal(record: record, stopped: stopped)
+    }
+
+    private enum Unload {
+        case stopped, notLoaded
+        case failed(JournalEntry)
+    }
+
+    private func unload(_ plist: URL) -> Unload {
         let path = plist.path(percentEncoded: false)
-        func failure(_ reason: String) -> JournalEntry {
-            JournalEntry(originalPath: path, bytes: 0, outcome: .failed(reason: "could not unload: \(reason)"))
+        func failure(_ reason: String) -> Unload {
+            .failed(JournalEntry(originalPath: path, bytes: 0, outcome: .failed(reason: "could not unload: \(reason)")))
         }
         do {
             let result = try commands.run("/bin/launchctl", ["bootout", "gui/\(environment.userID)", path])
-            if result.status == 0 { return nil }
+            if result.status == 0 { return .stopped }
             let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             let notLoaded = ["No such process", "Could not find specified service"]
-            if notLoaded.contains(where: { stderr.contains($0) }) { return nil }
+            if notLoaded.contains(where: { stderr.contains($0) }) { return .notLoaded }
             return failure(stderr)
         } catch {
             return failure(error.localizedDescription)
@@ -167,12 +183,19 @@ public final class StartupModel {
     @ObservationIgnored private let scanner: StartupItemScanner
     @ObservationIgnored private let recorder: StartupChangeRecorder
     @ObservationIgnored private let presence: @Sendable (String) -> ProgramPresence
-    @ObservationIgnored private let listApps: @Sendable () -> [InstalledApp]
+    /// Lists the installed apps, leaving out any linked into the folders it is given.
+    @ObservationIgnored private let listApps: @Sendable ([URL]) -> [InstalledApp]
     @ObservationIgnored private let remover: StartupRemover?
     @ObservationIgnored private let onRunCompleted: @MainActor () -> Void
     @ObservationIgnored private var generation = 0
     /// The folders the last `load` left unjudged, reused by the reload after a change.
     @ObservationIgnored private var lastUnjudged: [URL] = []
+    /// The folders the cached app list was made with; a different set lists the apps again.
+    @ObservationIgnored private var lastAppsUnjudged: [URL]?
+
+    private func sameFolders(_ folders: [URL]) -> Bool {
+        lastAppsUnjudged.map { Set($0.map(\.standardizedFileURL)) == Set(folders.map(\.standardizedFileURL)) } ?? false
+    }
     #if DEBUG
     /// DEBUG screenshots: sample items that never came from or go to the disk.
     @ObservationIgnored public private(set) var isFixture = false
@@ -181,7 +204,7 @@ public final class StartupModel {
     public init(
         scanner: StartupItemScanner, recorder: StartupChangeRecorder,
         presence: @escaping @Sendable (String) -> ProgramPresence = ProgramPresence.check,
-        apps: @escaping @Sendable () -> [InstalledApp] = { [] },
+        apps: @escaping @Sendable ([URL]) -> [InstalledApp] = { _ in [] },
         remover: StartupRemover? = nil,
         onRunCompleted: @escaping @MainActor () -> Void = {}
     ) {
@@ -205,18 +228,25 @@ public final class StartupModel {
     /// `unjudged` (folders that ask for consent without Full Disk Access, and other volumes) are never
     /// looked at, so loading can't raise a prompt; they are simply not called orphans.
     public func load(unjudged: [URL] = []) async {
+        await load(unjudged: unjudged, reusingApps: false)
+    }
+
+    /// After a switch or a remove the installed apps haven't changed: the last list is reused.
+    private func load(unjudged: [URL], reusingApps: Bool) async {
         guard !fixtureOn else { return }
         lastUnjudged = unjudged
         generation += 1
         let mine = generation
         isLoading = true
         let scanner = self.scanner, presence = self.presence, listApps = self.listApps
+        let cached: [InstalledApp]? = reusingApps && sameFolders(unjudged) ? apps : nil
+        lastAppsUnjudged = unjudged
         let found = await Blocking.run { () -> Loaded in
             let scanned = scanner.scanWithIssues()
             let orphans = scanned.items.filter {
                 ProgramPresence.isOrphan($0.program, unjudged: unjudged, presence: presence)
             }
-            let apps = listApps()
+            let apps = cached ?? listApps(unjudged)
             var owners: [String: StartupScreen.Owner] = [:]
             for item in scanned.items {
                 // An app bundle is looked at only outside the unjudged folders, like orphans.
@@ -334,7 +364,7 @@ public final class StartupModel {
         lastResult = StartupChange(
             record: record, result: StartupScreen.changeResult(record, name: name, action: .toggle),
             action: .toggle, itemName: name)
-        await load(unjudged: lastUnjudged)
+        await load(unjudged: lastUnjudged, reusingApps: true)
         busyItemID = nil
         onRunCompleted()
         return record
@@ -346,15 +376,17 @@ public final class StartupModel {
     public func remove(_ item: StartupItem) async -> RunRecord? {
         guard !fixtureOn, busyItemID == nil, let remover, remover.canRemove(item) else { return nil }
         busyItemID = item.id
-        guard let record = await remover.remove(item) else {
+        guard let removal = await remover.remove(item) else {
             busyItemID = nil
             return nil
         }
+        let record = removal.record
         let name = StartupScreen.displayName(item)
         lastResult = StartupChange(
-            record: record, result: StartupScreen.changeResult(record, name: name, action: .remove),
+            record: record,
+            result: StartupScreen.changeResult(record, name: name, action: .remove, stoppedFirst: removal.stopped),
             action: .remove, itemName: name)
-        await load(unjudged: lastUnjudged)
+        await load(unjudged: lastUnjudged, reusingApps: true)
         busyItemID = nil
         onRunCompleted()
         return record

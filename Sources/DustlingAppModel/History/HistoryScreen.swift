@@ -162,7 +162,8 @@ public enum HistoryScreen {
         let helper = record.needsAdminCount
         let skipped = record.skippedCount - toggles.count
 
-        var parts = [when(record.startedAt, c)]
+        // The timeline's header already says when.
+        var parts: [String] = []
         if let toggle = toggles.first, real.count == 1 {
             parts.append(OutcomePresentation.text(toggle.outcome, in: record.kind).lowercased())
         } else {
@@ -205,8 +206,12 @@ public enum HistoryScreen {
         let showsSize = record.kind == .emptyTrash ? bytes > 0 : !moved.isEmpty
         return RunLine(
             id: record.id, tool: Tool.of(record.kind), title: runTitle(record), when: when(record.startedAt, c),
-            caption: parts.joined(separator: ", "), chip: chip, size: showsSize ? Bytes.format(bytes) : nil,
+            caption: sentence(parts.joined(separator: ", ")), chip: chip, size: showsSize ? Bytes.format(bytes) : nil,
             action: action, dimmed: dimmed)
+    }
+
+    private static func sentence(_ text: String) -> String {
+        text.prefix(1).uppercased() + text.dropFirst()
     }
 
     public enum TimelineEntry: Identifiable, Equatable, Sendable {
@@ -420,21 +425,43 @@ public enum HistoryScreen {
     /// folder shown as `~`. When the log doesn't have them (it couldn't be written or was deleted),
     /// the same lines are made from the saved record.
     public static func bugReport(logText: String?, record: RunRecord, home: String) -> String {
+        let fallback = RunLogger.text(for: record)
+        let text = logText.flatMap { ownLines(in: $0, record: record, expectedTotals: fallback) } ?? fallback
+        return shortenedEverywhere(text, home: home)
+    }
+
+    /// The run's header, then one line per entry in order (each must end with that entry's path, and
+    /// the Trash path for a move), then its totals line. Lines of other runs written in between
+    /// (the log is shared) are skipped. Nil when the log doesn't hold exactly this run's lines.
+    private static func ownLines(in log: String, record: RunRecord, expectedTotals: String) -> String? {
+        let marker = "run=\(record.id.uuidString)"
+        let totals = expectedTotals.split(separator: "\n").last.map(String.init)
         var lines: [Substring] = []
-        if let logText {
-            let marker = "run=\(record.id.uuidString)"
-            var inRun = false
-            for line in logText.split(separator: "\n", omittingEmptySubsequences: false) {
-                if line.hasPrefix("  ") {
-                    if inRun { lines.append(line) }
-                } else {
-                    inRun = line.contains(marker)
-                    if inRun { lines.append(line) }
+        var next = 0
+        var started = false
+        for line in log.split(separator: "\n", omittingEmptySubsequences: false) {
+            if !started {
+                if !line.hasPrefix("  ") && line.contains(marker) {
+                    started = true
+                    lines.append(line)
                 }
+                continue
+            }
+            if next < record.entries.count {
+                let entry = record.entries[next]
+                var suffix = "  " + entry.originalPath
+                if case .movedToTrash(let trashed) = entry.outcome { suffix += " -> " + trashed }
+                if line.hasPrefix("  ") && !line.hasPrefix("  total:") && line.hasSuffix(suffix)
+                    && line.hasPrefix("  " + entry.outcome.label + "  ") {
+                    lines.append(line)
+                    next += 1
+                }
+            } else if line.hasPrefix("  total:") && String(line) == totals {
+                lines.append(line)
+                return lines.joined(separator: "\n") + "\n"
             }
         }
-        let text = lines.isEmpty ? RunLogger.text(for: record) : lines.joined(separator: "\n") + "\n"
-        return shortenedEverywhere(text, home: home)
+        return nil
     }
 
     private static func shortenedEverywhere(_ text: String, home: String) -> String {

@@ -85,6 +85,25 @@ import Testing
         #expect(apps.first?.url.lastPathComponent == "Linked.app")
     }
 
+    @Test func skipsAppsLinkedIntoFoldersItMustNotOpen() throws {
+        let sandbox = try TestSandbox()
+        let documents = sandbox.environment.home.appending(path: "Documents")
+        let hidden = try sandbox.app("home/Documents/Tools/Private.app", bundleID: "private")
+        let real = try sandbox.app("elsewhere/Real.app", bundleID: "real")
+        let fm = FileManager.default
+        let dir = sandbox.environment.applicationDirectories[0]
+        try fm.createSymbolicLink(at: dir.appending(path: "Private.app"), withDestinationURL: hidden)
+        // A relative link into the folder is caught as well.
+        try fm.createSymbolicLink(
+            atPath: dir.appending(path: "Relative.app").path(percentEncoded: false),
+            withDestinationPath: "../home/Documents/Tools/Private.app")
+        try fm.createSymbolicLink(at: dir.appending(path: "Real.app"), withDestinationURL: real)
+        let apps = AppScout(environment: sandbox.environment, measuresSizes: false, skipping: [documents]).discover()
+        #expect(apps.map(\.displayName) == ["Real"])
+        // Without the folder to skip, all three are listed.
+        #expect(AppScout(environment: sandbox.environment, measuresSizes: false).discover().count == 3)
+    }
+
     @Test func doesNotFollowSymlinkedDirectories() throws {
         let sandbox = try TestSandbox()
         try sandbox.app("outside/Hidden.app", bundleID: "hidden")

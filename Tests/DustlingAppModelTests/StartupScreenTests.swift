@@ -183,6 +183,9 @@ struct StartupScreenTests {
         #expect(!unloadFailed.success)
         #expect(unloadFailed.title == "Moved Logi updater to the Trash, with a problem.")
         #expect(unloadFailed.message == "could not unload: busy")
+        let stopped = StartupScreen.changeResult(
+            record([.failed(reason: "disk full.")]), name: "X", action: .remove, stoppedFirst: true)
+        #expect(stopped.message == "disk full. It was stopped but will start again at your next login.")
         let skipped = StartupScreen.changeResult(record([.skipped(reason: "protected")]), name: "X", action: .remove)
         #expect(skipped == StartupScreen.ChangeResult(success: false, title: "X wasn't moved.", message: "protected"))
     }

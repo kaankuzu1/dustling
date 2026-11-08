@@ -179,14 +179,19 @@ struct StartupModelTests {
 struct StartupModelScreenTests {
     private func makeModel(
         _ rig: ModelRig, commands: FakeCommands = FakeCommands(), apps: [InstalledApp] = [],
-        onRunCompleted: @escaping @MainActor () -> Void = {}
+        listed: Paths? = nil, failing: Set<String> = [], onRunCompleted: @escaping @MainActor () -> Void = {}
     ) -> StartupModel {
         let scanner = rig.startupScanner(commands: commands)
         let recorder = StartupChangeRecorder(
             scanner: scanner, journal: rig.journal, logger: RunLogger(directory: rig.environment.logsDirectory))
-        let remover = StartupRemover(runner: rig.runner(), commands: commands, environment: rig.environment)
+        let remover = StartupRemover(runner: rig.runner(failing: failing), commands: commands, environment: rig.environment)
         return StartupModel(
-            scanner: scanner, recorder: recorder, apps: { apps }, remover: remover, onRunCompleted: onRunCompleted)
+            scanner: scanner, recorder: recorder,
+            apps: { folders in
+                listed?.add("list:" + folders.map { $0.lastPathComponent }.joined(separator: ","))
+                return apps
+            },
+            remover: remover, onRunCompleted: onRunCompleted)
     }
 
     private var agents: (ModelRig) -> URL { { $0.environment.userLibrary.appending(path: "LaunchAgents") } }
@@ -266,6 +271,38 @@ struct StartupModelScreenTests {
         #expect(model.lastResult?.result.title == "Moved tool to the Trash.")
         #expect(model.lastResult?.record.id == record.id)
         #expect(try rig.journal.all().map(\.id) == [record.id])
+    }
+
+    @Test func aFailedMoveAfterStoppingSaysItComesBackAtLogin() async throws {
+        let rig = try ModelRig()
+        let tool = try rig.file(rig.root.appending(path: "bin/tool"), bytes: 1).path(percentEncoded: false)
+        let plist = try rig.writeLaunchPlist(agents(rig), label: "com.x.agent", program: tool)
+        let model = makeModel(rig, failing: ["com.x.agent.plist"])
+        await model.load()
+        let item = try #require(model.items.first)
+        let record = try #require(await model.remove(item))
+        #expect(!record.restorable)
+        #expect(FileManager.default.fileExists(atPath: plist.path(percentEncoded: false)))
+        let result = try #require(model.lastResult?.result)
+        #expect(!result.success)
+        #expect(result.title == "tool wasn't moved.")
+        #expect(result.message == "disk exploded. It was stopped but will start again at your next login.")
+    }
+
+    @Test func appsAreListedWithTheUnjudgedFoldersAndReusedAfterAChange() async throws {
+        let rig = try ModelRig()
+        let tool = try rig.file(rig.root.appending(path: "bin/tool"), bytes: 1).path(percentEncoded: false)
+        try rig.writeLaunchPlist(agents(rig), label: "com.x.agent", program: tool)
+        let listed = Paths()
+        let model = makeModel(rig, listed: listed)
+        let documents = rig.environment.home.appending(path: "Documents")
+        await model.load(unjudged: [documents])
+        #expect(listed.all == ["list:Documents"])
+        let item = try #require(model.items.first)
+        _ = await model.toggle(item)
+        #expect(listed.all == ["list:Documents"])   // the reload reused the list
+        await model.load(unjudged: [])
+        #expect(listed.all == ["list:Documents", "list:"])   // other folders: listed again
     }
 
     @Test func removeIsRefusedForItemsOutsideTheUsersLaunchAgents() async throws {

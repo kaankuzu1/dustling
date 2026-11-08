@@ -9,13 +9,35 @@ public struct AppScout: Sendable {
     private let environment: SystemEnvironment
     private let sizer: DirectorySizer
     private let measuresSizes: Bool
+    private let skipping: [[String]]
 
     /// `measuresSizes: false` lists the apps without measuring them (`bytes` is 0), for callers that
-    /// only need names and locations, such as the owners of startup items.
-    public init(environment: SystemEnvironment, sizer: DirectorySizer = DirectorySizer(), measuresSizes: Bool = true) {
+    /// only need names and locations, such as the owners of startup items. Apps linked into
+    /// `skipping` (folders that ask for consent without Full Disk Access) are left out without
+    /// looking at their target.
+    public init(
+        environment: SystemEnvironment, sizer: DirectorySizer = DirectorySizer(), measuresSizes: Bool = true,
+        skipping: [URL] = []
+    ) {
         self.environment = environment
         self.sizer = sizer
         self.measuresSizes = measuresSizes
+        self.skipping = skipping.map { $0.standardizedFileURL.pathComponents }
+    }
+
+    /// True when `url` is in a folder to skip. Only the path is compared; nothing is opened.
+    private func isSkipped(_ url: URL) -> Bool {
+        let parts = url.standardizedFileURL.pathComponents
+        return skipping.contains { parts.count >= $0.count && Array(parts.prefix($0.count)) == $0 }
+    }
+
+    /// Where a link points, read from the link itself (no access to the target), made absolute.
+    private static func linkDestination(_ link: URL) -> URL? {
+        guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: link.path(percentEncoded: false))
+        else { return nil }
+        return target.hasPrefix("/")
+            ? URL(filePath: target)
+            : link.deletingLastPathComponent().appending(path: target)
     }
 
     /// Installed apps sorted by display name (case-insensitive).
@@ -58,8 +80,14 @@ public struct AppScout: Sendable {
             let values = try? entry.resourceValues(forKeys: Set(keys))
             let isLink = values?.isSymbolicLink ?? false
             let isApp = entry.pathExtension.lowercased() == "app"
+            if isSkipped(entry) { continue }
+            if isLink, !skipping.isEmpty {
+                // Checked before anything follows the link, which could open the target.
+                guard let first = Self.linkDestination(entry), !isSkipped(first) else { continue }
+            }
             if isApp {
                 let resolved = entry.resolvingSymlinksInPath()
+                if isSkipped(resolved) { continue }
                 if Self.isInsideSystemApplications(resolved) || (isLink && resolved.path.hasPrefix("/System/")) {
                     continue
                 }

@@ -57,9 +57,10 @@ struct HistoryScreenTests {
         ], restorable: true), c)
         #expect(junk.tool == .junkScan)
         #expect(junk.title == "Junk scan")
-        #expect(junk.caption == "Today, 19:04, 3 items, 1 skipped")
+        #expect(junk.caption == "3 items, 1 skipped")
         #expect(junk.chip == .canBeRestored)
         #expect(junk.chip?.text == "Can be restored")
+        #expect(junk.when == "Today, 19:04")
         #expect(junk.size == "3 GB")
         #expect(junk.action == .restore)
         #expect(!junk.dimmed)
@@ -70,7 +71,7 @@ struct HistoryScreenTests {
             JournalEntry(originalPath: "/y", bytes: 0, outcome: .needsAdmin),
         ], restorable: true), c)
         #expect(apps.title == "Uninstaller: Docker Desktop")
-        #expect(apps.caption == "Today, 18:40, 3 items, 1 failed, 1 needs the helper")
+        #expect(apps.caption == "3 items, 1 failed, 1 needs the helper")
     }
 
     @Test func startupTogglesReadTurnedOffNeverSkipped() {
@@ -81,7 +82,7 @@ struct HistoryScreenTests {
         ]), c)
         #expect(off.tool == .startupItems)
         #expect(off.title == "Startup items: com.zoom.updater")
-        #expect(off.caption == "Yesterday, 21:12, turned off")
+        #expect(off.caption == "Turned off")
         #expect(off.chip == .turnedOff)
         #expect(off.chip?.text == "Turned off")
         #expect(off.size == nil)
@@ -89,7 +90,7 @@ struct HistoryScreenTests {
         let failed = HistoryScreen.runLine(row(.startupChange, at(7, 21, 12), [
             JournalEntry(originalPath: "/p/com.x.plist", bytes: 0, outcome: .failed(reason: "nope")),
         ]), c)
-        #expect(failed.caption == "Yesterday, 21:12, 1 item, 1 failed")
+        #expect(failed.caption == "1 item, 1 failed")
         #expect(failed.chip == .failed)
         let removed = HistoryScreen.runLine(row(.startupChange, at(7, 21, 12), [moved("/p/com.logi.updater.plist", 4096)],
                                                 restorable: true), c)
@@ -104,7 +105,7 @@ struct HistoryScreenTests {
         ]), context())
         #expect(line.tool == .emptyTrash)
         #expect(line.title == "Empty Trash")
-        #expect(line.caption == "5 Nov, 09:00, 2 items, 1 failed")
+        #expect(line.caption == "2 items, 1 failed")
         #expect(line.size == "1 MB")
         #expect(line.chip == nil)
         #expect(line.action == nil)
@@ -229,31 +230,66 @@ struct HistoryScreenTests {
     @Test func bugReportIsTheRunsOwnLogLines() {
         let id = UUID()
         let other = UUID()
+        let record = RunRecord(id: id, startedAt: at(8, 19, 4), kind: .startupChange, entries: [
+            JournalEntry(originalPath: "/Users/k/Library/LaunchAgents/a.plist", bytes: 0, outcome: .skipped(reason: "disabled")),
+        ], restorable: false)
+        let totals = RunLogger.text(for: record).split(separator: "\n").last!
         let log = """
         2026-11-08T19:00:00Z run=\(other.uuidString) kind=junkClean
-          moved to Trash  1 KB  /Users/k/other
+          moved to Trash  1 KB  /Users/k/other -> /Users/k/.Trash/other
           total: moved 1 KB to Trash, 0 failed, 0 need admin, 0 skipped
         2026-11-08T19:04:00Z run=\(id.uuidString) kind=startupChange
           skipped: disabled  Zero KB  /Users/k/Library/LaunchAgents/a.plist
-          total: moved Zero KB to Trash, 0 failed, 0 need admin, 1 skipped
+        \(totals)
         2026-11-08T19:05:00Z run=\(other.uuidString) kind=emptyTrash
 
         """
-        let record = RunRecord(id: id, startedAt: at(8, 19, 4), kind: .startupChange, entries: [], restorable: false)
         #expect(HistoryScreen.bugReport(logText: log, record: record, home: "/Users/k") == """
         2026-11-08T19:04:00Z run=\(id.uuidString) kind=startupChange
           skipped: disabled  Zero KB  ~/Library/LaunchAgents/a.plist
-          total: moved Zero KB to Trash, 0 failed, 0 need admin, 1 skipped
+        \(totals)
 
         """)
+    }
+
+    @Test func bugReportSkipsLinesOfRunsWrittenInBetween() {
+        let id = UUID()
+        let other = UUID()
+        let record = RunRecord(id: id, startedAt: at(8, 19, 4), kind: .junkClean, entries: [
+            JournalEntry(originalPath: "/Users/k/a", bytes: 0, outcome: .skipped(reason: "in use")),
+            JournalEntry(originalPath: "/Users/k/b", bytes: 0, outcome: .failed(reason: "nope")),
+        ], restorable: false)
+        let totals = RunLogger.text(for: record).split(separator: "\n").last!
+        let otherTotals = "  total: moved Zero KB to Trash, 0 failed, 0 need admin, 1 skipped"
+        let log = """
+        2026-11-08T19:04:00Z run=\(id.uuidString) kind=junkClean
+          skipped: in use  Zero KB  /Users/k/a
+        2026-11-08T19:04:01Z run=\(other.uuidString) kind=startupChange
+          skipped: disabled  Zero KB  /Users/k/Library/LaunchAgents/x.plist
+        \(otherTotals)
+          failed: nope  Zero KB  /Users/k/b
+        \(totals)
+
+        """
+        #expect(HistoryScreen.bugReport(logText: log, record: record, home: "/Users/k") == """
+        2026-11-08T19:04:00Z run=\(id.uuidString) kind=junkClean
+          skipped: in use  Zero KB  ~/a
+          failed: nope  Zero KB  ~/b
+        \(totals)
+
+        """)
+        // A line missing from the log: the text comes from the record instead.
+        let short = log.replacingOccurrences(of: "  failed: nope  Zero KB  /Users/k/b\n", with: "")
+        #expect(HistoryScreen.bugReport(logText: short, record: record, home: "/Users/k")
+            == HistoryScreen.bugReport(logText: nil, record: record, home: "/Users/k"))
     }
 
     @Test func bugReportFallsBackToTheRecordWhenTheLogLacksTheRun() {
         let record = RunRecord(startedAt: at(8, 19, 4), kind: .junkClean, entries: [moved("/Users/k/a", 1)], restorable: true)
         let text = HistoryScreen.bugReport(logText: nil, record: record, home: "/Users/k")
         #expect(text.hasPrefix("2026-11-08T19:04:00Z run=\(record.id.uuidString) kind=junkClean\n"))
-        #expect(text.contains("  moved to Trash"))
-        #expect(text.contains(" ~/a -> /t//Users/k/a") == false)   // every home path is shortened
+        let size = ByteCountFormatter.string(fromByteCount: 1, countStyle: .file)
+        #expect(text.split(separator: "\n")[1] == "  moved to Trash  \(size)  ~/a -> /t/~/a")
         #expect(!text.contains("/Users/k/"))
         #expect(HistoryScreen.bugReport(logText: "unrelated\n", record: record, home: "/Users/k")
             == HistoryScreen.bugReport(logText: nil, record: record, home: "/Users/k"))

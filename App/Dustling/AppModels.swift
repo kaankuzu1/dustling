@@ -123,7 +123,7 @@ final class AppModels {
         startup = StartupModel(
             scanner: startupScanner,
             recorder: StartupChangeRecorder(scanner: startupScanner, journal: journal, logger: logger),
-            apps: { AppScout(environment: environment, measuresSizes: false).discover() },
+            apps: { AppScout(environment: environment, measuresSizes: false, skipping: $0).discover() },
             remover: StartupRemover(runner: runner, commands: commands, environment: environment),
             onRunCompleted: {
                 // After every switch and every remove.

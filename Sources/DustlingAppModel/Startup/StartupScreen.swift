@@ -246,7 +246,11 @@ public enum StartupScreen {
     }
 
     /// What the banner says after a switch or a remove, from the saved record (never from the plan).
-    public static func changeResult(_ record: RunRecord, name: String, action: Action) -> ChangeResult {
+    /// `stoppedFirst`: a remove booted the agent out before moving it, so if the move failed it is
+    /// stopped now but comes back at the next login.
+    public static func changeResult(
+        _ record: RunRecord, name: String, action: Action, stoppedFirst: Bool = false
+    ) -> ChangeResult {
         let problems = record.entries.compactMap { entry -> String? in
             switch entry.outcome {
             case .failed(let reason): return reason
@@ -272,7 +276,9 @@ public enum StartupScreen {
                     title: problems.isEmpty ? "Moved \(name) to the Trash." : "Moved \(name) to the Trash, with a problem.",
                     message: message)
             }
-            return ChangeResult(success: false, title: "\(name) wasn't moved.", message: message)
+            let comesBack = "It was stopped but will start again at your next login."
+            let full = stoppedFirst ? [message.map { $0.hasSuffix(".") ? $0 : $0 + "." }, comesBack].compactMap { $0 }.joined(separator: " ") : message
+            return ChangeResult(success: false, title: "\(name) wasn't moved.", message: full)
         }
     }
 }
