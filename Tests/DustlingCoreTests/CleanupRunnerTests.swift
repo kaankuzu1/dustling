@@ -318,4 +318,75 @@ struct CleanupRunnerTests {
         let firstMove = try #require(clock.firstMove)
         #expect(record.startedAt <= firstMove)
     }
+
+    // MARK: failure branches
+
+    private func lockedDirectory(_ url: URL) throws {
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: url.path(percentEncoded: false))
+    }
+
+    private func unlock(_ url: URL) {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path(percentEncoded: false))
+    }
+
+    private func threeFiles(_ sandbox: TestSandbox) throws -> (URL, [URL]) {
+        let root = try sandbox.directory("home/Library/Caches")
+        return (root, try (1...3).map { try sandbox.file("home/Library/Caches/f\($0).log", bytes: 10) })
+    }
+
+    private func isMoved(_ e: JournalEntry) -> Bool {
+        if case .movedToTrash = e.outcome { true } else { false }
+    }
+
+    @Test func journalSaveFailureIsRecordedOnce() async throws {
+        let sandbox = try TestSandbox()
+        let (root, files) = try threeFiles(sandbox)
+        let history = sandbox.environment.historyDirectory
+        try lockedDirectory(history)
+        defer { unlock(history) }
+        let record = await makeRunner(sandbox).run(files, kind: .junkClean, allowedRoots: [root]) { _, _ in }
+        let historyFailures = record.entries.filter { $0.originalPath == "<history>" }
+        #expect(historyFailures.count == 1)
+        if case .failed = historyFailures.first?.outcome {} else { Issue.record("<history> entry not failed") }
+        let real = record.entries.filter { $0.originalPath != "<history>" }
+        #expect(real.count == 3)
+        #expect(real.allSatisfy(isMoved))
+        // The log still has every item line, plus the history failure.
+        let text = try logText(sandbox)
+        for f in files { #expect(text.contains(f.path(percentEncoded: false))) }
+        #expect(text.contains("<history>"))
+        #expect(text.contains("  total:"))
+    }
+
+    @Test func logFailureIsRecordedOnceAndJournalKeepsEverything() async throws {
+        let sandbox = try TestSandbox()
+        let (root, files) = try threeFiles(sandbox)
+        let logs = sandbox.environment.logsDirectory
+        try lockedDirectory(logs)
+        defer { unlock(logs) }
+        let record = await makeRunner(sandbox).run(files, kind: .junkClean, allowedRoots: [root]) { _, _ in }
+        #expect(record.entries.filter { $0.originalPath == "<log>" }.count == 1)
+        let saved = try #require(try RunJournal(directory: sandbox.environment.historyDirectory).all().first)
+        #expect(saved.entries.filter { $0.originalPath == "<log>" }.count == 1)
+        let real = saved.entries.filter { $0.originalPath != "<log>" }
+        #expect(real.map(\.originalPath) == files.map { $0.path(percentEncoded: false) })
+        #expect(real.allSatisfy(isMoved))
+        #expect(!saved.inProgress)
+    }
+
+    @Test func cancelledRunLogEndsWithTotalsIncludingStoppedSkips() async throws {
+        let sandbox = try TestSandbox()
+        let (root, files) = try threeFiles(sandbox)
+        let r = runner(sandbox, backend: CancellingBackend(inner: trashDir(sandbox), cancelAfter: 1))
+        let record = await Task {
+            await r.run(files, kind: .junkClean, allowedRoots: [root]) { _, _ in }
+        }.value
+        #expect(record.skippedCount == 2)
+        let lines = try logText(sandbox).split(separator: "\n")
+        let last = try #require(lines.last)
+        #expect(last.contains("  total:"))
+        #expect(last.contains("0 failed, 0 need admin, 2 skipped"))
+        #expect(lines.filter { $0.contains("skipped: cleanup stopped") }.count == 2)
+    }
 }

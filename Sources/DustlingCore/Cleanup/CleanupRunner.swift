@@ -15,7 +15,8 @@ public struct CleanupRunner: Sendable {
     }
 
     /// `extraEntries` (e.g. launch-agent unload failures) are appended after the runner's own entries.
-    /// Journal/log failures are appended to the returned record as `<history>` / `<log>` entries.
+    /// A journal or log failure is recorded once, as a failed `<history>` / `<log>` entry in the record
+    /// (at the point it happened, so it is also journaled and returned); the run then carries on.
     ///
     /// The journal is saved (atomically) and the log appended after EVERY item, with the record marked
     /// `inProgress` until the end, so a crash is recorded up to the last finished item
