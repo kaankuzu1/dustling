@@ -30,5 +30,6 @@ swift test
 Every command that changes something asks first (`[y/N]`; anything but `y` or `yes` cancels, prints
 `Cancelled.` and exits 0). Without a terminal the answer is no, unless you pass `--yes`. Cleaning and
 uninstalling only move items to the Trash, so space is freed when you run `empty-trash`, which is the
-only permanent delete. Exit codes: 0 success, 1 usage error or `doctor` problems, 2 when any item
-failed or needs admin rights.
+only permanent delete. Exit codes: 0 success, 1 usage error, `doctor` problems, or nothing the command
+can act on (a run with nothing left to restore, a path that isn't in the run, a Trash Dustling can't
+read), 2 when any item failed or needs admin rights.

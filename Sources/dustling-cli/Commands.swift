@@ -485,7 +485,7 @@ enum Commands {
             }
         }
         let candidates = scope.filter { RunJournal.isRestorable($0) }
-        guard run.restorable, !candidates.isEmpty else {
+        guard !candidates.isEmpty else {
             Format.printError(path == nil
                 ? notRestorableMessage
                 : "That item can't be restored: it was already put back, never reached the Trash, "
@@ -580,7 +580,8 @@ enum Commands {
         }
         if sorted.count > limit {
             let rest = sorted.dropFirst(limit)
-            print("  \u{2026}and \(rest.count) more (\(Format.bytes(rest.reduce(UInt64(0)) { $0 + $1.size.bytes }))))")
+            let restBytes = rest.reduce(UInt64(0)) { $0 + $1.size.bytes }
+            print("  \u{2026}and \(rest.count) more (\(Format.bytes(restBytes)))")
         }
 
         let amount = contents.size.bytes > 0 ? " (\(size))" : ""
