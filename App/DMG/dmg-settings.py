@@ -25,7 +25,9 @@ icon = defines["icon"]  # noqa: F821
 
 # Window
 background = defines["background"]  # noqa: F821
-window_rect = ((200, 120), (640, 400))
+# Finder counts the title bar in the window's height (28 to 32 pt depending on macOS), so the window
+# is 32 pt taller than the 400 pt picture. The picture ends in white, which hides the difference.
+window_rect = ((200, 120), (640, 432))
 default_view = "icon-view"
 show_status_bar = False
 show_tab_view = False

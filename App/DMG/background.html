@@ -6,6 +6,10 @@
   Finder always draws a window with a background picture in light mode (dark label text), so this
   stays light whatever the Mac's appearance is.
 
+  The window is a little taller than this picture, because its title bar (about 28 to 32 points,
+  depending on the macOS version) counts toward the window's height. Whatever is left below the
+  picture is white, so the bottom of the picture must be white too: no colored band at the bottom.
+
   The icon centers come from App/DMG/dmg-settings.py: Dustling at (180, 188), Applications at
   (460, 188), 128 pt icons. Keep the trail between them if you move them.
 -->
@@ -21,7 +25,6 @@
   /* Mosaic light tokens (DESIGN-mosaic.md). */
   :root {
     --ground: #ffffff;
-    --panel: #f6f7f9;
     --ink: #15171c;
     --ink2: #363a44;
     --muted: #5d626d;
@@ -69,16 +72,14 @@
 
   .foot {
     position: absolute;
-    left: 0;
-    right: 0;
+    left: 32px;
+    right: 32px;
     bottom: 0;
-    height: 84px;
-    background: var(--panel);
+    height: 92px;
     border-top: 1px solid var(--line);
     display: flex;
     align-items: center;
     gap: 18px;
-    padding: 0 32px;
     box-sizing: border-box;
   }
   .foot p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
