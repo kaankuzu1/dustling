@@ -31,35 +31,23 @@ struct RootView: View {
     }
 }
 
-/// The screen for a destination. Every screen is a placeholder until its own task builds it
-/// (Home: Task 11, Junk scan: 12, Uninstaller: 13, Startup items and History: 14).
+/// The screen for a destination. Home is built (Task 11); the others are placeholders until their
+/// own task builds them (Junk scan: 12, Uninstaller: 13, Startup items and History: 14).
 struct DestinationView: View {
     let destination: Destination
 
-    @Environment(AppModels.self) private var models
-
     var body: some View {
-        VStack(spacing: 0) {
-            ScreenToolbar(title: destination.title, subtitle: subtitle)
-            if destination == .home, LimitedModeBanner.isShown(models) {
-                LimitedModeBanner()
-                    .padding(.horizontal, DustlingTheme.Metrics.gutter)
-                    .padding(.top, 16)
-            }
-            PlaceholderContent(destination: destination)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if destination.isToolScreen {
+        if destination == .home {
+            HomeView()
+        } else {
+            VStack(spacing: 0) {
+                ScreenToolbar(title: destination.title, subtitle: destination.placeholderSubtitle)
+                PlaceholderContent(destination: destination)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 ActionBar(title: "Nothing selected", caption: "This screen is built in a later step.")
             }
+            .background(DustlingTheme.Palette.ground)
         }
-        .background(DustlingTheme.Palette.ground)
-    }
-
-    private var subtitle: String {
-        if destination == .home, LimitedModeBanner.isShown(models) {
-            return LimitedModeBanner.subtitle(lockedCount: models.places.lockedPlaces.count)
-        }
-        return destination.placeholderSubtitle
     }
 }
 
@@ -81,9 +69,6 @@ private struct PlaceholderContent: View {
 }
 
 private extension Destination {
-    /// Tool screens end with the 60 pt action bar; Home doesn't.
-    var isToolScreen: Bool { self != .home }
-
     var placeholderSubtitle: String {
         switch self {
         case .home: return "Free space and what Dustling can reclaim"

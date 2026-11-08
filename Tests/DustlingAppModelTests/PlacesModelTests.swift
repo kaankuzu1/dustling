@@ -77,8 +77,12 @@ struct PlacesModelTests {
             probed.append(url.path(percentEncoded: false))
             return .ok
         }
+        let containers = rig.environment.userLibrary.appending(path: "Containers").path(percentEncoded: false)
         #expect(!probed.contains { $0.hasPrefix(downloads) })
-        #expect(places.filter { $0.access == .locked }.map(\.id) == [.oldInstallers, .largeOldDownloads])
+        // Other apps' containers ask "access data from other apps" without Full Disk Access.
+        #expect(!probed.contains { $0.hasPrefix(containers) })
+        #expect(places.filter { $0.access == .locked }.map(\.id)
+            == [.userCaches, .oldInstallers, .largeOldDownloads, .mailDownloads])
     }
 
     @Test func consentFoldersAreProbedWithFullDiskAccess() throws {
@@ -93,6 +97,7 @@ struct PlacesModelTests {
             return .ok
         }
         #expect(probed.contains { $0.contains("/Downloads") })
+        #expect(probed.contains { $0.hasSuffix("/Library/Containers") })
         #expect(places.allSatisfy { $0.access == .readable })
     }
 

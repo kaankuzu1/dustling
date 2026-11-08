@@ -3,6 +3,7 @@ import DustlingAppModel
 import DustlingCore
 import Foundation
 import Observation
+import os
 
 /// The models every window shares. Created once per app launch by `DustlingApp`.
 @MainActor @Observable
@@ -15,8 +16,19 @@ final class AppModels {
     let onboarding = OnboardingState()
     /// The main window's selected destination. Shared so onboarding can send the user to a screen.
     var selection: Destination = .home
-    /// The free space the user wants for a macOS update. Default 30 GB until Settings (Task 15) can change it.
+    /// The free space the user wants for a macOS update. Default 30 GB until Settings (Task 15) can
+    /// change it; "Check update size" sets it from `softwareupdate`.
     var goal = UpdateGoal()
+    /// The junk scan behind Home's hero and mosaic and the Junk scan screen.
+    let junk: JunkScanModel
+    /// The Trash: Home's Empty Trash button and the hatched "in Trash" cells.
+    let trash: TrashModel
+    /// Home's Uninstaller card (and the Uninstaller screen, Task 13).
+    let uninstaller: UninstallerModel
+    /// Home's Startup items card (and the Startup items screen, Task 14).
+    let startup: StartupModel
+    /// "Check update size" next to the goal (Ruling R32).
+    let updateCheck: UpdateSizeCheck
     /// The startup volume's name for the sidebar footer, e.g. "Macintosh HD".
     let volumeName: String
 
@@ -26,16 +38,124 @@ final class AppModels {
     var hasProbedFullDiskAccess: Bool { health.hasPublishedStatus }
 
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
+    @ObservationIgnored private let environment: SystemEnvironment
+    /// The categories the next junk scan may open (see `scanJunk()`).
+    @ObservationIgnored private let scanScope: ScanScope
+    /// Home loads its numbers once per launch; "Scan again" reloads them.
+    private(set) var homeLoaded = false
+    /// The uninstaller looks inside other apps' containers, which asks for consent without Full
+    /// Disk Access, so it only loads once access is on.
+    @ObservationIgnored private var uninstallerLoaded = false
+    /// True once an uninstaller load has finished counting leftovers (for Home's card).
+    private(set) var uninstallerCounted = false
+    /// True once startup items have been read at least once (for Home's card).
+    private(set) var startupLoaded = false
 
     init(environment: SystemEnvironment = .current, commands: CommandRunning = ProcessCommandRunner()) {
         let journal = RunJournal(directory: environment.historyDirectory)
-        health = HealthModel(
+        let health = HealthModel(
             probe: { FullDiskAccessProbe(environment: environment).status() },
             clock: ContinuousClock(),
             lastRunSummary: { AppModels.latestRun(in: journal) })
-        storage = StorageModel(commands: commands)
+        self.health = health
+        let storage = StorageModel(commands: commands)
+        self.storage = storage
         places = PlacesModel(environment: environment)
         volumeName = Self.readVolumeName()
+        self.environment = environment
+
+        let logger = RunLogger(directory: environment.logsDirectory)
+        let options = ScanOptions()
+        let protectedPaths = options.protectedPaths(environment: environment)
+        let runner = CleanupRunner(
+            mover: TrashMover(backend: SystemTrashBackend(), protectedPaths: protectedPaths),
+            journal: journal, logger: logger, sizer: DirectorySizer())
+        let trash = TrashModel(
+            inspector: TrashInspector(environment: environment, journal: journal, logger: logger, sizer: DirectorySizer()),
+            journal: journal,
+            onRunCompleted: {
+                health.refreshLastRun()
+                Task { await storage.refresh() }
+            })
+        self.trash = trash
+        let scope = ScanScope()
+        scanScope = scope
+        junk = JunkScanModel(
+            scanner: JunkScanner(environment: environment, runningBundleIDs: { AppModels.runningBundleIDs() }),
+            runner: runner, journal: journal, environment: environment, options: options,
+            categories: { scope.categories },
+            onRunCompleted: {
+                health.refreshLastRun()
+                Task { await trash.refresh() }
+                Task { await storage.refresh() }
+            })
+        let running = WorkspaceRunningApps()
+        uninstaller = UninstallerModel(
+            scout: AppScout(environment: environment),
+            finder: LeftoverFinder(environment: environment, sizer: DirectorySizer(), commands: commands),
+            uninstaller: Uninstaller(runner: runner, commands: commands, running: running, environment: environment),
+            running: running, protectedPaths: protectedPaths, journal: journal, logger: logger,
+            onRunCompleted: { health.refreshLastRun() })
+        // The owner app names come with the Startup items screen (Task 14); Home only counts items.
+        let startupScanner = StartupItemScanner(environment: environment, commands: commands, apps: [])
+        startup = StartupModel(
+            scanner: startupScanner,
+            recorder: StartupChangeRecorder(scanner: startupScanner, journal: journal, logger: logger),
+            onRunCompleted: { health.refreshLastRun() })
+        updateCheck = UpdateSizeCheck(commands: commands)
+        updateCheck.onMeasured = { [weak self] bytes in
+            self?.goal = UpdateGoal(neededBytes: bytes, source: .measured(.now))
+        }
+        #if DEBUG
+        // Screenshots of the goal-met state: `-DustlingDebugGoalBytes 1000000000`.
+        // Read as text: launch arguments above Int32.max don't survive `integer(forKey:)`.
+        if let text = UserDefaults.standard.string(forKey: "DustlingDebugGoalBytes"), let forced = Int64(text), forced > 0 {
+            goal = UpdateGoal(neededBytes: forced)
+        }
+        #endif
+    }
+
+    // MARK: Home
+
+    /// Loads Home's numbers the first time Home is shown, once the places check has run (a scan
+    /// opens only places that read as open, so it never triggers a consent prompt).
+    func loadHomeIfNeeded() {
+        guard !homeLoaded, places.places != nil else { return }
+        homeLoaded = true
+        reloadHome()
+    }
+
+    /// "Scan again": the junk scan, the Trash, startup items and (with Full Disk Access) the apps.
+    func reloadHome() {
+        scanJunk()
+        Task { await trash.refresh() }
+        Task {
+            await startup.load()
+            startupLoaded = true
+        }
+        Task { await storage.refresh() }
+        loadUninstallerIfAllowed(force: true)
+    }
+
+    /// Starts a junk scan of the places that read as open right now.
+    func scanJunk() {
+        scanScope.categories = HomeMosaic.scannable(JunkCatalog.standard(environment), places: places.places)
+        junk.scan()
+    }
+
+    /// Loads the apps once Full Disk Access is on; never without it (see `uninstallerLoaded`).
+    func loadUninstallerIfAllowed(force: Bool = false) {
+        guard health.fullDiskAccess == .granted, force || !uninstallerLoaded else { return }
+        uninstallerLoaded = true
+        Task {
+            await uninstaller.load()
+            uninstallerCounted = !uninstaller.isLoading
+        }
+    }
+
+    private nonisolated static func runningBundleIDs() -> Set<String> {
+        // The scanner flags caches of apps that are open right now.
+        Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
     }
 
     /// Runs the first probe and storage read, then re-checks whenever the app becomes active,
@@ -80,6 +200,8 @@ final class AppModels {
         guard hasProbedFullDiskAccess else { return }
         health.appBecameActive()
         Task { await storage.refresh() }
+        // The Trash may have been emptied or filled in Finder meanwhile.
+        if homeLoaded { Task { await trash.refresh() } }
         Task { await refreshPlaces() }
     }
 
@@ -102,5 +224,16 @@ final class AppModels {
             NSLog("Dustling: couldn't read the startup volume's name: \(error)")
         }
         return "Startup disk"
+    }
+}
+
+/// The categories the next junk scan may open, set on the main actor right before `scan()` and read
+/// by the scan model's catalog closure.
+final class ScanScope: Sendable {
+    private let lock = OSAllocatedUnfairLock<[JunkCategory]>(initialState: [])
+
+    var categories: [JunkCategory] {
+        get { lock.withLock { $0 } }
+        set { lock.withLock { $0 = newValue } }
     }
 }

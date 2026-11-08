@@ -57,7 +57,7 @@ public enum PlaceAccessChecker {
     /// is nothing there to scan). For expanded roots (`Containers/*/Data/Library/Caches`) only the
     /// parent is opened: opening other apps' containers one by one can trigger a consent prompt.
     ///
-    /// Roots inside `consentFolders` (Downloads, Desktop, Documents) are never opened without Full Disk
+    /// Roots inside `consentFolders` (Downloads, Desktop, Documents, other apps' containers) are never opened without Full Disk
     /// Access: macOS would show a consent prompt and block until it is answered. Without Full Disk
     /// Access they count as locked, which is what they are until the user allows them.
     ///
@@ -94,9 +94,11 @@ public enum PlaceAccessChecker {
         }
     }
 
-    /// The folders macOS guards with their own consent prompt, for `check`.
+    /// The folders macOS guards with their own consent prompt, for `check`: Downloads, Desktop and
+    /// Documents, and other apps' containers ("would like to access data from other apps").
     public static func consentFolders(_ environment: SystemEnvironment) -> [URL] {
         ["Downloads", "Desktop", "Documents"].map { environment.home.appending(path: $0) }
+            + [environment.userLibrary.appending(path: "Containers")]
     }
 
     private static func components(_ url: URL) -> [String] {

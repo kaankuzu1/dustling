@@ -91,6 +91,8 @@ public final class JunkScanModel {
     public private(set) var message: String?
     /// True once the run just made was put back (allowed once per run).
     public private(set) var didPutBack = false
+    /// When the last scan finished (completed or stopped); nil before the first.
+    public private(set) var lastScanFinishedAt: Date?
     /// Applied at the next scan (the "Preselect safe categories" setting).
     public var preselectSafe: Bool
 
@@ -211,6 +213,7 @@ public final class JunkScanModel {
             scans[category.id] = CategoryScan(category: category, items: [], bytes: 0, issues: [], stopped: true)
         }
         rebuildTiles()
+        lastScanFinishedAt = .now
         state = .ready
     }
 

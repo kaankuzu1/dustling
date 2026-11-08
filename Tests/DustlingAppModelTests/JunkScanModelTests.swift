@@ -53,6 +53,16 @@ struct JunkScanModelTests {
         #expect(model.categories.allSatisfy { !$0.stopped })
     }
 
+    @Test func scanRecordsWhenItFinished() async throws {
+        let rig = try ModelRig()
+        let model = makeModel(rig)
+        #expect(model.lastScanFinishedAt == nil)
+        let before = Date.now
+        await scanned(model)
+        let finished = try #require(model.lastScanFinishedAt)
+        #expect(finished >= before && finished <= .now)
+    }
+
     @Test func stopMarksPartialCategory() async throws {
         let rig = try ModelRig()
         try rig.file(rig.cachesDirectory.appending(path: "com.a.app/blob"), bytes: 4096)
