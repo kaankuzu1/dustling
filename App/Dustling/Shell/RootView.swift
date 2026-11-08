@@ -29,6 +29,7 @@ struct RootView: View {
         .task(id: models.fullDiskAccessKey) { await models.refreshPlaces() }
         .task { models.onboarding.openAtLaunchIfNeeded(models: models, openWindow: openWindow) }
         // Only for blockers, such as Full Disk Access lost before a scan (SCREENS-final §8).
+        .dismissedOnQuit($models.blocker)
         .sheet(isPresented: Binding(get: { models.blocker != nil }, set: { if !$0 { models.blocker = nil } })) {
             if let blocker = models.blocker { BlockerSheet(repair: blocker) }
         }

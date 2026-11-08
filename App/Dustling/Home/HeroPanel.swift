@@ -185,6 +185,6 @@ func openSoftwareUpdate() {
         let alert = NSAlert()
         alert.messageText = "System Settings didn't open"
         alert.informativeText = "Open System Settings yourself, then go to General > Software Update."
-        alert.runModal()
+        ModalAlert.show(alert)
     }
 }

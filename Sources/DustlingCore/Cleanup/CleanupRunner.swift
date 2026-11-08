@@ -119,6 +119,12 @@ public struct CleanupRunner: Sendable {
     /// live run saves after every item, so one the app or the CLI is still writing is never closed.
     public static let recoveryQuietPeriod: TimeInterval = 5 * 60
 
+    /// The quiet period to recover with: the full period while another writer (the app or the CLI)
+    /// runs, none when this process is the only one, because then nothing else can still be writing.
+    public static func recoveryQuietPeriod(otherWritersRunning: Bool) -> TimeInterval {
+        otherWritersRunning ? recoveryQuietPeriod : 0
+    }
+
     /// Marks runs left `inProgress` (the process died mid-cleanup) as finished and returns their ids.
     /// Their entries are exactly the items that finished before the interruption. A run whose file
     /// changed within `quietFor` seconds of `now` is left alone: something may still be writing it.
@@ -142,6 +148,17 @@ public struct CleanupRunner: Sendable {
         journal: RunJournal, quietFor: TimeInterval = recoveryQuietPeriod
     ) async throws -> [UUID] {
         try await FileWork.run { try recoverInterrupted(journal: journal, quietFor: quietFor) }
+    }
+
+    /// `recoverInterrupted` on the file-work queue with the quiet period chosen by
+    /// `otherWritersRunning` (asked there, since listing processes is a system call).
+    public static func recoverInterruptedInBackground(
+        journal: RunJournal, otherWritersRunning: @escaping @Sendable () -> Bool
+    ) async throws -> [UUID] {
+        try await FileWork.run {
+            try recoverInterrupted(
+                journal: journal, quietFor: recoveryQuietPeriod(otherWritersRunning: otherWritersRunning()))
+        }
     }
 
     /// Measures and moves one item, without journaling. Callers that need to decide between items

@@ -37,6 +37,10 @@ final class AppModels {
     let settings: AppSettings
     /// "Retry N items" for the last cleanup (health popover and Diagnostics).
     let retry: LastRunRetry
+    /// Quit (menu, ⌘Q, Dock, logout, AppleScript): dismisses every sheet and alert, then terminates.
+    @ObservationIgnored let quit: QuitCoordinator
+    /// `applicationShouldTerminate`: asks before stopping work that changes files, then waits for it.
+    @ObservationIgnored let termination: TerminationPolicy
     /// Remembers that Full Disk Access was on, so losing it blocks a scan instead of shrinking it.
     @ObservationIgnored let accessMemory = FullDiskAccessMemory()
     /// The blocker sheet over the main window (SCREENS-final §8), only for cases that stop a screen.
@@ -207,6 +211,14 @@ final class AppModels {
                 Task { await storage.refresh() }
             })
         updateCheck = UpdateSizeCheck(commands: commands)
+        quit = QuitCoordinator(
+            attachedSheetCount: { NSApp.windows.filter { $0.attachedSheet != nil }.count },
+            terminate: { NSApp.terminate(nil) })
+        termination = TerminationPolicy(
+            busy: { owner.models?.busyWork ?? [] },
+            confirm: { AppModels.confirmStopAndQuit($0) },
+            stop: { owner.models?.stopWorkForQuit() },
+            reply: { NSApp.reply(toApplicationShouldTerminate: $0) })
         owner.models = self
         // Put back waits while another tool works, and a run still marked in progress reads
         // "Still running" then (otherwise "Interrupted").
@@ -351,7 +363,7 @@ final class AppModels {
             let alert = NSAlert()
             alert.messageText = "The logs folder didn't open"
             alert.informativeText = "Dustling writes its logs to \(folder.path(percentEncoded: false))."
-            alert.runModal()
+            ModalAlert.show(alert)
         }
     }
 
@@ -479,7 +491,7 @@ final class AppModels {
         alert.messageText = "The log didn't open"
         alert.informativeText = "Dustling writes its logs to \(logger.directory.path(percentEncoded: false)). "
             + "Open the file for \(record.startedAt.formatted(date: .abbreviated, time: .omitted)) from there."
-        alert.runModal()
+        ModalAlert.show(alert)
     }
 
     /// Opens the Trash in Finder, where the user can drag items back (Dustling can't read it without
@@ -491,7 +503,7 @@ final class AppModels {
             let alert = NSAlert()
             alert.messageText = "The Trash didn't open"
             alert.informativeText = "Click the Trash in the Dock to open it in Finder."
-            alert.runModal()
+            ModalAlert.show(alert)
         }
     }
 
@@ -569,7 +581,10 @@ final class AppModels {
         Task {
             let recovered: [UUID]
             do {
-                recovered = try await CleanupRunner.recoverInterruptedInBackground(journal: journal)
+                // With no other Dustling or dustling-cli running, nothing can still be writing a
+                // run, so one left "in progress" is finished off now instead of after the quiet period.
+                recovered = try await CleanupRunner.recoverInterruptedInBackground(
+                    journal: journal, otherWritersRunning: { WriterProcesses.othersRunning() })
             } catch {
                 NSLog("Dustling: couldn't finish interrupted runs in the history: \(error)")
                 recovered = []
@@ -630,6 +645,40 @@ final class AppModels {
             // The Trash may have been emptied or filled in Finder meanwhile.
             if homeLoaded { refreshTrash() }
         }
+    }
+
+    // MARK: Quit
+
+    /// Work that changes files and is running now. A scan only reads, so quitting just ends it.
+    var busyWork: [BusyWork] {
+        var work: [BusyWork] = []
+        if case .moving = junk.state { work.append(.cleanup) }
+        if uninstaller.isUninstalling { work.append(.uninstall) }
+        if startup.busyItemID != nil { work.append(.startupChange) }
+        if retry.isRetrying { work.append(.retry) }
+        if junk.isRestoring || uninstaller.isRestoring || history.isRestoring { work.append(.restore) }
+        if trash.isEmptying { work.append(.emptyTrash) }
+        return work
+    }
+
+    /// Stops what can stop: a scan or cleanup records the rest as "cleanup stopped", an uninstall
+    /// finishes the app it is on. A startup change, retry, restore or Empty Trash is waited for.
+    func stopWorkForQuit() {
+        junk.stop()
+        uninstaller.stop()
+        updateCheck.cancel()
+        health.stopPolling()
+    }
+
+    /// "Stop and quit?" with what is running. True for "Stop and quit".
+    private static func confirmStopAndQuit(_ work: [BusyWork]) -> Bool {
+        let text = TerminationPolicy.message(for: work)
+        let alert = NSAlert()
+        alert.messageText = text.title
+        alert.informativeText = text.detail
+        alert.addButton(withTitle: "Stop and quit")
+        alert.addButton(withTitle: "Keep working")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// The newest run in the history journal, for the last-run health light. An unreadable journal

@@ -283,7 +283,7 @@ func openFullDiskAccessSettings() {
         let alert = NSAlert()
         alert.messageText = "System Settings didn't open"
         alert.informativeText = "Open System Settings yourself, then go to Privacy & Security > Full Disk Access and switch Dustling on."
-        alert.runModal()
+        ModalAlert.show(alert)
     }
 }
 

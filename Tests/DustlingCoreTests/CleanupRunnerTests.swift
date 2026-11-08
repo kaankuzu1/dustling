@@ -295,6 +295,30 @@ struct CleanupRunnerTests {
         #expect(try await CleanupRunner.recoverInterruptedInBackground(journal: journal, quietFor: 0).isEmpty)
     }
 
+    @Test func recoveryWithoutOtherWritersSkipsTheQuietPeriod() async throws {
+        let sandbox = try TestSandbox()
+        let journal = RunJournal(directory: sandbox.environment.historyDirectory)
+        let stuck = RunRecord(startedAt: Date(), kind: .junkClean, entries: [], restorable: false, inProgress: true)
+        try journal.save(stuck)
+        #expect(CleanupRunner.recoveryQuietPeriod(otherWritersRunning: true) == CleanupRunner.recoveryQuietPeriod)
+        #expect(CleanupRunner.recoveryQuietPeriod(otherWritersRunning: false) == 0)
+        // Another writer runs: a run written just now may be its live run, so it is left alone.
+        #expect(try await CleanupRunner.recoverInterruptedInBackground(journal: journal, otherWritersRunning: { true }).isEmpty)
+        #expect(try journal.all().first { $0.id == stuck.id }?.inProgress == true)
+        // No other writer: nothing can still be writing it, so it is finished off at once.
+        #expect(try await CleanupRunner.recoverInterruptedInBackground(journal: journal, otherWritersRunning: { false }) == [stuck.id])
+        #expect(try journal.all().first { $0.id == stuck.id }?.inProgress == false)
+    }
+
+    @Test func writerProcessesSeesOtherProcessesButNeverItself() {
+        let me = ProcessInfo.processInfo.processName
+        // launchd and the like are visible; the test process itself is left out.
+        #expect(!WriterProcesses.runningNames(excluding: getpid()).isEmpty)
+        #expect(WriterProcesses.runningNames(excluding: 0).contains(me))
+        #expect(!WriterProcesses.othersRunning(excluding: getpid(), names: ["no-such-process-\(UUID().uuidString.prefix(8))"]))
+        #expect(WriterProcesses.names == ["Dustling", "dustling-cli"])
+    }
+
     @Test func oldRecordsWithoutInProgressDecodeAsFinished() throws {
         let json = """
         {"id":"\(UUID().uuidString)","startedAt":"2026-01-01T00:00:00Z","kind":{"junkClean":{}},\

@@ -647,13 +647,15 @@ public final class JunkScanModel {
         let allowedRoots = Array(roots)
         let itemSizes = sizes
         let itemCategories = urlCategory
+        let throttle = MoveProgressThrottle()
         let task = Task { [self] () -> RunRecord in
             await runner.run(
                 urls, kind: .junkClean, allowedRoots: allowedRoots, extraEntries: extra,
                 onItem: { url, outcome in
-                    let bytes = itemSizes[url] ?? 0
-                    let category = itemCategories[url]
-                    Task { @MainActor in self.itemMoved(outcome, bytes: bytes, category: category) }
+                    var moved: UInt64 = 0
+                    if case .movedToTrash = outcome { moved = itemSizes[url] ?? 0 }
+                    guard let batch = throttle.add(movedBytes: moved, category: itemCategories[url]) else { return }
+                    Task { @MainActor in self.itemsMoved(batch) }
                 })
         }
         cleanTask = task
@@ -666,12 +668,10 @@ public final class JunkScanModel {
         onRunCompleted()
     }
 
-    private func itemMoved(_ outcome: DeletionOutcome, bytes: UInt64, category: JunkCategoryID?) {
+    private func itemsMoved(_ batch: MoveProgressThrottle.Batch) {
         guard case .moving(let done, let total, let moved) = state else { return }
-        var movedNow = moved
-        if case .movedToTrash = outcome { movedNow += bytes }
-        if let category { categoryProgress[category]?.done += 1 }
-        state = .moving(done: done + 1, total: total, bytes: movedNow)
+        for (category, count) in batch.itemsByCategory { categoryProgress[category]?.done += count }
+        state = .moving(done: done + batch.items, total: total, bytes: moved + batch.movedBytes)
     }
 
     // MARK: put everything back

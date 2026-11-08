@@ -87,6 +87,7 @@ struct HistoryView: View {
         // Again after an Empty Trash, which changes what can be restored.
         .task(id: models.trash.isEmptying) { await history.refresh() }
         .sheet(isPresented: $confirmingEmptyTrash) { EmptyTrashSheet() }
+        .dismissedOnQuit($confirmingEmptyTrash)
         #if DEBUG
         .task {
             if let fixtureTab = StartupHistoryFixture.historyTab { tab = fixtureTab }

@@ -197,17 +197,20 @@ enum HealthFix {
             guard let run = models.health.lastRun, !models.junk.isBusy else { return }
             // Same gate as a cleanup: in limited mode ask first (the model also refuses without it).
             let gate = models.retry.currentGate
-            var confirmed = false
-            if gate.kind == .confirmFirst {
-                let alert = NSAlert()
-                alert.messageText = "Retry without Full Disk Access?"
-                alert.informativeText = gate.note ?? ""
-                alert.addButton(withTitle: RepairCase.itemsDidNotMove(count: count).copy.fix)
-                alert.addButton(withTitle: "Cancel")
-                guard alert.runModal() == .alertFirstButtonReturn else { return }
-                confirmed = true
+            guard gate.kind == .confirmFirst else {
+                Task { await models.retry.retry(run) }
+                return
             }
-            Task { await models.retry.retry(run, confirmedLimited: confirmed) }
+            let alert = NSAlert()
+            alert.messageText = "Retry without Full Disk Access?"
+            alert.informativeText = gate.note ?? ""
+            alert.addButton(withTitle: RepairCase.itemsDidNotMove(count: count).copy.fix)
+            alert.addButton(withTitle: "Cancel")
+            // A sheet on the main window, so Quit can dismiss it (Cancel).
+            ModalAlert.show(alert) { response in
+                guard response == .alertFirstButtonReturn else { return }
+                Task { await models.retry.retry(run, confirmedLimited: true) }
+            }
         }
     }
 }

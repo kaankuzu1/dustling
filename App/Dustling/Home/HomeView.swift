@@ -54,6 +54,7 @@ struct HomeView: View {
             models.loadUninstallerIfAllowed()
             models.refreshTrash()
         }
+        .dismissedOnQuit($confirmingEmptyTrash)
         .sheet(isPresented: $confirmingEmptyTrash) {
             EmptyTrashSheet()
         }

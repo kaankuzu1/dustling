@@ -70,6 +70,7 @@ struct StartupView: View {
             }
         }
         #endif
+        .dismissedOnQuit($removing)
         .sheet(item: $removing) { row in
             RemoveStartupItemSheet(row: row, canTakeOutOfTrash: startup.canTakeOutOfTrash) { confirmedLimited in
                 Task { await startup.remove(row.item, confirmedLimited: confirmedLimited) }

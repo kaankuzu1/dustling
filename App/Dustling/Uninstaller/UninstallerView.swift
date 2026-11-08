@@ -65,11 +65,14 @@ struct UninstallerView: View {
         }
         .background(Palette.ground)
         .task(id: models.fullDiskAccessKey) { models.loadUninstallerIfAllowed() }
+        .dismissedOnQuit($confirming)
         .sheet(item: $confirming) { confirm in
             UninstallConfirmSheet(confirm: confirm) { start(confirm) }
         }
         .sheet(isPresented: $confirmingEmptyTrash) { EmptyTrashSheet() }
+        .dismissedOnQuit($confirmingEmptyTrash)
         .sheet(isPresented: $reviewing) { UninstallReviewSheet() }
+        .dismissedOnQuit($reviewing)
         #if DEBUG
         .task(id: models.uninstallerFixtureConfirm) {
             confirming = models.uninstallerFixtureConfirm ? models.uninstaller.confirmation : nil
