@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- The disk image now opens a proper install window: drag Dustling onto Applications, with a hint for updating an older copy and for the first open. The disk shows Dustling's icon.
+
 ## [0.1.0] - 2026-11-08
 
 The first release of Dustling: a free, open-source Mac cleaner that moves things to the Trash first and tells you what happened to every file.

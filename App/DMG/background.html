@@ -1,0 +1,120 @@
+<!doctype html>
+<!--
+  The picture behind the Dustling disk image window. scripts/make-dmg-background.sh renders it to
+  background.png (640 x 400) and background@2x.png, and scripts/build-dmg.sh places the icons on it.
+
+  Finder always draws a window with a background picture in light mode (dark label text), so this
+  stays light whatever the Mac's appearance is.
+
+  The icon centers come from App/DMG/dmg-settings.py: Dustling at (180, 188), Applications at
+  (460, 188), 128 pt icons. Keep the trail between them if you move them.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dustling disk image background</title>
+<style>
+  @font-face { font-family: Geist; font-weight: 400; src: url(../Dustling/Resources/Fonts/Geist-Regular.ttf); }
+  @font-face { font-family: Geist; font-weight: 500; src: url(../Dustling/Resources/Fonts/Geist-Medium.ttf); }
+  @font-face { font-family: Geist; font-weight: 600; src: url(../Dustling/Resources/Fonts/Geist-SemiBold.ttf); }
+
+  /* Mosaic light tokens (DESIGN-mosaic.md). */
+  :root {
+    --ground: #ffffff;
+    --panel: #f6f7f9;
+    --ink: #15171c;
+    --ink2: #363a44;
+    --muted: #5d626d;
+    --line: #e8eaee;
+    --accent: #3d3bf3;
+  }
+
+  html, body { margin: 0; }
+  body {
+    width: 640px;
+    height: 400px;
+    overflow: hidden;
+    position: relative;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: Geist, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1 {
+    position: absolute;
+    top: 34px;
+    left: 0;
+    right: 0;
+    margin: 0;
+    text-align: center;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  /* From Dustling (right edge 244) to Applications (left edge 396), centered on y = 188. */
+  .trail {
+    position: absolute;
+    left: 264px;
+    top: 172px;
+    width: 112px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .trail i { width: 10px; height: 10px; flex: none; }
+  .trail svg { margin-left: 4px; flex: none; }
+
+  .foot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 84px;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 0 32px;
+    box-sizing: border-box;
+  }
+  .foot p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+  .foot p b { font-weight: 500; color: var(--ink2); }
+</style>
+</head>
+<body>
+  <h1>Drag Dustling to Applications</h1>
+
+  <div class="trail" aria-hidden="true">
+    <i style="background:#00a3e0"></i>
+    <i style="background:#00b37e"></i>
+    <i style="background:#f5c400"></i>
+    <i style="background:#ff8a00"></i>
+    <i style="background:#e5409a"></i>
+    <!-- The 8 x 8 pixel arrow from the website's icon set, at 4 px per pixel. -->
+    <svg width="32" height="28" viewBox="0 0 8 7" shape-rendering="crispEdges">
+      <path fill="#3d3bf3" d="M4 0h1v1h-1zM4 1h2v1h-2zM0 2h7v1h-7zM0 3h8v1h-8zM0 4h7v1h-7zM4 5h2v1h-2zM4 6h1v1h-1z"/>
+    </svg>
+  </div>
+
+  <div class="foot">
+    <!-- Mote, happy, from the logo kit: 16 x 18 pixels at 3 px per pixel. -->
+    <svg width="48" height="54" viewBox="0 0 160 180" shape-rendering="crispEdges" aria-hidden="true">
+      <path fill="#CFC7EC" d="M80 30h20v10h-20zM70 40h10v10h-10zM50 50h60v10h-60zM30 60h100v10h-100zM20 70h20v10h-20zM60 70h60v10h-60zM20 80h10v10h-10zM40 80h90v10h-90zM10 90h140v10h-140zM10 100h40v10h-40zM60 100h40v10h-40zM110 100h40v10h-40zM10 110h30v10h-30zM50 110h10v10h-10zM70 110h20v10h-20zM100 110h10v10h-10zM120 110h20v10h-20zM0 120h40v10h-40zM50 120h60v10h-60zM120 120h20v10h-20zM10 130h50v10h-50zM70 130h20v10h-20zM100 130h30v10h-30zM20 140h50v10h-50zM90 140h30v10h-30zM20 150h90v10h-90zM50 160h50v10h-50z"/>
+      <path fill="#9B91C6" d="M140 110h10v10h-10zM140 120h10v10h-10zM130 130h20v10h-20zM120 140h20v10h-20zM110 150h30v10h-30zM30 160h20v10h-20zM100 160h30v10h-30zM50 170h60v10h-60z"/>
+      <path fill="#1E1B33" d="M50 100h10v10h-10zM100 100h10v10h-10zM40 110h10v10h-10zM60 110h10v10h-10zM90 110h10v10h-10zM110 110h10v10h-10z"/>
+      <path fill="#E59A00" d="M130 60h10v10h-10zM120 70h30v10h-30zM130 80h10v10h-10z"/>
+      <path fill="#FFFFFF" d="M40 70h20v10h-20zM30 80h10v10h-10z"/>
+      <path fill="#F4A7C0" d="M40 120h10v10h-10zM110 120h10v10h-10z"/>
+      <path fill="#1E1B33" d="M60 130h10v10h-10zM90 130h10v10h-10zM70 140h20v10h-20z"/>
+    </svg>
+    <div>
+      <p><b>Updating?</b> Quit Dustling first, then choose Replace.</p>
+      <p><b>First open:</b> if macOS stops it, click Open Anyway in System Settings → Privacy &amp; Security.</p>
+    </div>
+  </div>
+</body>
+</html>
