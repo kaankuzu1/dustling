@@ -27,6 +27,36 @@ enum Format {
         "\(count) " + (count == 1 ? singular : (plural ?? singular + "s"))
     }
 
+    static let fullDiskAccessHint =
+        "Grant Full Disk Access in System Settings > Privacy & Security > Full Disk Access, then try again."
+
+    /// A size that may be incomplete: "X", "at least X", or "couldn't scan (...)". Never a bare 0 when
+    /// something couldn't be read.
+    static func total(_ total: ScanTotal) -> String {
+        if total.couldNotScan {
+            return total.needsFullDiskAccess ? "couldn't scan (needs Full Disk Access)" : "couldn't scan"
+        }
+        return (total.isComplete ? "" : "at least ") + bytes(total.bytes)
+    }
+
+    /// "1.2 GB, 3 items", "at least 1.2 GB, 3 items found" or "couldn't scan (needs Full Disk Access)".
+    static func categorySummary(_ scan: CategoryScan) -> String {
+        let t = scan.total
+        if t.couldNotScan { return total(t) }
+        return total(t) + ", " + plural(t.itemCount, "item") + (t.isComplete ? "" : " found")
+    }
+
+    /// The day an item was last opened, or "unknown" if that can't be read.
+    static func lastOpened(_ url: URL) -> String {
+        guard let date = try? url.resourceValues(forKeys: [.contentAccessDateKey]).contentAccessDate else {
+            return "unknown"
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
     /// Plain-words description of a scan problem.
     static func issue(_ issue: ScanIssue) -> String {
         switch issue {

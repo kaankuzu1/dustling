@@ -63,9 +63,17 @@ enum Commands {
             let results = try await makeScanner().scan(JunkCatalog.standard(env)) { scan in
                 printCategory(scan)
             }
-            let total = results.reduce(UInt64(0)) { $0 + $1.bytes }
-            print("\nTotal found: \(Format.bytes(total))")
-            print("Clean the untagged categories with: dustling-cli clean")
+            // Separate totals on purpose: they mean different things and are never added up.
+            let totals = ScanTotals(results)
+            print("")
+            print("Cleanable by default: \(Format.total(totals.cleanableByDefault))  (dustling-cli clean)")
+            if totals.skippedInUse > 0 {
+                print("  \(Format.bytes(totals.skippedInUse)) of the default categories belongs to apps that are open "
+                    + "right now and will be skipped")
+            }
+            print("Review items: \(Format.total(totals.review))  (dustling-cli clean --include <categoryID>)")
+            print("Needs admin: \(Format.total(totals.needsAdmin))  (not touched by this version)")
+            print("Trash: \(Format.total(totals.trash))  (dustling-cli empty-trash)")
             return 0
         } catch {
             Format.printError("Scan stopped: \(error.localizedDescription)")
@@ -76,7 +84,7 @@ enum Commands {
     private static func printCategory(_ scan: CategoryScan) {
         let id = scan.category.id.rawValue
         print("\(scan.category.title) (\(id))\(Format.tag(for: scan.category.selection)): "
-            + "\(Format.bytes(scan.bytes)), \(Format.plural(scan.items.count, "item"))"
+            + Format.categorySummary(scan)
             + (scan.category.requiresAdmin ? " [needs admin]" : ""))
         Format.printIssues(scan.issues)
     }
@@ -140,8 +148,15 @@ enum Commands {
         for scan in chosen {
             let inUse = scan.items.filter { $0.inUseByBundleID != nil }
             let usable = scan.items.filter { $0.inUseByBundleID == nil }
-            print("  \(scan.category.title) (\(scan.category.id.rawValue)): "
-                + "\(Format.bytes(scan.bytes)), \(Format.plural(scan.items.count, "item"))")
+            print("  \(scan.category.title) (\(scan.category.id.rawValue)): " + Format.categorySummary(scan))
+            // Review categories are only cleaned because the user asked: show every item they approve.
+            if scan.category.selection == .review {
+                let showsAccess = scan.category.roots.contains { $0.lastPathComponent == "Downloads" }
+                for item in usable {
+                    print("    \(Format.bytes(item.bytes))  \(Format.path(item.url))"
+                        + (showsAccess ? "  (last opened \(Format.lastOpened(item.url)))" : ""))
+                }
+            }
             for item in inUse {
                 Format.printWarning("Skipping \(item.url.lastPathComponent): the app is open right now")
                 extra.append(JournalEntry(
@@ -179,7 +194,9 @@ enum Commands {
             return extra.contains { $0.outcome == .needsAdmin } ? 2 : 0
         }
 
-        guard Format.confirm("Move \(urls.count) items (\(Format.bytes(shownBytes))) to Trash? [y/N]", assumeYes: assumeYes) else {
+        guard Format.confirm(
+            "Move \(Format.plural(urls.count, "item")) (\(Format.bytes(shownBytes))) to Trash? [y/N]", assumeYes: assumeYes)
+        else {
             print("Cancelled.")
             return 0
         }
@@ -189,7 +206,7 @@ enum Commands {
         Format.printEntries(record)
         let code = Format.printTotals(record)
         if record.bytesMovedToTrash > 0 {
-            print("Space is freed when the Trash is emptied: dustling empty-trash")
+            print("Space is freed when the Trash is emptied: dustling-cli empty-trash")
         }
         return code
     }
@@ -304,7 +321,7 @@ enum Commands {
             Format.printEntries(record)
             let code = Format.printTotals(record)
             if record.bytesMovedToTrash > 0 {
-                print("Space is freed when the Trash is emptied: dustling empty-trash")
+                print("Space is freed when the Trash is emptied: dustling-cli empty-trash")
             }
             return code
         } catch UninstallError.appIsRunning(let name) {
@@ -478,11 +495,43 @@ enum Commands {
         }
         let inspector = TrashInspector(
             environment: env, journal: journal, logger: RunLogger(directory: env.logsDirectory), sizer: DirectorySizer())
-        let size = inspector.size()
-        Format.printIssues(size.unreadable.map { .unreadable($0) })
-        print("The Trash holds \(Format.bytes(size.bytes)) in \(Format.plural(size.fileCount, "file")).")
+        let contents = inspector.contents()
+        let needsAccess = contents.issues.contains { if case .missingFullDiskAccess = $0 { true } else { false } }
+        Format.printIssues(contents.issues)
+
+        guard !contents.items.isEmpty else {
+            if contents.issues.isEmpty {
+                print("The Trash is empty.")
+                return 0
+            }
+            print("Nothing to empty that Dustling can see.")
+            if needsAccess { print(Format.fullDiskAccessHint) }
+            return 1
+        }
+        if !contents.issues.isEmpty {
+            print("Some Trash locations or items couldn't be read, so they may not be emptied."
+                + (needsAccess ? " " + Format.fullDiskAccessHint : ""))
+        }
+
+        // Show what will be deleted, largest first, before asking.
+        let size = (contents.issues.isEmpty ? "" : "at least ") + Format.bytes(contents.size.bytes)
+        print("The Trash holds \(Format.plural(contents.items.count, "item")) (\(size)):")
+        let sorted = contents.items.sorted {
+            $0.size.bytes != $1.size.bytes ? $0.size.bytes > $1.size.bytes : $0.url.path < $1.url.path
+        }
+        let limit = 50
+        for item in sorted.prefix(limit) {
+            print("  \(Format.bytes(item.size.bytes))  \(trashItemName(item.url))")
+        }
+        if sorted.count > limit {
+            let rest = sorted.dropFirst(limit)
+            print("  \u{2026}and \(rest.count) more (\(Format.bytes(rest.reduce(UInt64(0)) { $0 + $1.size.bytes }))))")
+        }
+
+        let amount = contents.size.bytes > 0 ? " (\(size))" : ""
         guard Format.confirm(
-            "Permanently delete \(Format.bytes(size.bytes)) from the Trash? This can't be undone. [y/N]",
+            "Permanently delete \(Format.plural(contents.items.count, "item"))\(amount) from the Trash? "
+                + "This can't be undone. [y/N]",
             assumeYes: args.contains("--yes"))
         else {
             print("Cancelled.")
@@ -491,6 +540,13 @@ enum Commands {
         let record = inspector.emptyTrash()
         Format.printEntries(record)
         return Format.printTotals(record)
+    }
+
+    /// The item's name for items in ~/.Trash, its full path for a volume's Trash.
+    private static func trashItemName(_ url: URL) -> String {
+        let parent = url.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path
+        let home = env.userTrash.resolvingSymlinksInPath().standardizedFileURL.path
+        return parent == home ? url.lastPathComponent : Format.path(url)
     }
 }
 
