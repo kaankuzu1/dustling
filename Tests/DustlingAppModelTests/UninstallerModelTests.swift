@@ -506,8 +506,14 @@ struct UninstallerModelTests {
         #expect(!FileManager.default.fileExists(atPath: alpha.path))
         #expect(completed.value == 1)
 
+        let moved = records[0].entries.reduce(UInt64(0)) { $0 + $1.bytes }
+        #expect(moved > 0)
+        #expect(model.bytesStillInTrash(records) == moved)
+
         let outcomes = try await model.putBack(records[0])
 
+        // The done screen's "in the Trash" line drops what came back.
+        #expect(model.bytesStillInTrash(records) == 0)
         #expect(outcomes.count == 2)
         #expect(outcomes.allSatisfy { if case .restored = $0 { true } else { false } })
         #expect(FileManager.default.fileExists(atPath: alpha.path))

@@ -631,6 +631,20 @@ public final class UninstallerModel {
     /// Puts back what one app's run moved to the Trash (the app and its leftovers), then lists the
     /// apps again. Needs access to the Trash (`canTakeOutOfTrash`); without it the screen offers Show
     /// in Trash instead.
+    /// What of the finished uninstall is still in the Trash: everything moved, minus what Put back
+    /// brought back since.
+    public func bytesStillInTrash(_ records: [RunRecord]) -> UInt64 {
+        records.reduce(0) { total, record in
+            let restored = Set((restoreOutcomes[record.id] ?? []).compactMap { outcome -> String? in
+                if case .restored(let path) = outcome { path } else { nil }
+            })
+            return total + record.entries.reduce(0) { sum, entry in
+                guard case .movedToTrash = entry.outcome, !entry.restored, !restored.contains(entry.originalPath) else { return sum }
+                return sum + entry.bytes
+            }
+        }
+    }
+
     public func putBack(_ record: RunRecord) async throws -> [RestoreOutcome] {
         guard canTakeOutOfTrash else { throw UninstallerModelError.cantTakeOutOfTrash }
         #if DEBUG
