@@ -20,6 +20,17 @@ public enum RunJournalError: Error, Equatable, Sendable {
     }
 }
 
+extension RunJournalError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .runNotFound: "This run isn't in History any more."
+        case .historyUnreadable(let url, _): "Dustling couldn't read its History folder (\(url.path(percentEncoded: false)))."
+        case .saveFailed: "Some items came back, but Dustling couldn't update History."
+        case .notRestorable: "Nothing in this run can be put back. It was put back already or is no longer in the Trash."
+        }
+    }
+}
+
 /// Durable, one-file-per-run record of what a cleanup did, plus the undo (`restore`).
 public struct RunJournal: Sendable {
     public let directory: URL

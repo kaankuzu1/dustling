@@ -37,6 +37,14 @@ struct UninstallerView: View {
                     .padding(.horizontal, DustlingTheme.Metrics.gutter)
                     .padding(.top, 12)
             }
+            if let refusal = models.uninstaller.refusal, phase == .list {
+                // A refused uninstall is never silent.
+                Banner(title: "Nothing was moved.", message: refusal, leading: .icon(.warn)) {
+                    Button("OK") { models.uninstaller.clearRefusal() }
+                }
+                .padding(.horizontal, DustlingTheme.Metrics.gutter)
+                .padding(.top, 12)
+            }
             if phase == .limited {
                 PickAnApp(text: "Needs Full Disk Access to look for leftovers")
             } else {
@@ -220,7 +228,10 @@ struct UninstallerView: View {
             let confirm = model.confirmation
             let line = UninstallerScreen.selectionLine(confirm)
             ActionBar(title: line.title, caption: line.caption) {
-                Button(action: { confirming = model.confirmation }) {
+                Button(action: {
+                    model.clearRefusal()
+                    confirming = model.confirmation
+                }) {
                     HStack(spacing: 6) {
                         PixelIconView(.trash, color: confirm.ready ? Palette.onAccent : Palette.muted)
                         Text("Move to Trash")
@@ -242,7 +253,7 @@ struct UninstallerView: View {
                     .disabled(model.isRestoring)
                 Button("Empty Trash…") { confirmingEmptyTrash = true }
                     .dustlingPrimary()
-                    .disabled(!models.trash.canEmpty || models.trash.isEmptying || model.isRestoring)
+                    .disabled(!models.trash.canEmpty || models.trash.isEmptying || model.isRestoring || isFixture)
                     .help(models.trash.disabledReason ?? "Shows what is in the Trash and asks before deleting it")
             }
         }
@@ -260,17 +271,26 @@ struct UninstallerView: View {
                 return current.state == .quitting
                     ? "Quitting \(current.app.displayName)" : "Removing \(current.app.displayName)"
             }()
-            ActionBar(
-                title: title,
-                caption: "\(place) of \(total) \(total == 1 ? "app" : "apps"), \(Bytes.format(progress.bytesMoved)) moved so far",
-                busyLabel: "Moving…"
-            ) {
+            let caption = model.stopRequested
+                ? "Stopping after \(progress.current?.app.displayName ?? "this app")"
+                : "\(place) of \(total) \(total == 1 ? "app" : "apps"), \(Bytes.format(progress.bytesMoved)) moved so far"
+            ActionBar(title: title, caption: caption, busyLabel: "Moving…") {
                 ProgressBar(fraction: items == 0 ? 0 : Double(done) / Double(items))
                     .frame(width: 220)
                 Button("Stop", action: model.stop)
+                    .disabled(model.stopRequested)
                     .help("Finishes the app being removed now and leaves the rest alone")
             }
         }
+    }
+
+    /// The DEBUG screenshot fixture is on: nothing real may be offered.
+    private var isFixture: Bool {
+        #if DEBUG
+        return models.uninstallerFixture
+        #else
+        return false
+        #endif
     }
 
     // MARK: Uninstall

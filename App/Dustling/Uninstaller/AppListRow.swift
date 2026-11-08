@@ -67,13 +67,23 @@ struct AppListRow: View {
         case .finished(removed: false):
             PixelIconView(.warn, color: Palette.warning)
                 .accessibilityLabel("Left alone")
-        case .quitting, .removing:
+        case .quitting:
+            BusyIndicator(label: "Quitting…")
+        case .removing:
             BusyIndicator(label: "Moving…")
-        case .waiting, .stopped:
+        case .waiting:
             Toggle(isOn: .constant(true)) { EmptyView() }
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .disabled(true)
+        case .stopped:
+            // Stop left it alone: nothing of it moves any more.
+            Toggle(isOn: .constant(false)) { EmptyView() }
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .disabled(true)
+                .help("Left alone")
+                .accessibilityLabel("Left alone")
         case nil:
             Toggle(isOn: Binding(get: { isSelected }, set: { value in onToggle(value) })) { EmptyView() }
                 .toggleStyle(.checkbox)

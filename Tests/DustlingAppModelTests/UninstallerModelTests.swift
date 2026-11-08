@@ -391,6 +391,7 @@ struct UninstallerModelTests {
         try FileManager.default.createDirectory(at: alpha, withIntermediateDirectories: true)
         let again = await model.uninstallSelected(confirmed: confirm, quit: FakeQuitter(running: FakeRunning()))
         #expect(again.isEmpty)
+        #expect(model.refusal == UninstallerModel.usedRefusal)
         #expect(FileManager.default.fileExists(atPath: alpha.path))
     }
 
@@ -408,6 +409,8 @@ struct UninstallerModelTests {
         model.canTakeOutOfTrash = false
         let refused = await model.uninstallSelected(confirmed: shownWithAccess, quit: FakeQuitter(running: FakeRunning()))
         #expect(refused.isEmpty)
+        // Never silently: the screen says why nothing happened.
+        #expect(model.refusal == UninstallerModel.accessRefusal)
         #expect(FileManager.default.fileExists(atPath: alpha.path))
 
         let warned = model.confirmation
@@ -502,5 +505,80 @@ struct UninstallerModelTests {
 
         await #expect(throws: UninstallerModelError.cantTakeOutOfTrash) { try await model.putBack(records[0]) }
         #expect(!FileManager.default.fileExists(atPath: alpha.path))
+    }
+
+    // MARK: fix round 1
+
+    @Test func revokedAccessNeverMovesOtherAppsData() async throws {
+        let rig = try ModelRig()
+        let alpha = try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let lib = rig.environment.userLibrary
+        let container = try rig.file(lib.appending(path: "Containers/com.test.alpha/Data/doc.bin"), bytes: 2048)
+        let cache = try rig.file(lib.appending(path: "Caches/com.test.alpha/c.bin"), bytes: 1024)
+        let model = rig.uninstallerModel()
+        model.canTakeOutOfTrash = true
+        await model.load()
+        let row = try #require(model.apps.first)
+        let containerRow = try #require(model.leftovers(for: row.app).first { $0.leftover.kind == .container })
+        model.setChecked(true, leftover: containerRow.leftover, in: row.app)
+        model.selection = [row.app.url]
+        let confirm = model.confirmation
+
+        // Full Disk Access is revoked after the list loaded.
+        model.canReadAppData = false
+        let records = await model.uninstallSelected(confirmed: confirm, quit: FakeQuitter(running: FakeRunning()))
+
+        let record = try #require(records.first)
+        #expect(!FileManager.default.fileExists(atPath: alpha.path))
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
+        #expect(FileManager.default.fileExists(atPath: container.path))
+        let containerPath = containerRow.leftover.url.path(percentEncoded: false)
+        let entries = record.entries.filter { $0.originalPath == containerPath }
+        #expect(entries.map(\.outcome) == [.skipped(reason: "needs Full Disk Access")])
+        #expect(try rig.journal.all().first?.entries.contains { $0.originalPath == containerPath } == true)
+    }
+
+    @Test func lockedFoldersAreSkippedToo() async throws {
+        let rig = try ModelRig()
+        try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let cache = try rig.file(rig.environment.userLibrary.appending(path: "Caches/com.test.alpha/c.bin"), bytes: 1024)
+        let model = rig.uninstallerModel()
+        model.canTakeOutOfTrash = true
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        model.lockedFolders = [rig.environment.userLibrary.appending(path: "Caches")]
+        let records = await model.uninstallSelected(confirmed: model.confirmation, quit: FakeQuitter(running: FakeRunning()))
+        #expect(FileManager.default.fileExists(atPath: cache.path))
+        #expect(records.first?.entries.contains { $0.outcome == .skipped(reason: "needs Full Disk Access") } == true)
+    }
+
+    @Test func loadIsRefusedWithoutAppDataAccess() async throws {
+        let rig = try ModelRig()
+        try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let model = rig.uninstallerModel()
+        model.canReadAppData = false
+        await model.load()
+        #expect(model.apps.isEmpty)
+        #expect(!model.isLoading)
+    }
+
+    @Test func anAppOpenedAfterConfirmingIsLeftAloneNotQuit() async throws {
+        let rig = try ModelRig()
+        let alpha = try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let running = FakeRunning()
+        let model = rig.uninstallerModel(running: running)
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        let confirm = model.confirmation
+        #expect(confirm.runningApps.isEmpty)
+        running.set(alpha, running: true)
+        let quitter = FakeQuitter(running: running)
+        quitter.quits = ["Alpha"]
+
+        let records = await model.uninstallSelected(confirmed: confirm, quit: quitter)
+
+        #expect(quitter.askedNames.isEmpty)
+        #expect(records.first?.entries.first?.outcome == .skipped(reason: "opened after you confirmed"))
+        #expect(FileManager.default.fileExists(atPath: alpha.path))
     }
 }

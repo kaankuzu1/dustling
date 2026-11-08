@@ -105,6 +105,9 @@ public struct ConfirmModel: Identifiable, Equatable, Sendable {
     public let limitedNote: String?
     /// Each confirmation is used at most once (`uninstallSelected` refuses it again).
     public let id = UUID()
+    /// The apps that were open when the user confirmed. Only these are asked to quit; one that opened
+    /// afterwards is left alone.
+    public var runningAppURLs: Set<URL> = []
 }
 
 /// What the last uninstall did: one record per app that was tried, and the apps Stop left alone.
@@ -118,8 +121,16 @@ public struct UninstallResult: Equatable, Sendable {
     }
 }
 
-public enum UninstallerModelError: Error, Equatable {
+public enum UninstallerModelError: Error, Equatable, LocalizedError {
     case cantTakeOutOfTrash, busy, alreadyPutBack
+
+    public var errorDescription: String? {
+        switch self {
+        case .cantTakeOutOfTrash: "Dustling can't take things out of the Trash without Full Disk Access."
+        case .busy: "Dustling is still working on the last request."
+        case .alreadyPutBack: "These items were put back already."
+        }
+    }
 }
 
 /// Drives the Uninstaller screen: the app list with leftover counts, per-app leftover checklists,
@@ -146,6 +157,16 @@ public final class UninstallerModel {
     /// Without Full Disk Access macOS won't let Dustling take anything out of `~/.Trash`: the confirm
     /// sheet warns first and the summary offers Show in Trash instead of Put back.
     public var canTakeOutOfTrash = false
+    /// Without Full Disk Access other apps' data (Containers, Group Containers) and the consent folders
+    /// can't be opened without a prompt: the list doesn't load, and an uninstall records leftovers
+    /// there as skipped ("needs Full Disk Access") and never touches them.
+    public var canReadAppData = true
+    /// Folders that can't be read now (set with `canReadAppData`); leftovers inside them are skipped.
+    @ObservationIgnored public var lockedFolders: [URL] = []
+    /// Why the last uninstall request was refused, shown above the list until the next one.
+    public private(set) var refusal: String?
+    /// Stop was pressed; the app being removed now finishes, the rest are left alone.
+    public private(set) var stopRequested = false
 
     @ObservationIgnored private let scout: AppScout
     @ObservationIgnored private let finder: LeftoverFinder
@@ -161,7 +182,6 @@ public final class UninstallerModel {
     private var appList: [InstalledApp] = []
     private var counted: Set<URL> = []
     @ObservationIgnored private var loadPending = false
-    @ObservationIgnored private var stopRequested = false
     @ObservationIgnored private var usedConfirmations: Set<UUID> = []
     #if DEBUG
     /// Set by the screenshot fixture: which fixture apps read as running. Non-nil means fixture mode,
@@ -197,6 +217,7 @@ public final class UninstallerModel {
         guard fixtureRunning == nil else { return }
         #endif
         guard !isUninstalling else { loadPending = true; return }
+        guard canReadAppData else { return }
         generation += 1
         let mine = generation
         isLoading = true
@@ -307,6 +328,7 @@ public final class UninstallerModel {
         var total: UInt64 = 0
         var adminTotal = 0
         var agents = 0
+        var runningURLs: Set<URL> = []
         let planned = plan()
         for (app, checked) in planned {
             let admin = checked.filter(\.requiresAdmin)
@@ -321,7 +343,10 @@ public final class UninstallerModel {
                     appName: app.displayName, itemName: leftover.url.lastPathComponent, kind: leftover.kind,
                     bytes: leftover.bytes, text: Self.dataWarning(for: leftover)))
             }
-            if isRunning(app) { runningNames.append(app.displayName) }
+            if isRunning(app) {
+                runningNames.append(app.displayName)
+                runningURLs.insert(app.url)
+            }
             total += bytes
             adminTotal += admin.count
             agents += movable.filter { $0.kind == .launchAgent }.count
@@ -332,7 +357,7 @@ public final class UninstallerModel {
             ready: !counting && !planned.isEmpty, note: counting ? "Still looking for leftovers" : nil,
             perApp: perApp, dataWarnings: warnings, runningApps: runningNames, launchAgents: agents,
             adminItems: adminTotal, adminNote: adminTotal > 0 ? "Needs the cleanup helper" : nil, totalBytes: total,
-            limitedNote: canTakeOutOfTrash ? nil : CleanupGate.limitedNote)
+            limitedNote: canTakeOutOfTrash ? nil : CleanupGate.limitedNote, runningAppURLs: runningURLs)
     }
 
     /// Whether the app is open now (the detail header's "Running now.").
@@ -367,12 +392,20 @@ public final class UninstallerModel {
     /// Refused when the confirmation was already used, or when Dustling can't take things back out of
     /// the Trash and the confirmation didn't say so (access was lost after the sheet opened).
     public func uninstallSelected(confirmed: ConfirmModel, quit: AppQuitter) async -> [RunRecord] {
-        guard !isUninstalling, !isRestoring, confirmed.ready, !usedConfirmations.contains(confirmed.id) else { return [] }
-        guard canTakeOutOfTrash || confirmed.limitedNote != nil else { return [] }
+        guard !isUninstalling, !isRestoring, confirmed.ready else { return [] }
+        guard !usedConfirmations.contains(confirmed.id) else {
+            refusal = Self.usedRefusal
+            return []
+        }
+        guard canTakeOutOfTrash || confirmed.limitedNote != nil else {
+            refusal = Self.accessRefusal
+            return []
+        }
         #if DEBUG
         // The screenshot fixture's apps don't exist; nothing is ever moved for them.
         guard fixtureRunning == nil else { return [] }
         #endif
+        refusal = nil
         usedConfirmations.insert(confirmed.id)
         isUninstalling = true
         stopRequested = false
@@ -392,7 +425,8 @@ public final class UninstallerModel {
                 stopped.append(app.displayName)
                 continue
             }
-            let record = await uninstallOne(app, leftovers: planned.leftovers, quit: quit)
+            let record = await uninstallOne(
+                app, leftovers: planned.leftovers, quit: quit, confirmedRunning: confirmed.runningAppURLs.contains(app.url))
             progress?.finish(app.url, record: record)
             records.append(record)
             if record.entries.first.map({ if case .movedToTrash = $0.outcome { true } else { false } }) == true {
@@ -415,6 +449,26 @@ public final class UninstallerModel {
         return records
     }
 
+    public static let accessRefusal = "Full Disk Access was turned off. Check the list again before moving anything."
+    public static let usedRefusal = "That confirmation was already used. Check the list again before moving anything."
+    public static let openedAfterConfirmReason = "opened after you confirmed"
+    public static let needsAccessReason = "needs Full Disk Access"
+
+    /// Clears the refusal banner (the user looked at the list again).
+    public func clearRefusal() { refusal = nil }
+
+    /// Leftovers that must not be touched now: other apps' data without Full Disk Access, and anything
+    /// in a folder that can't be read.
+    func mustSkip(_ leftover: Leftover) -> Bool {
+        if !canReadAppData && (leftover.kind == .container || leftover.kind == .groupContainer) { return true }
+        let path = leftover.url.standardizedFileURL.path(percentEncoded: false)
+        return lockedFolders.contains { folder in
+            var base = folder.standardizedFileURL.path(percentEncoded: false)
+            if !base.hasSuffix("/") { base += "/" }
+            return path.hasPrefix(base) || path + "/" == base
+        }
+    }
+
     /// Stop: the app being removed now finishes (half an app is worse than either), the rest are left alone.
     public func stop() {
         guard isUninstalling else { return }
@@ -429,13 +483,26 @@ public final class UninstallerModel {
         restoreOutcomes = [:]
     }
 
-    private func uninstallOne(_ app: InstalledApp, leftovers: [Leftover], quit: AppQuitter) async -> RunRecord {
+    private func uninstallOne(
+        _ app: InstalledApp, leftovers: [Leftover], quit: AppQuitter, confirmedRunning: Bool
+    ) async -> RunRecord {
         if running.isRunning(app) {
+            // Never quit an app the user didn't see as running when they confirmed.
+            guard confirmedRunning else {
+                return recordStillRunning(app, leftovers: leftovers, reason: Self.openedAfterConfirmReason)
+            }
             progress?.quitting(app.url)
             _ = await Self.quitWithTimeout(app, quit: quit, timeout: quitTimeout)
             if running.isRunning(app) { return recordStillRunning(app, leftovers: leftovers) }
         }
+        let skipped = leftovers.filter(mustSkip)
+        let moving = leftovers.filter { !mustSkip($0) }
+        let extra = skipped.map {
+            JournalEntry(originalPath: $0.url.path(percentEncoded: false), bytes: $0.bytes,
+                         outcome: .skipped(reason: Self.needsAccessReason))
+        }
         progress?.begin(app.url)
+        for leftover in skipped { progress?.record(leftover.url, .skipped(reason: Self.needsAccessReason), in: app.url) }
         let uninstaller = self.uninstaller
         let id = app.url
         let sink = ProgressSink { [weak self] url, outcome in
@@ -446,7 +513,9 @@ public final class UninstallerModel {
         }
         do {
             return try await Task.detached(priority: .userInitiated) {
-                try await uninstaller.uninstall(app, leftovers: leftovers) { url, outcome in sink.tick(url, outcome) }
+                try await uninstaller.uninstall(app, leftovers: moving, extraEntries: extra) { url, outcome in
+                    sink.tick(url, outcome)
+                }
             }.value
         } catch {
             // The app opened between the check and the move.
@@ -493,11 +562,15 @@ public final class UninstallerModel {
         }
     }
 
-    private func recordStillRunning(_ app: InstalledApp, leftovers: [Leftover], error: Error? = nil) -> RunRecord {
-        let reason: String
-        if let error, !(error is UninstallError) { reason = "could not uninstall: \(error.localizedDescription)" }
-        else { reason = "still running" }
-        let outcome: DeletionOutcome = reason == "still running" ? .skipped(reason: reason) : .failed(reason: reason)
+    private func recordStillRunning(
+        _ app: InstalledApp, leftovers: [Leftover], error: Error? = nil, reason skipReason: String = "still running"
+    ) -> RunRecord {
+        let outcome: DeletionOutcome
+        if let error, !(error is UninstallError) {
+            outcome = .failed(reason: "could not uninstall: \(error.localizedDescription)")
+        } else {
+            outcome = .skipped(reason: skipReason)
+        }
         var entries = [JournalEntry(originalPath: app.url.path(percentEncoded: false), bytes: app.bytes, outcome: outcome)]
         for leftover in leftovers {
             entries.append(JournalEntry(

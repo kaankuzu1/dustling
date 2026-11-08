@@ -349,6 +349,10 @@ final class AppModels {
         // Without Full Disk Access macOS won't let Dustling take anything out of the Trash.
         junk.canTakeOutOfTrash = health.fullDiskAccess == .granted
         uninstaller.canTakeOutOfTrash = health.fullDiskAccess == .granted
+        // Without access, other apps' data and the consent folders are never touched by an uninstall.
+        uninstaller.canReadAppData = health.fullDiskAccess == .granted
+        uninstaller.lockedFolders = health.fullDiskAccess == .granted ? [] : unjudgedProgramFolders
+            + [environment.userLibrary.appending(path: "Group Containers")]
         #if DEBUG
         if let fixtureTrashAccess { uninstaller.canTakeOutOfTrash = fixtureTrashAccess }
         #endif
