@@ -311,12 +311,37 @@ struct CleanupRunnerTests {
     }
 
     @Test func writerProcessesSeesOtherProcessesButNeverItself() {
-        let me = ProcessInfo.processInfo.processName
+        // p_comm keeps at most MAXCOMLEN (16) characters.
+        let me = String(ProcessInfo.processInfo.processName.prefix(Int(MAXCOMLEN)))
         // launchd and the like are visible; the test process itself is left out.
         #expect(!WriterProcesses.runningNames(excluding: getpid()).isEmpty)
         #expect(WriterProcesses.runningNames(excluding: 0).contains(me))
         #expect(!WriterProcesses.othersRunning(excluding: getpid(), names: ["no-such-process-\(UUID().uuidString.prefix(8))"]))
-        #expect(WriterProcesses.names == ["Dustling", "dustling-cli"])
+    }
+
+    @Test func stoppingRecordsThousandsOfRemainingItemsInOneSave() throws {
+        let sandbox = try TestSandbox()
+        let runner = makeRunner(sandbox)
+        let home = sandbox.environment.home
+        let urls = (0..<5_000).map { home.appending(path: "Library/Caches/item-\($0)") }
+        let started = ContinuousClock.now
+        // Stopped before the first item: every item is recorded as stopped.
+        let record = runner.runBlocking(
+            urls, kind: .junkClean, allowedRoots: [home], extraEntries: [],
+            isCancelled: { true }, onItemStart: { _ in }, onItem: { _, _ in })
+        let elapsed = started.duration(to: .now)
+        #expect(elapsed < .seconds(3), "took \(elapsed)")
+        #expect(record.entries.count == 5_000)
+        #expect(record.entries.allSatisfy {
+            if case .skipped(reason: "cleanup stopped") = $0.outcome { true } else { false }
+        })
+        #expect(!record.inProgress)
+        let saved = try #require(try RunJournal(directory: sandbox.environment.historyDirectory).all().first { $0.id == record.id })
+        #expect(saved.entries.count == 5_000)
+        #expect(!saved.inProgress)
+        let lines = try logText(sandbox).split(separator: "\n")
+        #expect(lines.count == 5_002)
+        #expect(lines.last?.contains("5000 skipped") == true)
     }
 
     @Test func oldRecordsWithoutInProgressDecodeAsFinished() throws {

@@ -2,10 +2,11 @@ import AppKit
 import DustlingAppModel
 import SwiftUI
 
-/// Termination for the whole app. Quit from the Dock, at logout or from AppleScript arrives as the
-/// `quit` Apple Event; it takes the same route as the menu (`QuitCoordinator`), because AppKit's own
-/// handler is refused while a SwiftUI sheet is attached. `applicationShouldTerminate` then asks before
-/// stopping work that changes files (`TerminationPolicy`).
+/// Termination for the whole app. Quit from the Dock, at logout, restart or shutdown, or from
+/// AppleScript arrives as the `quit` Apple Event; it takes the same route as the menu
+/// (`QuitCoordinator`), because AppKit's own handler is refused while a SwiftUI sheet is attached.
+/// The event is held until Dustling has decided: "Keep working" answers it with userCanceledErr
+/// (-128), so the Dock or AppleScript sees the quit was cancelled.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set by `DustlingApp.init`, before the app finishes launching.
     @MainActor static weak var models: AppModels?
@@ -17,22 +18,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleQuit(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        let reason = QuitReason(appleEventQuitReason: Self.quitReason(of: event))
         MainActor.assumeIsolated {
             guard let models = Self.models else {
                 NSApp.terminate(nil)
                 return
             }
-            Task { await models.quit.requestQuit() }
+            let manager = NSAppleEventManager.shared()
+            let suspension = manager.suspendCurrentAppleEvent()
+            Task {
+                await models.quit.requestQuit(reason) { quitting in
+                    guard let suspension else { return }
+                    if !quitting {
+                        manager.replyAppleEvent(forSuspensionID: suspension)
+                            .setParam(NSAppleEventDescriptor(int32: Int32(userCanceledErr)), forKeyword: keyErrorNumber)
+                    }
+                    manager.resume(withSuspensionID: suspension)
+                }
+            }
         }
+    }
+
+    /// The event's `kAEQuitReason` ('why?'), set for logout, restart and shutdown.
+    private static func quitReason(of event: NSAppleEventDescriptor) -> UInt32? {
+        let keyword = AEKeyword(kAEQuitReason)
+        guard let descriptor = event.attributeDescriptor(forKeyword: keyword) ?? event.paramDescriptor(forKeyword: keyword)
+        else { return nil }
+        return descriptor.enumCodeValue
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
-            switch Self.models?.termination.shouldTerminate() ?? .now {
-            case .now: .terminateNow
-            case .cancel: .terminateCancel
-            case .later: .terminateLater
-            }
+            (Self.models?.quit.shouldTerminate() ?? true) ? .terminateNow : .terminateCancel
         }
     }
 }
@@ -44,10 +61,11 @@ enum ModalAlert {
     /// Set by `DustlingApp.init`.
     static weak var coordinator: QuitCoordinator?
 
-    /// The window to attach to: the main window (never a popover), unless it already has a sheet.
+    /// The window to attach to: the main window (never a popover), or the sheet on top of it, so
+    /// the alert never falls back to an app-modal `runModal` that would disable Quit.
     private static var hostWindow: NSWindow? {
-        guard let window = NSApp.mainWindow ?? NSApp.keyWindow, window.isVisible, window.attachedSheet == nil
-        else { return nil }
+        guard var window = NSApp.mainWindow ?? NSApp.keyWindow, window.isVisible else { return nil }
+        while let sheet = window.attachedSheet { window = sheet }
         return window
     }
 

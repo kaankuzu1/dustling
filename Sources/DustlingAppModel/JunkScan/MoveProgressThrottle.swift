@@ -3,7 +3,8 @@ import Foundation
 
 /// Coalesces a cleanup's per-item callbacks, which arrive on the file-work queue, into at most one
 /// main-actor update per `interval` (like the scan's progress), so a cleanup of thousands of items
-/// doesn't post thousands of updates and redraws. The first item publishes at once.
+/// doesn't post thousands of updates and redraws. The first item publishes at once. What is still
+/// collected when the run ends is never published: the run's record replaces the progress then.
 final class MoveProgressThrottle: @unchecked Sendable {
     /// What happened since the last publish.
     struct Batch: Equatable, Sendable {
@@ -33,15 +34,6 @@ final class MoveProgressThrottle: @unchecked Sendable {
             let time = now()
             if let lastPublish, lastPublish.duration(to: time) < interval { return nil }
             lastPublish = time
-            defer { pending = Batch() }
-            return pending
-        }
-    }
-
-    /// What is still collected, if anything.
-    func drain() -> Batch? {
-        lock.withLock {
-            guard pending.items > 0 else { return nil }
             defer { pending = Batch() }
             return pending
         }

@@ -26,7 +26,7 @@ public struct CleanupRunner: Sendable {
     /// `inProgress` until the end, so a crash is recorded up to the last finished item
     /// (`recoverInterrupted` clears the flag on the next launch). On cooperative cancellation
     /// (cancelling the task is checked before each item) the items not attempted are recorded as
-    /// `.skipped(reason: "cleanup stopped")` and the run ends normally with `inProgress == false`.
+    /// `.skipped(reason: "cleanup stopped")` in one save, and the run ends normally with `inProgress == false`.
     /// `onItemStart` fires before each move, `onItem` after it. The work runs on a GCD queue
     /// (`FileWork`), so the callbacks arrive on that queue.
     public func run(
@@ -84,16 +84,26 @@ public struct CleanupRunner: Sendable {
             save()
             log(entry)
         }
+        /// A stopped run's remaining items: one save and one log write for all of them, so stopping
+        /// a cleanup of thousands of items takes as long as one item, not thousands of saves.
+        func addSkipped(_ entries: [JournalEntry]) {
+            guard !entries.isEmpty else { return }
+            record.entries.append(contentsOf: entries)
+            save()
+            guard !logFailed else { return }
+            do { try logger.append(entries, to: record) } catch {
+                logFailed = true
+                record.entries.append(Self.failure("<log>", error))
+            }
+        }
 
         log(nil)
         save()
         for (index, url) in urls.enumerated() {
             if isCancelled() {
-                for rest in urls[index...] {
-                    add(JournalEntry(
-                        originalPath: rest.path(percentEncoded: false), bytes: 0,
-                        outcome: .skipped(reason: "cleanup stopped")))
-                }
+                addSkipped(urls[index...].map {
+                    JournalEntry(originalPath: $0.path(percentEncoded: false), bytes: 0, outcome: .skipped(reason: "cleanup stopped"))
+                })
                 break
             }
             onItemStart(url)

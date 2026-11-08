@@ -34,34 +34,42 @@ private final class Box<Value> {
 }
 
 @MainActor
+private func idlePolicy() -> TerminationPolicy {
+    TerminationPolicy(busy: { [] }, confirm: { _ in true }, stop: {}, clock: ManualClock())
+}
+
+@MainActor
 struct QuitCoordinatorTests {
-    @Test func dismissesEveryPresentationThenTerminatesOnce() async {
+    @Test func dismissesEveryPresentationNewestFirstThenTerminatesOnce() async {
         let sheets = Box(3)
         var terminated = 0
         var dismissed: [String] = []
+        var answers: [Bool] = []
         let clock = ManualClock()
         let quit = QuitCoordinator(
-            attachedSheetCount: { sheets.value }, terminate: { terminated += 1 },
+            policy: idlePolicy(), attachedSheetCount: { sheets.value }, terminate: { terminated += 1 },
             clock: clock, timeout: .seconds(1), pollInterval: .milliseconds(20))
-        for name in ["review", "emptyTrash", "blocker"] {
+        for name in ["review", "emptyTrash", "alertOnTop"] {
             quit.register { dismissed.append(name) }
         }
         #expect(quit.presentationCount == 3)
 
-        let task = Task { await quit.requestQuit() }
+        let task = Task { await quit.requestQuit { answers.append($0) } }
         #expect(await soon { dismissed.count == 3 })
-        #expect(Set(dismissed) == ["review", "emptyTrash", "blocker"])
+        #expect(dismissed == ["alertOnTop", "emptyTrash", "review"])
         #expect(quit.presentationCount == 0)
         // Sheets still attached: it waits.
         #expect(await soon { clock.sleeperCount > 0 })
-        #expect(terminated == 0)
-        // A second Quit while waiting does nothing.
-        await quit.requestQuit()
-        #expect(terminated == 0)
-        // The sheets go away: it terminates, once.
+        #expect(terminated == 0 && answers.isEmpty)
+        // A second Quit meanwhile is answered at once and terminates nothing.
+        var second: [Bool] = []
+        await quit.requestQuit { second.append($0) }
+        #expect(second == [true] && terminated == 0)
+        // The sheets go away: it answers, then terminates, once.
         sheets.value = 0
         clock.advance(by: .milliseconds(20))
-        await task.value
+        #expect(await task.value)
+        #expect(answers == [true])
         #expect(terminated == 1)
         #expect(!quit.isQuitting)
     }
@@ -70,102 +78,163 @@ struct QuitCoordinatorTests {
         var terminated = 0
         let clock = ManualClock()
         let quit = QuitCoordinator(
-            attachedSheetCount: { 1 }, terminate: { terminated += 1 },
+            policy: idlePolicy(), attachedSheetCount: { 1 }, terminate: { terminated += 1 },
             clock: clock, timeout: .seconds(1), pollInterval: .milliseconds(100))
         let task = Task { await quit.requestQuit() }
         #expect(await advance(clock, by: .milliseconds(100), until: { terminated > 0 }))
-        await task.value
+        _ = await task.value
         #expect(terminated == 1)
         #expect(clock.now.offset == .seconds(1))
     }
 
-    @Test func terminatesAtOnceWithNothingShown() async {
+    @Test func terminatesAtOnceWithNothingShownAndCanQuitAgain() async {
         var terminated = 0
-        let quit = QuitCoordinator(attachedSheetCount: { 0 }, terminate: { terminated += 1 }, clock: ManualClock())
+        let quit = QuitCoordinator(
+            policy: idlePolicy(), attachedSheetCount: { 0 }, terminate: { terminated += 1 }, clock: ManualClock())
         await quit.requestQuit()
         #expect(terminated == 1)
-        // Termination was cancelled (Keep working): Quit works again.
+        // Termination was cancelled somewhere: Quit works again.
         await quit.requestQuit()
         #expect(terminated == 2)
     }
 
+    @Test func keepWorkingLeavesSheetsAloneAndAnswersFalse() async {
+        var dismissed = 0
+        var terminated = 0
+        var stopped = 0
+        var answers: [Bool] = []
+        let policy = TerminationPolicy(
+            busy: { [.cleanup] }, confirm: { _ in false }, stop: { stopped += 1 }, clock: ManualClock())
+        let quit = QuitCoordinator(policy: policy, attachedSheetCount: { 1 }, terminate: { terminated += 1 }, clock: ManualClock())
+        quit.register { dismissed += 1 }
+        #expect(await quit.requestQuit { answers.append($0) } == false)
+        #expect(answers == [false])
+        #expect(dismissed == 0 && quit.presentationCount == 1)
+        #expect(stopped == 0 && terminated == 0)
+    }
+
     @Test func unregisteredPresentationsAreNotDismissed() async {
         var dismissed = 0
-        let quit = QuitCoordinator(attachedSheetCount: { 0 }, terminate: {}, clock: ManualClock())
+        let quit = QuitCoordinator(policy: idlePolicy(), attachedSheetCount: { 0 }, terminate: {}, clock: ManualClock())
         let id = quit.register { dismissed += 1 }
         quit.unregister(id)
         await quit.requestQuit()
         #expect(dismissed == 0)
     }
+
+    @Test func aTerminationFromElsewhereWhileBusyGoesThroughTheQuestion() async {
+        let busy = Box<[BusyWork]>([.emptyTrash])
+        var asked = 0
+        var terminated = 0
+        let policy = TerminationPolicy(
+            busy: { busy.value }, confirm: { _ in asked += 1; return false }, stop: {}, clock: ManualClock())
+        let quit = QuitCoordinator(policy: policy, attachedSheetCount: { 0 }, terminate: { terminated += 1 }, clock: ManualClock())
+        #expect(!quit.shouldTerminate())
+        #expect(await soon { asked == 1 })
+        #expect(terminated == 0)
+        busy.value = []
+        #expect(quit.shouldTerminate())
+    }
 }
 
 @MainActor
 struct TerminationPolicyTests {
-    @Test func quitsNowWhenNothingIsBusy() {
+    @Test func readyAtOnceWhenNothingIsBusy() async {
         var asked = false
         var stopped = false
-        var replies: [Bool] = []
         let policy = TerminationPolicy(
-            busy: { [] }, confirm: { _ in asked = true; return true }, stop: { stopped = true },
-            reply: { replies.append($0) }, clock: ManualClock())
-        #expect(policy.shouldTerminate() == .now)
-        #expect(!asked && !stopped && replies.isEmpty)
+            busy: { [] }, confirm: { _ in asked = true; return true }, stop: { stopped = true }, clock: ManualClock())
+        #expect(await policy.prepare(.user))
+        #expect(await policy.prepare(.system))
+        #expect(!asked && !stopped)
     }
 
-    @Test func keepWorkingCancelsAndStopsNothing() {
+    @Test func keepWorkingStopsNothing() async {
         var stopped = false
         var asked: [BusyWork] = []
         let policy = TerminationPolicy(
-            busy: { [.cleanup] }, confirm: { asked = $0; return false }, stop: { stopped = true },
-            reply: { _ in }, clock: ManualClock())
-        #expect(policy.shouldTerminate() == .cancel)
+            busy: { [.cleanup] }, confirm: { asked = $0; return false }, stop: { stopped = true }, clock: ManualClock())
+        #expect(await policy.prepare(.user) == false)
         #expect(asked == [.cleanup])
         #expect(!stopped)
-        #expect(!policy.isWaiting)
     }
 
-    @Test func stopAndQuitRepliesOnceWhenTheWorkEnds() async {
+    @Test func aUserQuitAsksThenStopsAndWaitsForTheWorkToEnd() async {
         let busy = Box<[BusyWork]>([.cleanup, .emptyTrash])
+        var asked = 0
         var stopped = 0
-        var replies: [Bool] = []
+        var done = false
         let clock = ManualClock()
         let policy = TerminationPolicy(
-            busy: { busy.value }, confirm: { _ in true }, stop: { stopped += 1 },
-            reply: { replies.append($0) }, clock: clock, timeout: .seconds(5), pollInterval: .milliseconds(50))
-        #expect(policy.shouldTerminate() == .later)
-        #expect(stopped == 1)
-        #expect(policy.isWaiting)
-        // Asked again while stopping: no second question, no second reply.
-        #expect(policy.shouldTerminate() == .cancel)
-        #expect(stopped == 1)
+            busy: { busy.value }, confirm: { _ in asked += 1; return true }, stop: { stopped += 1 },
+            clock: clock, cap: .seconds(30), pollInterval: .milliseconds(50))
+        let task = Task { done = await policy.prepare(.user) }
         #expect(await soon { clock.sleeperCount > 0 })
-        #expect(replies.isEmpty)
+        #expect(asked == 1 && stopped == 1 && !done)
+        // Well past the old 5 seconds: a cleanup is waited for until its runner returns.
+        for _ in 0..<200 { clock.advance(by: .milliseconds(50)); await Task.yield() }
+        #expect(!done)
         busy.value = []
-        clock.advance(by: .milliseconds(50))
-        #expect(await soon { !replies.isEmpty })
-        #expect(replies == [true])
-        #expect(!policy.isWaiting)
-        try? await Task.sleep(for: .milliseconds(20))
-        #expect(replies == [true])
+        #expect(await advance(clock, by: .milliseconds(50), until: { done }))
+        await task.value
+        #expect(done)
     }
 
-    @Test func repliesAtTheTimeoutWhenTheWorkDoesNotEnd() async {
-        var replies: [Bool] = []
+    @Test func logoutRestartAndShutdownNeverAsk() async {
+        let busy = Box<[BusyWork]>([.uninstall])
+        var asked = 0
+        var stopped = 0
+        let clock = ManualClock()
+        let policy = TerminationPolicy(
+            busy: { busy.value }, confirm: { _ in asked += 1; return false }, stop: { stopped += 1 }, clock: clock)
+        var done = false
+        let task = Task { done = await policy.prepare(.system) }
+        #expect(await soon { stopped == 1 })
+        busy.value = []
+        #expect(await advance(clock, by: .milliseconds(50), until: { done }))
+        await task.value
+        #expect(asked == 0)
+    }
+
+    @Test func givesUpAtTheCapAsALastResort() async {
+        var done = false
         let clock = ManualClock()
         let policy = TerminationPolicy(
             busy: { [.restore] }, confirm: { _ in true }, stop: {},
-            reply: { replies.append($0) }, clock: clock, timeout: .seconds(5), pollInterval: .milliseconds(500))
-        #expect(policy.shouldTerminate() == .later)
-        #expect(await advance(clock, by: .milliseconds(500), until: { !replies.isEmpty }))
-        #expect(replies == [true])
-        #expect(clock.now.offset == .seconds(5))
+            clock: clock, cap: .seconds(30), pollInterval: .milliseconds(500))
+        let task = Task { done = await policy.prepare(.user) }
+        #expect(await advance(clock, by: .milliseconds(500), until: { done }))
+        await task.value
+        #expect(clock.now.offset == .seconds(30))
     }
 
-    @Test func theQuestionSaysWhatIsRunning() {
-        let text = TerminationPolicy.message(for: [.uninstall])
-        #expect(text.title == "Stop and quit?")
-        #expect(text.detail.hasPrefix("Dustling is uninstalling an app."))
-        for work in BusyWork.allCases { #expect(work.sentence.hasSuffix(".")) }
+    @Test func theQuestionIsHonestAboutEachJob() {
+        let cleanup = TerminationPolicy.question(for: [.cleanup, .restore])
+        #expect(cleanup.title == "Stop and quit?")
+        #expect(cleanup.quit == "Stop and quit")
+        #expect(cleanup.keep == "Keep working")
+        #expect(cleanup.detail.hasPrefix("Dustling is moving files to the Trash. It stops after the file it is on"))
+        let waited = TerminationPolicy.question(for: [.emptyTrash])
+        #expect(waited.title == "Quit when it's done?")
+        #expect(waited.quit == "Quit when done")
+        #expect(BusyWork.uninstall.sentence.contains("finishes that app"))
+        for work in BusyWork.allCases where work != .cleanup {
+            #expect(!work.stopsEarly)
+            #expect(work.sentence.contains("finishes"))
+        }
+    }
+}
+
+struct QuitReasonTests {
+    @Test(arguments: ["logo", "rlgo", "rrst", "rest", "rsdn", "shut"])
+    func logoutRestartAndShutdownAreSystemQuits(code: String) {
+        #expect(QuitReason(appleEventQuitReason: QuitReason.fourCharCode(code)) == .system)
+    }
+
+    @Test func noReasonOrAnotherIsAUserQuit() {
+        #expect(QuitReason(appleEventQuitReason: nil) == .user)
+        #expect(QuitReason(appleEventQuitReason: QuitReason.fourCharCode("quia")) == .user)
+        #expect(QuitReason.fourCharCode("logo") == 0x6C6F_676F)
     }
 }
 
@@ -189,15 +258,5 @@ struct MoveProgressThrottleTests {
         now.advance(.milliseconds(100))
         let batch = throttle.add(movedBytes: 0, category: nil)
         #expect(batch == .init(items: 501, movedBytes: 500, itemsByCategory: [.userLogs: 500]))
-        #expect(throttle.drain() == nil)
-    }
-
-    @Test func drainReturnsWhatIsStillCollected() {
-        let now = Now()
-        let throttle = MoveProgressThrottle(interval: .milliseconds(100), now: { now.instant })
-        _ = throttle.add(movedBytes: 1, category: nil)
-        _ = throttle.add(movedBytes: 2, category: nil)
-        #expect(throttle.drain() == .init(items: 1, movedBytes: 2, itemsByCategory: [:]))
-        #expect(throttle.drain() == nil)
     }
 }

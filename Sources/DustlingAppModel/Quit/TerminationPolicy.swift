@@ -1,5 +1,28 @@
 import Foundation
 
+/// Why Dustling is asked to quit.
+public enum QuitReason: Equatable, Sendable {
+    /// The Quit menu, ⌘Q, the Dock or AppleScript: asks before stopping work.
+    case user
+    /// Logout, restart or shutdown: never asks (that would hold up the Mac); stops the work and waits.
+    case system
+
+    /// The quit Apple Event's `kAEQuitReason` ('why?'): logout, restart and shutdown, with or without
+    /// their confirmation dialogs, are `.system`; no reason or any other is `.user`.
+    public init(appleEventQuitReason code: UInt32?) {
+        guard let code else { self = .user; return }
+        self = Self.systemCodes.contains(code) ? .system : .user
+    }
+
+    /// kAELogOut 'logo', kAEReallyLogOut 'rlgo', kAEShowRestartDialog 'rrst', kAERestart 'rest',
+    /// kAEShowShutdownDialog 'rsdn', kAEShutDown 'shut'.
+    static let systemCodes: Set<UInt32> = Set(["logo", "rlgo", "rrst", "rest", "rsdn", "shut"].map(fourCharCode))
+
+    static func fourCharCode(_ text: String) -> UInt32 {
+        text.utf8.reduce(0) { $0 << 8 | UInt32($1) }
+    }
+}
+
 /// Work that changes files and is running when the user quits.
 public enum BusyWork: String, CaseIterable, Sendable, Hashable {
     case cleanup
@@ -9,89 +32,83 @@ public enum BusyWork: String, CaseIterable, Sendable, Hashable {
     case restore
     case emptyTrash
 
-    /// One plain sentence saying what is running.
+    /// True when quitting stops it early. Otherwise Dustling waits for it to finish.
+    public var stopsEarly: Bool { self == .cleanup }
+
+    /// What is running and what quitting does to it, in one or two plain sentences.
     public var sentence: String {
         switch self {
-        case .cleanup: "Dustling is moving files to the Trash."
-        case .uninstall: "Dustling is uninstalling an app."
-        case .startupChange: "Dustling is changing a startup item."
-        case .retry: "Dustling is retrying items from the last cleanup."
-        case .restore: "Dustling is putting files back from the Trash."
-        case .emptyTrash: "Dustling is emptying the Trash."
+        case .cleanup:
+            "Dustling is moving files to the Trash. It stops after the file it is on, and History keeps what was moved."
+        case .uninstall:
+            "Dustling is uninstalling an app. It finishes that app first and leaves any others alone."
+        case .startupChange:
+            "Dustling is changing a startup item. It finishes that change first."
+        case .retry:
+            "Dustling is retrying items from the last cleanup. It finishes the retry first."
+        case .restore:
+            "Dustling is putting files back from the Trash. It finishes putting them back first."
+        case .emptyTrash:
+            "Dustling is emptying the Trash. It finishes emptying it first."
         }
     }
 }
 
-/// The app delegate's `applicationShouldTerminate`: quits at once when nothing that changes files is
-/// running; otherwise asks once ("Stop and quit?"), stops the work and answers later, when the work
-/// has ended or after `timeout`, whichever comes first. It answers exactly once per quit.
+/// What happens to work that changes files when Dustling quits. Nothing busy: quit at once.
+/// Otherwise a user quit asks once (logout, restart and shutdown never ask); then the work is
+/// stopped where it can stop (a cleanup ends after its current item, an uninstall after its
+/// current app) and the rest is waited for, at most `cap` as a last resort.
 ///
-/// Every run is journaled after each item, so a run cut off by the timeout is still recorded up to
-/// its last item and finished off at the next launch.
+/// Every run is journaled after each item, so even a run cut off by the cap is recorded up to its
+/// last item and finished off at the next launch.
 @MainActor
 public final class TerminationPolicy {
-    public enum Decision: Equatable, Sendable {
-        /// Nothing is busy: quit now.
-        case now
-        /// The user chose to keep working.
-        case cancel
-        /// Work is stopping; `reply(true)` follows.
-        case later
-    }
-
     private let busy: @MainActor () -> [BusyWork]
     private let confirm: @MainActor ([BusyWork]) -> Bool
     private let stop: @MainActor () -> Void
-    private let reply: @MainActor (Bool) -> Void
     private let clock: any Clock<Duration>
-    private let timeout: Duration
+    private let cap: Duration
     private let pollInterval: Duration
-    /// True between answering `.later` and calling `reply`.
-    public private(set) var isWaiting = false
 
     public init(
         busy: @escaping @MainActor () -> [BusyWork],
         confirm: @escaping @MainActor ([BusyWork]) -> Bool,
         stop: @escaping @MainActor () -> Void,
-        reply: @escaping @MainActor (Bool) -> Void,
         clock: some Clock<Duration> = ContinuousClock(),
-        timeout: Duration = .seconds(5),
+        cap: Duration = .seconds(30),
         pollInterval: Duration = .milliseconds(50)
     ) {
         self.busy = busy
         self.confirm = confirm
         self.stop = stop
-        self.reply = reply
         self.clock = clock
-        self.timeout = timeout
+        self.cap = cap
         self.pollInterval = pollInterval
     }
 
-    /// The question's text: "Stop and quit?" and what is running.
-    public static func message(for work: [BusyWork]) -> (title: String, detail: String) {
-        let running = work.map(\.sentence).joined(separator: " ")
-        return ("Stop and quit?", running + " If you quit now, it stops after the current item and History keeps what was done.")
+    public var hasBusyWork: Bool { !busy().isEmpty }
+
+    /// The question's text and buttons for `work`.
+    public static func question(for work: [BusyWork]) -> (title: String, detail: String, quit: String, keep: String) {
+        let stops = work.contains { $0.stopsEarly }
+        return (
+            stops ? "Stop and quit?" : "Quit when it's done?",
+            work.map(\.sentence).joined(separator: " "),
+            stops ? "Stop and quit" : "Quit when done",
+            "Keep working")
     }
 
-    public func shouldTerminate() -> Decision {
-        // Already stopping for an earlier quit: that one's reply ends the app.
-        guard !isWaiting else { return .cancel }
+    /// Readies the app to quit. False when the user chose to keep working (nothing was stopped).
+    public func prepare(_ reason: QuitReason) async -> Bool {
         let work = busy()
-        guard !work.isEmpty else { return .now }
-        guard confirm(work) else { return .cancel }
+        guard !work.isEmpty else { return true }
+        if reason == .user, !confirm(work) { return false }
         stop()
-        isWaiting = true
-        Task { await waitThenReply() }
-        return .later
-    }
-
-    private func waitThenReply() async {
         var waited = Duration.zero
-        while !busy().isEmpty && waited < timeout {
+        while hasBusyWork && waited < cap {
             do { try await clock.sleep(for: pollInterval) } catch { break }
             waited += pollInterval
         }
-        isWaiting = false
-        reply(true)
+        return true
     }
 }

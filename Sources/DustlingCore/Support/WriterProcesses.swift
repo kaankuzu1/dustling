@@ -13,23 +13,32 @@ public enum WriterProcesses {
         runningNames(excluding: pid).contains { names.contains($0) }
     }
 
-    /// The names of every process this user can see, except `excluding`.
+    /// The names (`p_comm`, at most 16 characters) of every process on the system except
+    /// `excluding`, from `sysctl` `KERN_PROC_ALL`, which lists all processes, not only this user's.
     static func runningNames(excluding pid: pid_t) -> [String] {
-        let capacity = proc_listallpids(nil, 0)
-        guard capacity > 0 else { return [] }
-        // Room for processes started between the two calls.
-        var pids = [pid_t](repeating: 0, count: Int(capacity) + 64)
-        let count = pids.withUnsafeMutableBytes { buffer in
-            proc_listallpids(buffer.baseAddress, Int32(buffer.count))
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        for _ in 0..<3 {
+            var size = 0
+            guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0, size > 0 else { return [] }
+            // Room for processes started between the two calls.
+            size += size / 8
+            var procs = [kinfo_proc](repeating: kinfo_proc(), count: size / MemoryLayout<kinfo_proc>.stride)
+            let result = procs.withUnsafeMutableBytes { buffer in
+                sysctl(&mib, UInt32(mib.count), buffer.baseAddress, &size, nil, 0)
+            }
+            if result != 0 {
+                if errno == ENOMEM { continue }
+                return []
+            }
+            let count = size / MemoryLayout<kinfo_proc>.stride
+            return procs.prefix(count).compactMap { proc -> String? in
+                guard proc.kp_proc.p_pid != pid else { return nil }
+                return withUnsafeBytes(of: proc.kp_proc.p_comm) { raw in
+                    let bytes = raw.prefix { $0 != 0 }
+                    return bytes.isEmpty ? nil : String(decoding: bytes, as: UTF8.self)
+                }
+            }
         }
-        guard count > 0 else { return [] }
-        var result: [String] = []
-        var name = [CChar](repeating: 0, count: Int(MAXCOMLEN) * 2 + 1)
-        for other in pids.prefix(Int(count)) where other > 0 && other != pid {
-            let length = proc_name(other, &name, UInt32(name.count))
-            guard length > 0 else { continue }
-            result.append(String(decoding: name.prefix(Int(length)).map { UInt8(bitPattern: $0) }, as: UTF8.self))
-        }
-        return result
+        return []
     }
 }

@@ -37,10 +37,9 @@ final class AppModels {
     let settings: AppSettings
     /// "Retry N items" for the last cleanup (health popover and Diagnostics).
     let retry: LastRunRetry
-    /// Quit (menu, ⌘Q, Dock, logout, AppleScript): dismisses every sheet and alert, then terminates.
+    /// Quit (menu, ⌘Q, Dock, logout, AppleScript): asks before stopping work that changes files and
+    /// waits for it, dismisses every sheet and alert, then terminates.
     @ObservationIgnored let quit: QuitCoordinator
-    /// `applicationShouldTerminate`: asks before stopping work that changes files, then waits for it.
-    @ObservationIgnored let termination: TerminationPolicy
     /// Remembers that Full Disk Access was on, so losing it blocks a scan instead of shrinking it.
     @ObservationIgnored let accessMemory = FullDiskAccessMemory()
     /// The blocker sheet over the main window (SCREENS-final §8), only for cases that stop a screen.
@@ -212,13 +211,12 @@ final class AppModels {
             })
         updateCheck = UpdateSizeCheck(commands: commands)
         quit = QuitCoordinator(
+            policy: TerminationPolicy(
+                busy: { owner.models?.busyWork ?? [] },
+                confirm: { AppModels.confirmQuit($0) },
+                stop: { owner.models?.stopWorkForQuit() }),
             attachedSheetCount: { NSApp.windows.filter { $0.attachedSheet != nil }.count },
             terminate: { NSApp.terminate(nil) })
-        termination = TerminationPolicy(
-            busy: { owner.models?.busyWork ?? [] },
-            confirm: { AppModels.confirmStopAndQuit($0) },
-            stop: { owner.models?.stopWorkForQuit() },
-            reply: { NSApp.reply(toApplicationShouldTerminate: $0) })
         owner.models = self
         // Put back waits while another tool works, and a run still marked in progress reads
         // "Still running" then (otherwise "Interrupted").
@@ -670,15 +668,23 @@ final class AppModels {
         health.stopPolling()
     }
 
-    /// "Stop and quit?" with what is running. True for "Stop and quit".
-    private static func confirmStopAndQuit(_ work: [BusyWork]) -> Bool {
-        let text = TerminationPolicy.message(for: work)
+    /// "Stop and quit?" (or "Quit when it's done?") with what is running and what quitting does to
+    /// it. "Keep working" is the default and answers Return and Escape. True to quit.
+    private static func confirmQuit(_ work: [BusyWork]) -> Bool {
+        let text = TerminationPolicy.question(for: work)
         let alert = NSAlert()
         alert.messageText = text.title
         alert.informativeText = text.detail
-        alert.addButton(withTitle: "Stop and quit")
-        alert.addButton(withTitle: "Keep working")
-        return alert.runModal() == .alertFirstButtonReturn
+        alert.addButton(withTitle: text.keep)
+        alert.addButton(withTitle: text.quit).keyEquivalent = ""
+        // NSAlert gives Escape only to a button titled Cancel; send it to "Keep working" too.
+        let escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53, event.window === alert.window else { return event }
+            NSApp.stopModal(withCode: .alertFirstButtonReturn)
+            return nil
+        }
+        defer { escape.map(NSEvent.removeMonitor) }
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     /// The newest run in the history journal, for the last-run health light. An unreadable journal
