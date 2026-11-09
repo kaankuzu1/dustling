@@ -10,9 +10,19 @@ public enum Bytes {
     }
 
     public static func format(_ count: Int64) -> String {
+        format(count, maxDecimals: 2)
+    }
+
+    /// At most one decimal ("30.5 GB"), for tight places such as the sidebar's badges.
+    public static func short(_ count: UInt64) -> String {
+        format(Int64(clamping: count), maxDecimals: 1)
+    }
+
+    private static func format(_ count: Int64, maxDecimals: Int) -> String {
         let value = Double(max(0, count))
         if value < 1000 { return count == 1 ? "1 byte" : "\(max(0, count)) bytes" }
         let units: [(name: String, decimals: Int)] = [("KB", 0), ("MB", 1), ("GB", 2), ("TB", 2), ("PB", 2)]
+            .map { (name: String, decimals: Int) in (name, min(decimals, maxDecimals)) }
         var scaled = value / 1000
         var index = 0
         while index < units.count - 1 {

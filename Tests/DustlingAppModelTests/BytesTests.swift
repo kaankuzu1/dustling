@@ -25,6 +25,14 @@ struct BytesTests {
         #expect(Bytes.format(UInt64(1_000_000)) == "1 MB")
     }
 
+    @Test func shortKeepsOneDecimal() {
+        #expect(Bytes.short(30_480_000_000) == "30.5 GB")
+        #expect(Bytes.short(2_000_000_000) == "2 GB")
+        #expect(Bytes.short(1_500_000) == "1.5 MB")
+        #expect(Bytes.short(999_960_000) == "1 GB")
+        #expect(Bytes.short(450_000_000) == "450 MB")
+    }
+
     @Test func hugeValuesDoNotCrash() {
         #expect(Bytes.format(UInt64.max).hasSuffix("PB"))
     }

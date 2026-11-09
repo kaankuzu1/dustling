@@ -25,6 +25,10 @@ struct Banner<Buttons: View>: View {
     var leading: Leading = .none
     @ViewBuilder var buttons: () -> Buttons
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Fades and settles in when it appears (0.25 s), so a new problem doesn't snap in. Still under Reduce Motion.
+    @State private var appeared = false
+
     private typealias Palette = DustlingTheme.Palette
 
     private var toneColor: Color {
@@ -75,6 +79,13 @@ struct Banner<Buttons: View>: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous)
                         .strokeBorder(toneColor.opacity(0.3), lineWidth: 1))
+        }
+        .opacity(appeared || reduceMotion ? 1 : 0)
+        .offset(y: appeared || reduceMotion ? 0 : -4)
+        .onAppear {
+            withAnimation(DustlingTheme.Motion.animation(DustlingTheme.Motion.reveal, reduceMotion: reduceMotion)) {
+                appeared = true
+            }
         }
     }
 }

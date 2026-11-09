@@ -163,6 +163,60 @@ struct UninstallerTests {
         }
     }
 
+    @Test func vagueBootoutErrorForAnAgentThatIsNotLoadedIsNotAFailure() async throws {
+        // macOS 26 and later: booting out a plist that isn't loaded fails with "5: Input/output error".
+        let sandbox = try TestSandbox()
+        let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")
+        let plist = try sandbox.file("home/Library/LaunchAgents/com.example.foo.plist")
+        try labelledPlist("com.example.foo").write(to: plist)
+        let uid = sandbox.environment.userID
+        let fake = FakeCommandRunner()
+        fake.setResult(CommandResult(status: 5, stdout: "", stderr: "Boot-out failed: 5: Input/output error"),
+                       for: "/bin/launchctl", ["bootout", "gui/\(uid)", path(plist)])
+        fake.setResult(CommandResult(status: 113, stdout: "", stderr: "Could not find service"),
+                       for: "/bin/launchctl", ["print", "gui/\(uid)/com.example.foo"])
+        let record = try await makeUninstaller(sandbox, commands: fake)
+            .uninstall(installedApp(appURL), leftovers: [leftover(plist, kind: .launchAgent)]) { _, _ in }
+        #expect(record.entries.allSatisfy { if case .failed = $0.outcome { false } else { true } })
+        #expect(!FileManager.default.fileExists(atPath: plist.path))
+    }
+
+    @Test func vagueBootoutErrorForALoadedAgentIsStillAFailure() async throws {
+        let sandbox = try TestSandbox()
+        let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")
+        let plist = try sandbox.file("home/Library/LaunchAgents/com.example.foo.plist")
+        try labelledPlist("com.example.foo").write(to: plist)
+        let uid = sandbox.environment.userID
+        let fake = FakeCommandRunner()
+        fake.setResult(CommandResult(status: 5, stdout: "", stderr: "Boot-out failed: 5: Input/output error"),
+                       for: "/bin/launchctl", ["bootout", "gui/\(uid)", path(plist)])
+        fake.setResult(CommandResult(status: 0, stdout: "state = running", stderr: ""),
+                       for: "/bin/launchctl", ["print", "gui/\(uid)/com.example.foo"])
+        let record = try await makeUninstaller(sandbox, commands: fake)
+            .uninstall(installedApp(appURL), leftovers: [leftover(plist, kind: .launchAgent)]) { _, _ in }
+        #expect(record.entries.last?.outcome == .failed(reason: "could not unload: Boot-out failed: 5: Input/output error"))
+    }
+
+    @Test func otherPrintErrorsKeepTheBootoutFailure() async throws {
+        let sandbox = try TestSandbox()
+        let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")
+        let plist = try sandbox.file("home/Library/LaunchAgents/com.example.foo.plist")
+        try labelledPlist("com.example.foo").write(to: plist)
+        let uid = sandbox.environment.userID
+        let fake = FakeCommandRunner()
+        fake.setResult(CommandResult(status: 5, stdout: "", stderr: "Boot-out failed: 5: Input/output error"),
+                       for: "/bin/launchctl", ["bootout", "gui/\(uid)", path(plist)])
+        fake.setResult(CommandResult(status: 64, stdout: "", stderr: "Bad request."),
+                       for: "/bin/launchctl", ["print", "gui/\(uid)/com.example.foo"])
+        let record = try await makeUninstaller(sandbox, commands: fake)
+            .uninstall(installedApp(appURL), leftovers: [leftover(plist, kind: .launchAgent)]) { _, _ in }
+        #expect(record.entries.last?.outcome == .failed(reason: "could not unload: Boot-out failed: 5: Input/output error"))
+    }
+
+    private func labelledPlist(_ label: String) throws -> Data {
+        try PropertyListSerialization.data(fromPropertyList: ["Label": label], format: .xml, options: 0)
+    }
+
     @Test func throwingBootoutIsRecorded() async throws {
         let sandbox = try TestSandbox()
         let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")

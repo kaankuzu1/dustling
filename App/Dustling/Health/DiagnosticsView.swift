@@ -50,7 +50,7 @@ struct DiagnosticsView: View {
                     }
                 }
                 .padding(DustlingTheme.Metrics.gutter)
-                .frame(maxWidth: 820, alignment: .leading)
+                // Full width like every other screen, so the rows end under the toolbar's button.
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }

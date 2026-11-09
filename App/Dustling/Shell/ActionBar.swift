@@ -63,4 +63,9 @@ extension View {
         buttonStyle(.borderedProminent)
             .tint(DustlingTheme.Palette.accentFill)
     }
+
+    /// `dustlingPrimary()` only while `isPrimary`, for a button that stops being the next step.
+    @ViewBuilder func dustlingPrimary(if isPrimary: Bool) -> some View {
+        if isPrimary { dustlingPrimary() } else { self }
+    }
 }

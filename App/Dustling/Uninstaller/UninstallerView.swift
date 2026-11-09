@@ -147,12 +147,18 @@ struct UninstallerView: View {
     private func appList(_ shown: [AppRow]) -> some View {
         let model = models.uninstaller
         let progress = model.progress
+        // Apps an uninstall removed leave the list; while it runs and on its summary they still show
+        // their spinner or check.
+        let removed = progress?.apps.filter { entry in !shown.contains { $0.id == entry.id } } ?? []
         return ScrollViewReader { proxy in ScrollView {
-            LazyVStack(spacing: 0) {
-                if model.apps.isEmpty && model.isLoading {
-                    let rows = SkeletonMetrics.rowCount(height: listHeight - 16, rowHeight: AppListRow.minHeight)
+            LoadingSwap(isLoading: model.apps.isEmpty && model.isLoading) {
+                let rows = SkeletonMetrics.rowCount(height: listHeight - 16, rowHeight: AppListRow.minHeight)
+                VStack(spacing: 0) {
                     ForEach(0..<rows, id: \.self) { AppListRow.placeholder($0) }
-                } else if shown.isEmpty {
+                }
+            } content: {
+            LazyVStack(spacing: 0) {
+                if shown.isEmpty && removed.isEmpty {
                     Text(query.isEmpty ? "No apps found" : "No apps match \u{201C}\(query)\u{201D}")
                         .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
                         .foregroundStyle(Palette.muted)
@@ -169,16 +175,16 @@ struct UninstallerView: View {
                         },
                         onSelect: { current = row.id })
                 }
-                // Removed apps leave the list; while removing they still show their spinner or check.
-                if let progress {
-                    ForEach(progress.apps.filter { entry in !shown.contains { $0.id == entry.id } }) { entry in
-                        AppListRow(
-                            row: AppRow(app: entry.app, isCounting: false, leftoverCount: entry.items.count - 1,
-                                        totalBytes: entry.items.reduce(0) { $0 + $1.bytes }, label: nil, warning: nil),
-                            isCurrent: false, isSelected: true, progress: entry.state, isLocked: true,
-                            onToggle: { _ in }, onSelect: {})
-                    }
+                // Their own IDs: the lazy stack otherwise kept showing the row the app had in the list
+                // above (same URL), stuck on its spinner after the app finished.
+                ForEach(removed, id: \.removedRowID) { entry in
+                    AppListRow(
+                        row: AppRow(app: entry.app, isCounting: false, leftoverCount: entry.items.count - 1,
+                                    totalBytes: entry.items.reduce(0) { $0 + $1.bytes }, label: nil, warning: nil),
+                        isCurrent: false, isSelected: true, progress: entry.state, isLocked: true,
+                        onToggle: { _ in }, onSelect: {})
                 }
+            }
             }
             .padding(8)
         }
@@ -205,13 +211,16 @@ struct UninstallerView: View {
                     records: result.records, stopped: result.stopped, home: models.homeDirectory))
             }
         case .list, .limited:
-            if let id = currentID(shown), let row = shown.first(where: { $0.id == id }) {
-                AppDetailPane(row: row)
-            } else if model.isLoading {
+            let row = currentID(shown).flatMap { id in shown.first { $0.id == id } }
+            LoadingSwap(isLoading: row == nil && model.isLoading) {
                 // The detail pane itself, for a placeholder app, drawn as its skeleton.
                 AppDetailPane(row: .placeholder(0), isPlaceholder: true)
-            } else {
-                PickAnApp(text: "Pick an app")
+            } content: {
+                if let row {
+                    AppDetailPane(row: row)
+                } else {
+                    PickAnApp(text: "Pick an app")
+                }
             }
         }
     }
@@ -257,18 +266,30 @@ struct UninstallerView: View {
         case .done:
             // What is in the Trash now: Put back on an app takes its share out.
             let inTrash = model.result.map { model.bytesStillInTrash($0.records) } ?? 0
+            // Once everything was put back, nothing of this uninstall is in the Trash: Done is next.
+            let allBack = inTrash == 0 && !model.restoreOutcomes.isEmpty
             ActionBar(
-                title: "\(Bytes.format(inTrash)) in the Trash",
-                caption: "Available space grows when you empty the Trash."
+                title: allBack ? "Everything is back where it was" : "\(Bytes.format(inTrash)) in the Trash",
+                caption: allBack ? "Done takes you back to the list." : "Available space grows when you empty the Trash."
             ) {
-                Button("Done") { model.dismissResult() }
-                    .disabled(model.isRestoring)
-                Button("Empty Trash…") { confirmingEmptyTrash = true }
-                    .dustlingPrimary()
-                    .disabled(!models.trash.canEmpty || models.trash.isEmptying || model.isRestoring || isFixture)
-                    .help(models.trash.disabledReason ?? "Shows what is in the Trash and asks before deleting it")
+                if allBack {
+                    emptyTrashButton(model)
+                    Button("Done") { model.dismissResult() }
+                        .dustlingPrimary()
+                        .disabled(model.isRestoring)
+                } else {
+                    Button("Done") { model.dismissResult() }
+                        .disabled(model.isRestoring)
+                    emptyTrashButton(model).dustlingPrimary()
+                }
             }
         }
+    }
+
+    private func emptyTrashButton(_ model: UninstallerModel) -> some View {
+        Button("Empty Trash…") { confirmingEmptyTrash = true }
+            .disabled(!models.trash.canEmpty || models.trash.isEmptying || model.isRestoring || isFixture)
+            .help(models.trash.disabledReason ?? "Shows what is in the Trash and asks before deleting it")
     }
 
     @ViewBuilder private var removingBar: some View {
@@ -462,6 +483,11 @@ private struct PickAnApp: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
+
+private extension UninstallProgress.AppEntry {
+    /// A removed app's row ID, distinct from its list row's (the app URL).
+    var removedRowID: String { "removed:" + id.absoluteString }
 }
 
 /// The action bar's 6 pt progress track (`.w-prog`): `panel` track, accent fill.

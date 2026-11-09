@@ -1,4 +1,5 @@
 import AppKit
+import DustlingAppModel
 import SwiftUI
 
 /// The main window's destinations (SCREENS-final, Shell). The sidebar lists `sidebarCases`; the
@@ -106,6 +107,7 @@ struct AppIconTile: View {
 /// navigation work, drawn with the mockup's rows instead of the system highlight.
 private struct DestinationList: View {
     @Binding var selection: Destination
+    @Environment(AppModels.self) private var models
     /// The rows draw their own selection, so the table's focus ring is gone too: while the list has
     /// keyboard focus, the selected row gets the system focus ring instead.
     @FocusState private var isFocused: Bool
@@ -118,6 +120,7 @@ private struct DestinationList: View {
             ForEach(Destination.sidebarCases) { destination in
                 SidebarRow(
                     title: destination.title,
+                    badge: badge(for: destination),
                     isSelected: selection == destination,
                     showsFocusRing: isFocused && selection == destination,
                     icon: { destination.icon(color: DustlingTheme.Palette.sidebarIcon) })
@@ -136,6 +139,24 @@ private struct DestinationList: View {
         .environment(\.defaultMinListRowHeight, 34)
         .focused($isFocused)
         .accessibilityLabel("Sections")
+    }
+
+    /// The approved shell's badges: selected junk, the apps the Uninstaller lists, startup items to review.
+    private func badge(for destination: Destination) -> SidebarBadges.Badge? {
+        switch destination {
+        case .junkScan:
+            return SidebarBadges.junk(models.homeFigures)
+        case .uninstaller:
+            // Without Full Disk Access the uninstaller doesn't look for leftovers, so it has no count.
+            guard models.health.fullDiskAccess == .granted, models.uninstallerCounted, !models.uninstaller.isLoading
+            else { return nil }
+            return SidebarBadges.uninstaller(models.uninstaller.apps)
+        case .startupItems:
+            guard models.startupLoaded, !models.startup.isLoading else { return nil }
+            return SidebarBadges.startup(orphanCount: models.startup.orphanBanner?.items.count ?? 0)
+        case .home, .history, .diagnostics:
+            return nil
+        }
     }
 }
 
@@ -161,7 +182,7 @@ private struct PlainTableStyle: NSViewRepresentable {
 /// One 32 pt sidebar row: pixel icon, label, optional badge. Selection and hover fills follow the mockup.
 struct SidebarRow<Icon: View>: View {
     let title: String
-    var badge: String?
+    var badge: SidebarBadges.Badge?
     var isSelected = false
     /// The keyboard focus ring around the row (the selected row while the list has focus).
     var showsFocusRing = false
@@ -181,10 +202,17 @@ struct SidebarRow<Icon: View>: View {
                 .truncationMode(.tail)
             Spacer(minLength: 4)
             if let badge {
-                Text(badge)
-                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 11.5))
-                    .foregroundStyle(Palette.sidebarMuted)
+                // `.w-badge`: muted, or warning and semibold when it asks for a look. On the selected
+                // row a muted badge takes the row's ink at 80%.
+                Text(badge.text)
+                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 11.5)
+                        .weight(badge.needsAttention ? .semibold : .regular))
+                    .foregroundStyle(badgeColor(badge))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .transition(.opacity)
             }
         }
         .padding(.horizontal, 9)
@@ -203,6 +231,12 @@ struct SidebarRow<Icon: View>: View {
         }
         .onHover { isHovered = $0 }
         .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.hover, reduceMotion: reduceMotion), value: isHovered)
+        .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.toggle, reduceMotion: reduceMotion), value: badge)
         .accessibilityElement(children: .combine)
+    }
+
+    private func badgeColor(_ badge: SidebarBadges.Badge) -> Color {
+        if badge.needsAttention { return Palette.warning }
+        return isSelected ? SidebarTokens.selectedInk.opacity(0.8) : Palette.sidebarMuted
     }
 }

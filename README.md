@@ -188,7 +188,7 @@ Logs are written to `~/Library/Logs/Dustling/` and run history to `~/Library/App
 | Category | ID | Default |
 | --- | --- | --- |
 | Browser caches (Safari, Chrome, Firefox, Edge, Brave, Arc), caches only, never history, cookies or passwords | `browserCaches` | picked |
-| Xcode derived data and simulator caches | `xcodeJunk` | picked |
+| Xcode build data (DerivedData and simulator caches) | `xcodeJunk` | picked |
 | Package manager caches (Homebrew, npm, pip, CocoaPods, Yarn) | `packageManagerCaches` | picked |
 | App caches, including sandboxed apps' caches | `userCaches` | picked |
 | App logs | `userLogs` | picked |

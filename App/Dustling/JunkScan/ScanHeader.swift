@@ -23,12 +23,21 @@ struct ScanHeader: View {
                         .foregroundStyle(Palette.ink)
                         .monospacedDigit()
                         .contentTransition(reduceMotion ? .identity : .numericText())
-                    Text(progress.map { JunkScreen.scanLine($0, home: models.homeDirectory) } ?? "Waiting to start")
-                        .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
-                        .foregroundStyle(Palette.muted)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .monospacedDigit()
+                    // Only the path shortens; "5 of 9 places done" always shows in full.
+                    HStack(spacing: 4) {
+                        Text(progress.map { JunkScreen.scanPathLine($0, home: models.homeDirectory) } ?? "Waiting to start")
+                            .truncationMode(.middle)
+                        if let progress {
+                            Text(JunkScreen.scanCountLine(progress))
+                                .fixedSize()
+                                .contentTransition(reduceMotion ? .identity : .numericText())
+                        }
+                    }
+                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
+                    .foregroundStyle(Palette.muted)
+                    .lineLimit(1)
+                    .monospacedDigit()
+                    .accessibilityElement(children: .combine)
                 }
                 Spacer(minLength: 12)
                 if progress != nil {

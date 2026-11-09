@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- The sidebar shows what's waiting next to each tool: the junk a clean would move, how many apps the Uninstaller lists, and startup items to review.
+- When a junk scan finds nothing to move, it says "All clean" with a sleepy Mote instead of a row of empty tiles and a 0 bytes total, and so does the Junk scan card on Home. Places that hold nothing say "Nothing to clean here right now", and the summary of a cleanup leaves them out.
+- Loading placeholders fade into the content that replaces them, and the junk scan fades between scanning, results and the summary. Problem banners fade in instead of snapping into place. With Reduce Motion on, everything appears at once as before.
+- "Xcode derived data and simulator caches" is now called "Xcode build data", so its name fits on its tile.
+- While scanning, "5 of 9 places done" always shows in full; only the path being checked is shortened.
+- After Put everything back, the junk scan's tiles say their items were put back and Scan again becomes the main button. An uninstall that was put back says "Everything was put back", and Done becomes the main button.
+- "Check update size" on Home and other inline links look like links.
+- The Dustling health page uses the full width of the window, like every other screen.
+- Clearer wording for purgeable space on Home and for putting back a single item in History.
+
+### Fixed
+
+- Uninstalling an app whose launch agents weren't running reported each of them as "failed: could not unload", and turned the last-run light amber, although the files were moved. On macOS 26 and later launchctl gives a vague error for an agent that isn't loaded; Dustling now checks whether it's loaded before calling it a failure. Removing a startup item that was turned off no longer reports a failure either.
+- After an uninstall, the app's row in the list could keep spinning instead of showing its check.
+
 ## [0.1.1] - 2026-11-09
 
 A polish release: a proper install window, a Quit that always works, and fixes from a full pass over every screen.

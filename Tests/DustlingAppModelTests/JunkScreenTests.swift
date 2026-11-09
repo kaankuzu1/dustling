@@ -55,6 +55,36 @@ struct JunkScreenTilesTests {
         #expect(tiles[0].note == "3 items, rebuilt when needed")
     }
 
+    @Test func emptyPlacesSayNothingIsThereAndTheScreenIsAllClean() {
+        let empty = JunkScreen.tiles(input(tiles: [
+            tile(.userCaches, 0, items: 0), tile(.userLogs, 0, items: 0), tile(.xcodeJunk, 0, items: 0),
+            tile(.systemCachesAndLogs, quarter, selected: false, needsHelper: true),
+            tile(.iosBackups, 0, selected: false, selection: .review, items: 0),
+            tile(.mailDownloads, 0, selected: false, selection: .review, items: 0),
+        ]))
+        #expect(empty[0].note == JunkScreen.nothingFoundNote)
+        #expect(empty[5].note == JunkScreen.nothingFoundNote)
+        // The backups tile keeps its own note.
+        #expect(empty[4].note == "Your data, never selected for you")
+        #expect(JunkScreen.isAllClean(empty))
+
+        let some = JunkScreen.tiles(input(tiles: [tile(.userCaches, 0, items: 0), tile(.userLogs, quarter)]))
+        #expect(!JunkScreen.isAllClean(some))
+        #expect(!JunkScreen.isAllClean([]))
+        // Everything left out in Review files is still there: not "All clean".
+        var leftOut = CategoryTileModel(
+            id: .userCaches, title: "App caches", note: nil, bytes: quarter, itemCount: 2, selection: .preselected,
+            isSelected: true, stopped: false, issues: [], inUseCount: 0, needsHelper: false)
+        leftOut.excludedBytes = quarter
+        leftOut.excludedCount = 2
+        #expect(!JunkScreen.isAllClean(JunkScreen.tiles(input(tiles: [leftOut]))))
+        // A stopped or locked place may hold something: never "All clean".
+        let stopped = JunkScreen.tiles(input(tiles: [tile(.userCaches, 0, stopped: true, items: 0)]))
+        #expect(!JunkScreen.isAllClean(stopped))
+        #expect(JunkScreen.allCleanCaption(places: 11) == "Dustling checked 11 places and found nothing to move to the Trash.")
+        #expect(JunkScreen.allCleanCaption(places: 1) == "Dustling checked 1 place and found nothing to move to the Trash.")
+    }
+
     @Test func lockedPlacesAreLockedTilesNeverZeroBytes() {
         let places = [
             Place(id: .userCaches, access: .readable), Place(id: .xcodeJunk, access: .locked),
@@ -189,6 +219,26 @@ struct JunkScreenTilesTests {
         #expect(tiles[0].bytes == quarter / 2)
         #expect(tiles[0].note == "1 item in the Trash, 1 skipped, 1 needs the cleanup helper")
         #expect(tiles[0].cells == MiniMosaic(count: 1, kind: .inTrash))
+
+        // A ticked place that held nothing isn't listed as cleaned.
+        let empty = JunkScreen.tiles(input(
+            phase: .done, tiles: [tile(.userCaches, quarter), tile(.userLogs, 0, items: 0)],
+            outcomes: [.userCaches: outcome]))
+        #expect(empty.map(\.id) == [.userCaches])
+    }
+
+    @Test func putBackTilesSaySoAndLeaveTheTrash() {
+        let all = CategoryOutcome(movedBytes: quarter, movedCount: 3, restoredCount: 3)
+        let some = CategoryOutcome(movedBytes: quarter, movedCount: 3, skippedCount: 1, restoredCount: 2)
+        let tiles = JunkScreen.tiles(input(
+            phase: .done, tiles: [tile(.userCaches, quarter), tile(.userLogs, quarter)],
+            outcomes: [.userCaches: all, .userLogs: some]))
+        #expect(tiles[0].status == .putBack)
+        #expect(tiles[0].note == "3 items put back")
+        #expect(tiles[0].cells.kind == .selected)
+        #expect(tiles[1].status == .cleaned)
+        #expect(tiles[1].note == "2 put back, 1 still in the Trash, 1 skipped")
+        #expect(tiles[1].cells.kind == .inTrash)
     }
 
     @Test func miniMosaicIsOneCellPerQuarterCappedAt60() {
@@ -226,6 +276,8 @@ struct JunkScreenTextTests {
         #expect(JunkScreen.scanLine(progress, home: home) == "Checking ~/Library/Caches/com.spotify.client. 5 of 9 places done")
         let one = ScanProgress(currentPath: home, bytesFound: 0, categoriesDone: 0, categoriesTotal: 1)
         #expect(JunkScreen.scanLine(one, home: home) == "Checking ~. 0 of 1 place done")
+        #expect(JunkScreen.scanPathLine(progress, home: home) == "Checking ~/Library/Caches/com.spotify.client.")
+        #expect(JunkScreen.scanCountLine(progress) == "5 of 9 places done")
     }
 }
 

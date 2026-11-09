@@ -160,22 +160,45 @@ struct UninstallSummaryView: View {
 
     private typealias Palette = DustlingTheme.Palette
 
+    /// Every app that moved something was put back, in full: the header says so instead of a total.
+    private var everythingPutBack: Bool {
+        let moved = summary.apps.filter { $0.movedBytes > 0 }
+        guard !moved.isEmpty else { return false }
+        return moved.allSatisfy { line in
+            guard let outcomes = models.uninstaller.restoreOutcomes[line.record.id], !outcomes.isEmpty else { return false }
+            return outcomes.allSatisfy { if case .restored = $0 { true } else { false } }
+        }
+    }
+
+    private var putBackLine: String {
+        let moved = summary.apps.filter { $0.movedBytes > 0 }
+        if moved.count == 1, let line = moved.first { return "\(line.name) and its files are back where they were." }
+        return "The apps and their files are back where they were."
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .center, spacing: 14) {
-                    MoteView(.happy, pixel: 3)
+                    MoteView(everythingPutBack ? .idle : .happy, pixel: 3)
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            CountUpText(bytes: summary.movedBytes)
-                                .font(DustlingTheme.Typography.figureLarge)
-                                .foregroundStyle(Palette.success)
-                            Text("moved to the Trash")
-                                .font(.custom(DustlingTheme.Typography.sansFamily, size: 13).weight(.medium))
-                                .foregroundStyle(Palette.muted)
+                        if everythingPutBack {
+                            Text("Everything was put back")
+                                .font(DustlingTheme.Typography.figure)
+                                .foregroundStyle(Palette.ink)
+                                .accessibilityAddTraits(.isHeader)
+                        } else {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                CountUpText(bytes: summary.movedBytes)
+                                    .font(DustlingTheme.Typography.figureLarge)
+                                    .foregroundStyle(Palette.success)
+                                Text("moved to the Trash")
+                                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 13).weight(.medium))
+                                    .foregroundStyle(Palette.muted)
+                            }
+                            .accessibilityElement(children: .combine)
                         }
-                        .accessibilityElement(children: .combine)
-                        Text(summary.sentence)
+                        Text(everythingPutBack ? putBackLine : summary.sentence)
                             .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
                             .foregroundStyle(Palette.muted)
                             .fixedSize(horizontal: false, vertical: true)
@@ -197,7 +220,13 @@ struct UninstallSummaryView: View {
         let restored = models.uninstaller.restoreOutcomes[line.record.id]
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                if line.removed { CheckMark() } else { PixelIconView(.warn, color: Palette.warning) }
+                if JunkSummary.everythingRestored(restored) {
+                    PixelIconView(.undo, color: Palette.success).accessibilityLabel("Put back")
+                } else if line.removed {
+                    CheckMark()
+                } else {
+                    PixelIconView(.warn, color: Palette.warning)
+                }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(line.name)
                         .font(DustlingTheme.Typography.rowTitle)

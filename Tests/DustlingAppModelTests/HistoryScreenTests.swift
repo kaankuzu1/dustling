@@ -320,7 +320,9 @@ struct HistoryScreenTests {
 
     @Test func restoreSummaryNamesEveryItemThatDidntComeBack() {
         let all = HistoryScreen.restoreSummary([.restored("/a"), .restored("/b")])
-        #expect(all == HistoryScreen.RestoreSummary(success: true, title: "Put back 2 items.", problems: []))
+        #expect(all == HistoryScreen.RestoreSummary(success: true, title: "Put back 2 items.", problems: [], restoredCount: 2))
+        #expect(all.backLine == "They're back where they were.")
+        #expect(HistoryScreen.restoreSummary([.restored("/a")]).backLine == "It's back where it was.")
         let mixed = HistoryScreen.restoreSummary([
             .restored("/a"), .conflict("/x/b.txt"), .missingFromTrash("/x/c"), .failed("/x/d", reason: "no room"),
         ])

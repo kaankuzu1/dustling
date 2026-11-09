@@ -38,15 +38,17 @@ struct StartupView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     banners
-                    if startup.items.isEmpty && startup.isLoading {
+                    LoadingSwap(isLoading: startup.items.isEmpty && startup.isLoading) {
                         skeleton
-                    } else {
-                        ForEach(startup.shownGroups) { group in
-                            StartupGroupSection(
-                                group: group, busyItemID: startup.busyItemID,
-                                canRemove: { startup.canRemove($0) },
-                                onToggle: { item in Task { await startup.toggle(item) } },
-                                onRemove: { removing = $0 })
+                    } content: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(startup.shownGroups) { group in
+                                StartupGroupSection(
+                                    group: group, busyItemID: startup.busyItemID,
+                                    canRemove: { startup.canRemove($0) },
+                                    onToggle: { item in Task { await startup.toggle(item) } },
+                                    onRemove: { removing = $0 })
+                            }
                         }
                     }
                 }

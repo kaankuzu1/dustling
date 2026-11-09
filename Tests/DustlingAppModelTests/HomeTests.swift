@@ -88,8 +88,8 @@ struct PurgeableNoticeTests {
     @Test func shownFromTwoGigabytesWithPlainWords() throws {
         let notice = try #require(PurgeableNotice.make(storage: storage(purgeable: 4_200_000_000, snapshots: 0)))
         #expect(notice.title == "4.2 GB is purgeable.")
-        #expect(notice.message == "macOS frees these by itself when it needs room, so Dustling leaves them alone. "
-            + "That's also why emptying the Trash can take a moment to show up.")
+        #expect(notice.message == "macOS frees this space by itself when it needs room, so Dustling leaves it alone. "
+            + "That's also why space from emptying the Trash can take a moment to show up.")
     }
 
     @Test func snapshotsAreNamedWhenThereAreAny() throws {
@@ -153,6 +153,9 @@ struct ToolCardsTests {
         let card = ToolCards.junk(safeBytes: 3 * ugb, reviewBytes: 12_630_000_000, shortfall: 11 * gb)
         #expect(card.line == "safe to remove, plus 12.63 GB to review")
         #expect(ToolCards.junk(safeBytes: 3 * ugb, reviewBytes: 0, shortfall: 0).line == "safe to remove")
+        #expect(ToolCards.junk(safeBytes: 0, reviewBytes: 0, shortfall: 5 * gb, allClean: true).line == "All clean")
+        // Nothing ticked is not the same as nothing found.
+        #expect(ToolCards.junk(safeBytes: 0, reviewBytes: 0, shortfall: 5 * gb).line == "safe to remove")
     }
 
     private func app(_ name: String, lastUsed: Date?) -> InstalledApp {
@@ -419,5 +422,42 @@ struct UnjudgedProgramFoldersTests {
         let program = rig.environment.userLibrary.appending(path: "Mobile Documents/com~apple~CloudDocs/tool")
         #expect(!ProgramPresence.isOrphan(program.path(percentEncoded: false), unjudged: folders, presence: { _ in .missing }))
         #expect(ProgramPresence.unjudgedFolders(rig.environment, fullDiskAccessGranted: true).isEmpty)
+    }
+}
+
+struct SidebarBadgesTests {
+    private func figures(phase: HomeFigures.Phase, selected: UInt64) -> HomeFigures {
+        HomeFigures.make(HomeFigures.Input(
+            available: 10 * gb, goal: UpdateGoal(neededBytes: 30 * gb), phase: phase, tiles: [],
+            selectedBytes: selected > 0 ? [.userLogs: selected] : [:], trash: .unknown, places: [], scanScope: nil))
+    }
+
+    @Test func junkShowsTheSelectionOnlyOnceAScanHasFinished() {
+        #expect(SidebarBadges.junk(figures(phase: .ready, selected: 30_480_000_000)) == .init(text: "30.5 GB"))
+        #expect(SidebarBadges.junk(figures(phase: .moving, selected: 2 * ugb)) == .init(text: "2 GB"))
+        #expect(SidebarBadges.junk(figures(phase: .scanning, selected: 2 * ugb)) == nil)
+        #expect(SidebarBadges.junk(figures(phase: .notScanned, selected: 0)) == nil)
+        #expect(SidebarBadges.junk(figures(phase: .done, selected: 2 * ugb)) == nil)
+        #expect(SidebarBadges.junk(figures(phase: .ready, selected: 0)) == nil)
+    }
+
+    private func row(leftovers: Int) -> AppRow {
+        let app = InstalledApp(
+            url: URL(filePath: "/Applications/A.app"), displayName: "A", bundleID: "com.example.a",
+            teamID: nil, executableName: nil, steamAppID: nil, bytes: 0, lastUsed: nil)
+        return AppRow(app: app, isCounting: false, leftoverCount: leftovers, totalBytes: 0, label: nil, warning: nil)
+    }
+
+    @Test func uninstallerCountsTheAppsItLists() {
+        #expect(SidebarBadges.uninstaller(nil) == nil)
+        #expect(SidebarBadges.uninstaller([]) == nil)
+        #expect(SidebarBadges.uninstaller([row(leftovers: 0)]) == .init(text: "1 app"))
+        #expect(SidebarBadges.uninstaller([row(leftovers: 2), row(leftovers: 0)]) == .init(text: "2 apps"))
+    }
+
+    @Test func startupFlagsOrphanedItems() {
+        #expect(SidebarBadges.startup(orphanCount: nil) == nil)
+        #expect(SidebarBadges.startup(orphanCount: 0) == nil)
+        #expect(SidebarBadges.startup(orphanCount: 1) == .init(text: "1 to review", needsAttention: true))
     }
 }

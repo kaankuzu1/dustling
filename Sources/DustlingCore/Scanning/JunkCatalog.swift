@@ -89,7 +89,7 @@ public enum JunkCatalog {
                 id: .browserCaches, title: "Browser caches", selection: .preselected, requiresAdmin: false,
                 roots: [caches], itemFilter: { browserCacheNames.contains($0.lastPathComponent) }),
             JunkCategory(
-                id: .xcodeJunk, title: "Xcode derived data and simulator caches", selection: .preselected,
+                id: .xcodeJunk, title: "Xcode build data", selection: .preselected,
                 requiresAdmin: false,
                 roots: [
                     lib.appending(path: "Developer/Xcode/DerivedData"),

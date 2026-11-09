@@ -29,7 +29,7 @@ struct JunkScanView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    header
+                    header(tiles)
                     sections(tiles)
                 }
                 .padding(.top, 12)
@@ -71,16 +71,39 @@ struct JunkScanView: View {
 
     // MARK: Header
 
-    @ViewBuilder private var header: some View {
-        switch models.junk.state {
-        case .idle:
-            ScanHeader(progress: nil)
-        case .scanning(let progress):
-            ScanHeader(progress: progress)
-        case .ready, .moving:
-            SelectionHeader()
-        case .done(let record):
-            SummaryView(record: record, confirmingEmptyTrash: $confirmingEmptyTrash, closedApps: models.junk.closedApps)
+    /// One header per state. A new state's header cross-fades in (DESIGN-mosaic §9; at once under
+    /// Reduce Motion), so scanning, results and the summary don't jump into each other.
+    private func header(_ tiles: [JunkTile]) -> some View {
+        let kind = HeaderKind(state: models.junk.state, allClean: JunkScreen.isAllClean(tiles))
+        return ZStack(alignment: .top) {
+            switch models.junk.state {
+            case .idle:
+                ScanHeader(progress: nil).transition(.opacity)
+            case .scanning(let progress):
+                ScanHeader(progress: progress).transition(.opacity)
+            case .ready where kind == .allClean:
+                AllCleanHeader(places: models.lastScanScope.map { $0.full.count + $0.partial.count } ?? 0)
+                    .transition(.opacity)
+            case .ready, .moving:
+                SelectionHeader().transition(.opacity)
+            case .done(let record):
+                SummaryView(record: record, confirmingEmptyTrash: $confirmingEmptyTrash, closedApps: models.junk.closedApps)
+                    .transition(.opacity)
+            }
+        }
+        .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.reveal, reduceMotion: reduceMotion), value: kind)
+    }
+
+    private enum HeaderKind: Equatable {
+        case scan, selection, allClean, summary
+
+        init(state: JunkScanModel.State, allClean: Bool) {
+            switch state {
+            case .idle, .scanning: self = .scan
+            case .ready: self = allClean ? .allClean : .selection
+            case .moving: self = .selection
+            case .done: self = .summary
+            }
         }
     }
 
@@ -88,6 +111,19 @@ struct JunkScanView: View {
 
     @ViewBuilder private func sections(_ tiles: [JunkTile]) -> some View {
         let isDone: Bool = { if case .done = models.junk.state { return true } else { return false } }()
+        let isReady: Bool = { if case .ready = models.junk.state { return true } else { return false } }()
+        if isReady && JunkScreen.isAllClean(tiles) {
+            // "All clean": no row of empty places, only the Trash while it holds something to empty.
+            if (models.trash.contents?.size.bytes ?? 0) > 0 {
+                TileGrid { TrashTile(confirmingEmptyTrash: $confirmingEmptyTrash) }
+                    .padding(.top, 6)
+            }
+        } else {
+            categorySections(tiles, isDone: isDone)
+        }
+    }
+
+    @ViewBuilder private func categorySections(_ tiles: [JunkTile], isDone: Bool) -> some View {
         let safe = tiles.filter { $0.section == .safe }
         let review = tiles.filter { $0.section == .review }
         if !safe.isEmpty {
@@ -219,6 +255,36 @@ private struct SelectionHeader: View {
     }
 }
 
+/// The empty state (DESIGN-mosaic §9): sleepy Mote and "All clean" when the scan found nothing a clean
+/// could move.
+private struct AllCleanHeader: View {
+    let places: Int
+
+    private typealias Palette = DustlingTheme.Palette
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            MoteView(.sleepy, pixel: 3)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("All clean")
+                    .font(DustlingTheme.Typography.figure)
+                    .foregroundStyle(Palette.ink)
+                    .accessibilityAddTraits(.isHeader)
+                Text(JunkScreen.allCleanCaption(places: places))
+                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 16)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.panel, in: RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// The bottom bar: the selection or progress on the left, the screen's buttons on the right with the
 /// primary action last (`actJunk` in the mockups).
 private struct JunkActionBar: View {
@@ -258,6 +324,16 @@ private struct JunkActionBar: View {
         case .scanning:
             ActionBar(title: "Scanning", caption: "Nothing changes until you choose.", busyLabel: "Scanning…") {
                 Button("Stop", action: junk.stop)
+            }
+        case .ready where JunkScreen.isAllClean(tiles):
+            ActionBar(title: "Nothing to move", caption: "Scan again any time to check for new junk.") {
+                Button(action: { models.scanJunk(); models.refreshTrash() }) {
+                    HStack(spacing: 6) {
+                        PixelIconView(.refresh, tint: .foreground)
+                        Text("Scan again")
+                    }
+                }
+                .dustlingPrimary()
             }
         case .ready:
             let gate = junk.cleanupGate
@@ -317,19 +393,35 @@ private struct JunkActionBar: View {
                     ? "Scan again to see what can go now."
                     : "Available space grows when you empty the Trash."
             ) {
-                Button(action: { models.scanJunk(); models.refreshTrash() }) {
-                    HStack(spacing: 6) {
-                        PixelIconView(.refresh, tint: .foreground)
-                        Text("Scan again")
-                    }
+                // Once the cleanup was put back, scanning again is the next step, not Empty Trash. The
+                // primary button stays last.
+                if JunkSummary.everythingRestored(junk.restoreOutcomes) {
+                    emptyTrashButton(junk).buttonStyle(.bordered)
+                    scanAgainButton(junk).dustlingPrimary()
+                } else {
+                    scanAgainButton(junk)
+                    emptyTrashButton(junk).dustlingPrimary()
                 }
-                .disabled(junk.isBusy)
-                Button("Empty Trash…") { confirmingEmptyTrash = true }
-                    .dustlingPrimary()
-                    .disabled(!models.trash.canEmpty || models.trash.isEmptying || junk.isRestoring)
-                    .help(models.trash.disabledReason ?? "Shows what is in the Trash and asks before deleting it")
             }
         }
+    }
+}
+
+private extension JunkActionBar {
+    func scanAgainButton(_ junk: JunkScanModel) -> some View {
+        Button(action: { models.scanJunk(); models.refreshTrash() }) {
+            HStack(spacing: 6) {
+                PixelIconView(.refresh, tint: .foreground)
+                Text("Scan again")
+            }
+        }
+        .disabled(junk.isBusy)
+    }
+
+    func emptyTrashButton(_ junk: JunkScanModel) -> some View {
+        Button("Empty Trash…") { confirmingEmptyTrash = true }
+            .disabled(!models.trash.canEmpty || models.trash.isEmptying || junk.isRestoring)
+            .help(models.trash.disabledReason ?? "Shows what is in the Trash and asks before deleting it")
     }
 }
 
