@@ -24,6 +24,8 @@ extension View {
     func skeleton(_ active: Bool, index: Int = 0) -> some View {
         transformEnvironment(\.skeletonIndex) { if active { $0 = index } }
             .allowsHitTesting(!active)
+            // The placeholder's controls are invisible but still there: keep them out of the Tab order.
+            .disabled(active)
             .accessibilityHidden(active)
     }
 
@@ -32,6 +34,7 @@ extension View {
     func skeleton(_ active: Bool, index: Int = 0, accessibilityLabel: String) -> some View {
         transformEnvironment(\.skeletonIndex) { if active { $0 = index } }
             .allowsHitTesting(!active)
+            .disabled(active)
             .modifier(SkeletonAccessibility(active: active, label: accessibilityLabel))
     }
 
@@ -80,39 +83,51 @@ private struct SkeletonAccessibility: ViewModifier {
     }
 }
 
+// When loading ends the block fades out as the real content fades in, in place (0.25 s; at once under
+// Reduce Motion). The content keeps its identity, so only opacity animates, never layout.
+
 private struct SkeletonBlockModifier: ViewModifier {
     let cornerRadius: CGFloat
     @Environment(\.skeletonIndex) private var index
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        if let index {
-            content
-                .hidden()
-                .overlay { SkeletonBlock(cornerRadius: cornerRadius, index: index) }
-        } else {
-            content
-        }
+        let reveal = DustlingTheme.Motion.animation(DustlingTheme.Motion.reveal, reduceMotion: reduceMotion)
+        content
+            .animation(reveal) { $0.opacity(index == nil ? 1 : 0) }
+            .overlay {
+                ZStack {
+                    if let index {
+                        SkeletonBlock(cornerRadius: cornerRadius, index: index).transition(.opacity)
+                    }
+                }
+                .animation(reveal, value: index == nil)
+            }
     }
 }
 
 private struct SkeletonTextModifier: ViewModifier {
     @Environment(\.skeletonIndex) private var index
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        if let index {
-            content
-                .hidden()
-                .overlay {
-                    GeometryReader { proxy in
-                        SkeletonBlock(
-                            height: (proxy.size.height * SkeletonMetrics.textHeightRatio).rounded(),
-                            cornerRadius: SkeletonMetrics.textRadius, index: index)
-                            .frame(width: proxy.size.width, height: proxy.size.height)
+        let reveal = DustlingTheme.Motion.animation(DustlingTheme.Motion.reveal, reduceMotion: reduceMotion)
+        content
+            .animation(reveal) { $0.opacity(index == nil ? 1 : 0) }
+            .overlay {
+                ZStack {
+                    if let index {
+                        GeometryReader { proxy in
+                            SkeletonBlock(
+                                height: (proxy.size.height * SkeletonMetrics.textHeightRatio).rounded(),
+                                cornerRadius: SkeletonMetrics.textRadius, index: index)
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                        }
+                        .transition(.opacity)
                     }
                 }
-        } else {
-            content
-        }
+                .animation(reveal, value: index == nil)
+            }
     }
 }
 
@@ -218,5 +233,27 @@ final class SkeletonClock {
             timer?.invalidate()
             timer = nil
         }
+    }
+}
+
+/// Swaps a loading skeleton for the content it stands in for with a cross-fade (0.25 s; at once under
+/// Reduce Motion). Both sit in one place while they fade, so nothing below moves.
+struct LoadingSwap<Placeholder: View, Content: View>: View {
+    let isLoading: Bool
+    var alignment: Alignment = .topLeading
+    @ViewBuilder var placeholder: () -> Placeholder
+    @ViewBuilder var content: () -> Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack(alignment: alignment) {
+            if isLoading {
+                placeholder().transition(.opacity)
+            } else {
+                content().transition(.opacity)
+            }
+        }
+        .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.reveal, reduceMotion: reduceMotion), value: isLoading)
     }
 }

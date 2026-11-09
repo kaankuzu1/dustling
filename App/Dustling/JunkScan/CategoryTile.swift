@@ -19,12 +19,19 @@ struct CategoryTile: View {
     private var isPending: Bool { tile.status == .pending }
 
     var body: some View {
-        if isPending {
-            skeleton
-        } else {
-            content
+        // As each place finishes, its skeleton cross-fades into the tile (at once under Reduce Motion).
+        ZStack(alignment: .topLeading) {
+            if isPending {
+                skeleton.transition(.opacity)
+            } else {
+                content.transition(.opacity)
+            }
         }
+        .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.reveal, reduceMotion: reduceMotion), value: isPending)
     }
+
+    /// Scanned in full and nothing there: the size is quieter, so the tiles that matter stand out.
+    private var isEmptyPlace: Bool { tile.status == .scanned && tile.bytes == 0 && !tile.isLowerBound }
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: DustlingTheme.Metrics.panelRadius, style: .continuous)
@@ -101,6 +108,9 @@ struct CategoryTile: View {
             BusyIndicator(label: "Moving…")
         case .moved, .cleaned:
             CheckMark()
+        case .putBack:
+            PixelIconView(.undo, color: Palette.success)
+                .accessibilityLabel("Put back")
         case .pending:
             // The skeleton's checkbox block, the size of the real one.
             Toggle(isOn: .constant(false)) { EmptyView() }
@@ -136,7 +146,7 @@ struct CategoryTile: View {
     private func sizeText(_ text: String) -> some View {
         Text(text)
             .font(.custom(DustlingTheme.Typography.pixelFamily, size: 18))
-            .foregroundStyle(Palette.ink)
+            .foregroundStyle(isEmptyPlace ? Palette.muted : Palette.ink)
             .monospacedDigit()
             .contentTransition(reduceMotion ? .identity : .numericText())
     }

@@ -103,8 +103,8 @@ public struct PurgeableNotice: Equatable, Sendable {
             : "\(Bytes.format(purgeable)) is purgeable."
         return PurgeableNotice(
             title: title,
-            message: "macOS frees these by itself when it needs room, so Dustling leaves them alone. "
-                + "That's also why emptying the Trash can take a moment to show up.")
+            message: "macOS frees this space by itself when it needs room, so Dustling leaves it alone. "
+                + "That's also why space from emptying the Trash can take a moment to show up.")
     }
 }
 
@@ -170,9 +170,12 @@ public struct ToolCardText: Equatable, Sendable {
 public enum ToolCards {
     public static let unusedAge: TimeInterval = 90 * 24 * 60 * 60
 
-    public static func junk(safeBytes: UInt64, reviewBytes: UInt64, shortfall: Int64) -> ToolCardText {
+    /// `allClean`: the last scan found nothing to move (`JunkScreen.isAllClean`).
+    public static func junk(safeBytes: UInt64, reviewBytes: UInt64, shortfall: Int64, allClean: Bool = false) -> ToolCardText {
         let line: String
-        if shortfall > 0 && safeBytes >= UInt64(shortfall) {
+        if allClean {
+            line = "All clean"
+        } else if shortfall > 0 && safeBytes >= UInt64(shortfall) {
             line = "Enough for the update on its own"
         } else if reviewBytes > 0 {
             line = "safe to remove, plus \(Bytes.format(reviewBytes)) to review"
@@ -204,6 +207,42 @@ public enum ToolCards {
         default: line = "\(orphanCount) belong to apps you removed"
         }
         return ToolCardText(figure: "\(on) on", line: line)
+    }
+}
+
+/// The counts next to the sidebar's destinations (the approved shell's `.w-badge`): what a clean
+/// would move, how many apps the Uninstaller lists, and startup items that need a look. nil hides a badge,
+/// so a quiet screen has none.
+public enum SidebarBadges {
+    public struct Badge: Equatable, Sendable {
+        public let text: String
+        /// Drawn in `warning`, semibold: something to review.
+        public let needsAttention: Bool
+
+        public init(text: String, needsAttention: Bool = false) {
+            self.text = text
+            self.needsAttention = needsAttention
+        }
+    }
+
+    /// The selected junk, once a scan has finished. Nothing while scanning or after a cleanup.
+    public static func junk(_ figures: HomeFigures) -> Badge? {
+        guard figures.scanFinished, figures.phase != .done, figures.safeJunk > 0 else { return nil }
+        return Badge(text: Bytes.short(figures.safeJunk))
+    }
+
+    /// The apps the Uninstaller lists, the same count as its subtitle, once it has looked.
+    public static func uninstaller(_ apps: [AppRow]?) -> Badge? {
+        guard let apps else { return nil }
+        let count = apps.count
+        guard count > 0 else { return nil }
+        return Badge(text: count == 1 ? "1 app" : "\(count) apps")
+    }
+
+    /// Startup items that belong to apps that are gone.
+    public static func startup(orphanCount: Int?) -> Badge? {
+        guard let orphanCount, orphanCount > 0 else { return nil }
+        return Badge(text: "\(orphanCount) to review", needsAttention: true)
     }
 }
 

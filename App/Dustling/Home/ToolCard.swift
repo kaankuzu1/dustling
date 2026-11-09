@@ -14,7 +14,9 @@ struct ToolCardRow: View {
             ToolCard(
                 icon: .shell(.broom), series: .c1, title: "Junk scan",
                 text: figures.scanFinished
-                    ? ToolCards.junk(safeBytes: figures.safeJunk, reviewBytes: figures.reviewJunk, shortfall: figures.shortfall)
+                    ? ToolCards.junk(
+                        safeBytes: figures.safeJunk, reviewBytes: figures.reviewJunk, shortfall: figures.shortfall,
+                        allClean: figures.phase == .ready && JunkScreen.isAllClean(models.junkTiles))
                     : nil,
                 button: "Review junk", primary: true, highlighted: hovered == .junk
             ) { models.selection = .junkScan }

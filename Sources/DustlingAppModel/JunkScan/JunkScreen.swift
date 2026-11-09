@@ -55,6 +55,8 @@ public struct JunkTile: Identifiable, Equatable, Sendable {
         case moved
         /// Summary: what the finished cleanup did here.
         case cleaned
+        /// Summary, after Put everything back: its items are back where they were.
+        case putBack
     }
 
     public let id: JunkCategoryID
@@ -69,8 +71,10 @@ public struct JunkTile: Identifiable, Equatable, Sendable {
     public let canToggle: Bool
     public let note: String
     public let cells: MiniMosaic
+    /// Scanned in full and the place holds nothing, before any of it was left out in Review files.
+    public var foundNothing = false
     /// Review tiles are outlined (the mockup's `.tile2.off`).
-    public var isOutlined: Bool { !isSelected && status != .cleaned }
+    public var isOutlined: Bool { !isSelected && status != .cleaned && status != .putBack }
 
     /// What VoiceOver reads after the tile's name: its size (or that it isn't known), then its state,
     /// e.g. "4.2 GB, selected" or "size unknown, locked". The note is read as the hint.
@@ -95,6 +99,7 @@ public struct JunkTile: Identifiable, Equatable, Sendable {
         case .moving: state = "moving to the Trash"
         case .moved: state = "done"
         case .cleaned: state = "moved to the Trash"
+        case .putBack: state = "put back"
         }
         return "\(size), \(state)"
     }
@@ -176,17 +181,24 @@ public enum JunkScreen {
             if input.phase == .done {
                 guard let tile, tile.isSelected, !tile.stopped else { return nil }
                 let outcome = input.outcomes[entry.id] ?? CategoryOutcome()
+                // A ticked place that held nothing had nothing to do: it isn't part of the summary.
+                if tile.bytes == 0 && tile.itemCount == 0 && outcome == CategoryOutcome() { return nil }
+                // After Put everything back, a place whose items all came back says so and shows its
+                // cells in colour again: they are no longer in the Trash.
+                let allBack = outcome.restoredCount > 0 && outcome.restoredCount >= outcome.movedCount
                 return JunkTile(
-                    id: entry.id, title: entry.title, section: section, status: .cleaned, bytes: outcome.movedBytes,
-                    isLowerBound: false, isSelected: true, canToggle: false, note: cleanedNote(outcome),
-                    cells: MiniMosaic(count: MiniMosaic.cells(bytes: outcome.movedBytes), kind: .inTrash))
+                    id: entry.id, title: entry.title, section: section, status: allBack ? .putBack : .cleaned,
+                    bytes: outcome.movedBytes, isLowerBound: false, isSelected: true, canToggle: false,
+                    note: cleanedNote(outcome),
+                    cells: MiniMosaic(count: MiniMosaic.cells(bytes: outcome.movedBytes), kind: allBack ? .selected : .inTrash))
             }
 
             func make(_ status: JunkTile.Status, bytes: UInt64? = nil, lower: Bool = false, selected: Bool = false,
-                      toggle: Bool = false, note: String, cells: MiniMosaic) -> JunkTile {
+                      toggle: Bool = false, note: String, cells: MiniMosaic, foundNothing: Bool = false) -> JunkTile {
                 JunkTile(
                     id: entry.id, title: entry.title, section: section, status: status, bytes: bytes,
-                    isLowerBound: lower, isSelected: selected, canToggle: toggle, note: note, cells: cells)
+                    isLowerBound: lower, isSelected: selected, canToggle: toggle, note: note, cells: cells,
+                    foundNothing: foundNothing)
             }
             let lockedCell = MiniMosaic(count: 1, kind: .locked)
 
@@ -228,7 +240,7 @@ public enum JunkScreen {
             return make(
                 status, bytes: shownBytes, lower: partial, selected: tile.isSelected,
                 toggle: input.phase == .ready, note: scannedNote(tile, selection: entry.selection, partial: partial),
-                cells: cells)
+                cells: cells, foundNothing: !partial && tile.itemCount == 0 && tile.bytes == 0)
         }
     }
 
@@ -245,16 +257,50 @@ public enum JunkScreen {
     private static func scannedNote(_ tile: CategoryTileModel, selection: Selection, partial: Bool) -> String {
         let leftOut = tile.excludedCount > 0 ? ", \(tile.excludedCount) left out" : ""
         if let note = tile.note { return note + leftOut }
-        if selection == .review { return "Review before removing" + leftOut }
+        if selection == .review {
+            return tile.itemCount == 0 && tile.bytes == 0 && tile.excludedCount == 0
+                ? nothingFoundNote : "Review before removing" + leftOut
+        }
         if partial { return "\(items(tile.itemCount))\(leftOut). App containers need Full Disk Access" }
         if tile.inUseCount > 0 {
             return "\(items(tile.itemCount))\(leftOut), \(tile.inUseCount) in use by open apps and left alone"
         }
+        if tile.itemCount == 0 && tile.bytes == 0 { return nothingFoundNote }
         return "\(items(tile.itemCount))\(leftOut), rebuilt when needed"
     }
 
+    public static let nothingFoundNote = "Nothing to clean here right now"
+
+    /// Under "All clean": "Dustling checked 11 places and found nothing to move to the Trash."
+    public static func allCleanCaption(places: Int) -> String {
+        guard places > 0 else { return "Dustling found nothing to move to the Trash." }
+        return "Dustling checked \(places) \(places == 1 ? "place" : "places") and found nothing to move to the Trash."
+    }
+
+    /// The scan finished and found nothing a clean could move: every tile was read in full and holds
+    /// nothing (tiles that need the helper don't count). The header then says "All clean".
+    public static func isAllClean(_ tiles: [JunkTile]) -> Bool {
+        guard !tiles.isEmpty else { return false }
+        return tiles.allSatisfy { tile in
+            switch tile.status {
+            // Files left out in Review files are still there: only a place that held nothing counts.
+            case .scanned: return tile.foundNothing
+            case .needsHelper: return true
+            default: return false
+            }
+        }
+    }
+
     private static func cleanedNote(_ outcome: CategoryOutcome) -> String {
-        var parts = ["\(items(outcome.movedCount)) in the Trash"]
+        let back = min(outcome.restoredCount, outcome.movedCount)
+        var parts: [String]
+        if back == 0 {
+            parts = ["\(items(outcome.movedCount)) in the Trash"]
+        } else if back == outcome.movedCount {
+            parts = ["\(items(back)) put back"]
+        } else {
+            parts = ["\(back) put back", "\(outcome.movedCount - back) still in the Trash"]
+        }
         if outcome.skippedCount > 0 { parts.append("\(outcome.skippedCount) skipped") }
         if outcome.failedCount > 0 { parts.append("\(outcome.failedCount) failed") }
         if outcome.needsAdminCount > 0 {
@@ -294,9 +340,18 @@ public enum JunkScreen {
 
     /// "Checking ~/Library/Caches/com.spotify.client. 5 of 9 places done".
     public static func scanLine(_ progress: ScanProgress, home: URL) -> String {
+        "\(scanPathLine(progress, home: home)) \(scanCountLine(progress))"
+    }
+
+    /// "Checking ~/Library/Caches/com.spotify.client." The part of the scan line that may be shortened.
+    public static func scanPathLine(_ progress: ScanProgress, home: URL) -> String {
+        "Checking \(displayPath(progress.currentPath, home: home))."
+    }
+
+    /// "5 of 9 places done." The part of the scan line that is always shown in full.
+    public static func scanCountLine(_ progress: ScanProgress) -> String {
         let places = progress.categoriesTotal == 1 ? "place" : "places"
-        return "Checking \(displayPath(progress.currentPath, home: home)). "
-            + "\(progress.categoriesDone) of \(progress.categoriesTotal) \(places) done"
+        return "\(progress.categoriesDone) of \(progress.categoriesTotal) \(places) done"
     }
 }
 
@@ -365,6 +420,12 @@ public struct JunkSummary: Equatable, Sendable {
     }
 
     /// The headline after Put everything back, from what really came back.
+    /// Put everything back brought every item back: nothing of the run is left in the Trash.
+    public static func everythingRestored(_ outcomes: [RestoreOutcome]?) -> Bool {
+        guard let outcomes, !outcomes.isEmpty else { return false }
+        return outcomes.allSatisfy { if case .restored = $0 { true } else { false } }
+    }
+
     public static func restoreHeadline(_ outcomes: [RestoreOutcome]) -> String {
         let restored = outcomes.filter { if case .restored = $0 { true } else { false } }.count
         if restored == 0 { return "Nothing was put back" }

@@ -139,6 +139,10 @@ import SwiftUI
                         : "\(place) can't be seen: \(describe(frame)) is outside \(describe(clip))")
                 }
             }
+            // An element that stands for the app itself (some menus and popovers point back to it) is
+            // not walked again: asking the app for its children here made AppKit list every window on
+            // the system and run out of stack.
+            guard role != kAXApplicationRole, depth < 80 else { return }
             for child in (attribute(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
                 visit(child, clip: childClip, depth: depth + 1, sheet: inSheet, scrolled: inScroll)
             }

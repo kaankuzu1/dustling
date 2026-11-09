@@ -114,6 +114,8 @@ struct UpdateCheckControl: View {
                 Text("Checking…").foregroundStyle(Palette.muted)
                 Button("Cancel", action: check.cancel)
                     .buttonStyle(.link)
+                    // The window's ink would otherwise win over the link colour.
+                    .foregroundStyle(Palette.accent)
             case .noUpdate:
                 Text("No macOS update is waiting").foregroundStyle(Palette.muted)
                 link("Check again", check)
@@ -134,6 +136,7 @@ struct UpdateCheckControl: View {
     private func link(_ title: String, _ check: UpdateSizeCheck) -> some View {
         Button(title, action: check.start)
             .buttonStyle(.link)
+            .foregroundStyle(Palette.accent)
             .help("Asks Software Update how big the pending macOS update is. This contacts Apple.")
     }
 }

@@ -122,15 +122,10 @@ public struct StartupRemover: Sendable {
         func failure(_ reason: String) -> Unload {
             .failed(JournalEntry(originalPath: path, bytes: 0, outcome: .failed(reason: "could not unload: \(reason)")))
         }
-        do {
-            let result = try commands.run("/bin/launchctl", ["bootout", "gui/\(environment.userID)", path])
-            if result.status == 0 { return .stopped }
-            let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            let notLoaded = ["No such process", "Could not find specified service"]
-            if notLoaded.contains(where: { stderr.contains($0) }) { return .notLoaded }
-            return failure(stderr)
-        } catch {
-            return failure(error.localizedDescription)
+        switch LaunchAgentBootout.run(plist: plist, userID: environment.userID, commands: commands) {
+        case .stopped: return .stopped
+        case .notLoaded: return .notLoaded
+        case .failed(let reason): return failure(reason)
         }
     }
 }

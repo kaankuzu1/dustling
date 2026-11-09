@@ -47,16 +47,19 @@ public struct CategoryOutcome: Equatable, Sendable {
     public var skippedCount: Int
     public var failedCount: Int
     public var needsAdminCount: Int
+    /// Moved items that Put everything back returned to where they were.
+    public var restoredCount: Int
 
     public init(
         movedBytes: UInt64 = 0, movedCount: Int = 0, skippedCount: Int = 0, failedCount: Int = 0,
-        needsAdminCount: Int = 0
+        needsAdminCount: Int = 0, restoredCount: Int = 0
     ) {
         self.movedBytes = movedBytes
         self.movedCount = movedCount
         self.skippedCount = skippedCount
         self.failedCount = failedCount
         self.needsAdminCount = needsAdminCount
+        self.restoredCount = restoredCount
     }
 
     /// Splits a run's entries by the category each original path came from. Entries of no category
@@ -244,6 +247,8 @@ public final class JunkScanModel {
     public private(set) var categoryProgress: [JunkCategoryID: CategoryProgress] = [:]
     /// Per category, what the last cleanup did (from its recorded outcomes). Empty until one finishes.
     public private(set) var categoryOutcomes: [JunkCategoryID: CategoryOutcome] = [:]
+    /// The category of each path in the run `categoryOutcomes` describes, for Put everything back.
+    private var outcomeCategoryOf: [String: JunkCategoryID] = [:]
     /// When the last scan finished (completed or stopped); nil before the first.
     public private(set) var lastScanFinishedAt: Date?
     /// False while Dustling can't take items back out of the Trash (Full Disk Access is off).
@@ -673,6 +678,7 @@ public final class JunkScanModel {
         // Every attempt is over: a stopped cleanup records the rest as skipped, so each tile ends.
         categoryProgress = categoryProgress.mapValues { CategoryProgress(done: $0.total, total: $0.total) }
         categoryOutcomes = CategoryOutcome.split(record, categoryOf: categoryOf)
+        outcomeCategoryOf = categoryOf
         state = .done(record)
         onRunCompleted()
     }
@@ -707,6 +713,9 @@ public final class JunkScanModel {
             // Only onto the summary of this same run.
             if case .done(let shown) = state, shown.id == id {
                 restoreOutcomes = outcomes
+                for case .restored(let path) in outcomes {
+                    if let id = outcomeCategoryOf[path] { categoryOutcomes[id]?.restoredCount += 1 }
+                }
                 // Once something came back the run is put back; if nothing did, it can be tried again.
                 didPutBack = outcomes.contains { if case .restored = $0 { true } else { false } }
             }
@@ -763,6 +772,7 @@ extension JunkScanModel {
                 for item in scan.items { categoryOf[item.url.path(percentEncoded: false)] = scan.category.id }
             }
             categoryOutcomes = CategoryOutcome.split(record, categoryOf: categoryOf)
+            outcomeCategoryOf = categoryOf
             for tile in categories where tile.isSelected {
                 categoryProgress[tile.id] = CategoryProgress(done: tile.itemCount, total: tile.itemCount)
             }

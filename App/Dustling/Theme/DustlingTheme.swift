@@ -125,6 +125,8 @@ public enum DustlingTheme {
         public static let checkPop = Animation.spring(response: 0.32, dampingFraction: 0.6)
         public static let meter = Animation.timingCurve(0.2, 0.8, 0.2, 1, duration: 0.6)
         public static let countUpDuration: Double = 0.9
+        /// A screen's state or loaded content cross-fading in (skeleton to rows, scan to results).
+        public static let reveal = Animation.easeOut(duration: 0.25)
         public static let skeletonPulse: Double = 1.3
         public static let skeletonStagger: Double = 0.12
         public static let nibbleStagger: Double = 0.007   // per cell

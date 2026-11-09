@@ -46,18 +46,16 @@ struct HistoryView: View {
             }
             HistoryTabs(selection: $tab)
             banners
-            Group {
+            LoadingSwap(isLoading: history.runs.isEmpty && history.isLoading, alignment: .center) {
+                // Each tab draws itself with placeholder rows, in placeholder mode.
+                switch tab {
+                case .runs: RunsTimeline.placeholder(height: contentHeight)
+                case .allItems: AllItemsTable(context: context, checked: $checked)
+                case .log: LogTab(run: nil, runs: [], context: context, onSelectRun: { _ in })
+                }
+            } content: {
                 if history.runs.isEmpty {
-                    if history.isLoading {
-                        // Each tab draws itself with placeholder rows, in placeholder mode.
-                        switch tab {
-                        case .runs: RunsTimeline.placeholder(height: contentHeight)
-                        case .allItems: AllItemsTable(context: context, checked: $checked)
-                        case .log: LogTab(run: nil, runs: [], context: context, onSelectRun: { _ in })
-                        }
-                    } else {
-                        NothingYet()
-                    }
+                    NothingYet()
                 } else {
                     switch tab {
                     case .runs:
@@ -113,7 +111,7 @@ struct HistoryView: View {
                 Banner(
                     title: summary.title,
                     message: summary.problems.isEmpty
-                        ? "They're back where they were."
+                        ? summary.backLine
                         : summary.problems.prefix(4).joined(separator: ". ")
                             + (summary.problems.count > 4 ? ", and \(summary.problems.count - 4) more." : "."),
                     tone: summary.success ? .success : .warning,
@@ -169,7 +167,7 @@ struct HistoryView: View {
             ActionBar(
                 title: "\(chosen.count) \(chosen.count == 1 ? "item" : "items") checked, "
                     + Bytes.format(chosen.reduce(UInt64(0)) { $0 + $1.bytes }),
-                caption: "They go back where they were."
+                caption: chosen.count == 1 ? "It goes back where it was." : "They go back where they were."
             ) {
                 Button("Uncheck all") { checked = [] }
                 Button("Put back") { restore(items: chosen) }

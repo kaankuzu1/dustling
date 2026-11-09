@@ -128,7 +128,8 @@ struct SummaryView: View {
                         .monospacedDigit()
                 }
             }
-            .dustlingPrimary()
+            // Once everything was put back this run left nothing in the Trash: no longer the next step.
+            .dustlingPrimary(if: !JunkSummary.everythingRestored(junk.restoreOutcomes))
             .disabled(!trash.canEmpty || trash.isEmptying || junk.isRestoring)
             .help(trash.disabledReason ?? "Shows what is in the Trash and asks before deleting it")
 

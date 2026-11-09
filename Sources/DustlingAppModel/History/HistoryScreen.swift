@@ -498,6 +498,13 @@ public enum HistoryScreen {
         public let title: String
         /// One line per item that didn't come back: its name and why.
         public let problems: [String]
+        /// How many items came back.
+        public var restoredCount: Int = 0
+
+        /// Under the title when everything came back.
+        public var backLine: String {
+            restoredCount == 1 ? "It's back where it was." : "They're back where they were."
+        }
     }
 
     public static func restoreSummary(_ outcomes: [RestoreOutcome]) -> RestoreSummary {
@@ -521,6 +528,6 @@ public enum HistoryScreen {
         } else {
             title = "Put back \(items). \(problems.count) didn't come back."
         }
-        return RestoreSummary(success: problems.isEmpty && back > 0, title: title, problems: problems)
+        return RestoreSummary(success: problems.isEmpty && back > 0, title: title, problems: problems, restoredCount: back)
     }
 }
