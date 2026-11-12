@@ -17,7 +17,7 @@ public struct AdminMover: Sendable {
     /// a folder gets the number at the end ("com.apple.foo 2"). A name is taken when something is
     /// there (lstat, so a dangling link counts) or when its path is in `taken`: the destinations,
     /// as `path(percentEncoded: false)`, already given to earlier steps of the same batch (compared
-    /// ignoring case, as the Mac's disk does).
+    /// ignoring case, as the Mac's disk does, and ignoring a trailing slash).
     ///
     /// nil when the item can't be read or is on another volume than the Trash: the script only
     /// renames, so root never copies a whole tree across disks.
@@ -25,7 +25,7 @@ public struct AdminMover: Sendable {
         let trash = environment.userTrash
         var item = stat()
         var trashInfo = stat()
-        guard lstat(url.path(percentEncoded: false), &item) == 0,
+        guard lstat(AdminPath.trimmingTrailingSlashes(url.path(percentEncoded: false)), &item) == 0,
               stat(trash.path(percentEncoded: false), &trashInfo) == 0,
               item.st_dev == trashInfo.st_dev
         else { return nil }
@@ -37,7 +37,7 @@ public struct AdminMover: Sendable {
         var ext = keepsExtension ? (name as NSString).pathExtension : ""
         var base = ext.isEmpty ? name : (name as NSString).deletingPathExtension
         if base.isEmpty { (base, ext) = (name, "") }
-        let reserved = Set(taken.map { $0.lowercased() })
+        let reserved = Set(taken.map { AdminPath.trimmingTrailingSlashes($0).lowercased() })
 
         for number in 1...10_000 {
             let candidate = number == 1 ? name : (ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
@@ -52,8 +52,10 @@ public struct AdminMover: Sendable {
         return nil
     }
 
-    /// Runs every step in one script. No steps: the shell is never called. The password box
-    /// cancelled: every step is `.cancelled`. The shell failed: every step is `.notDone` with why.
+    /// Runs every step in one script. The folder each step acts in is read now (planning) and the
+    /// script refuses a step whose folder changed by the time it runs (see `AdminScript`).
+    /// No steps: the shell is never called. The password box cancelled: every step is `.cancelled`.
+    /// The shell failed: every step is `.notDone` with why.
     public func perform(_ steps: [AdminStep], prompt: String) -> [AdminStepResult] {
         guard !steps.isEmpty else { return [] }
         switch shell.run(script: AdminScript.make(steps), prompt: prompt) {

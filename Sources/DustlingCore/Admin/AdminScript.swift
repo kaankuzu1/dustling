@@ -11,13 +11,18 @@ public enum AdminOp: Equatable, Sendable {
 
 public struct AdminStep: Equatable, Sendable {
     public let op: AdminOp
-    /// Index of an earlier step that must have succeeded for this one to run (an app's leftovers
-    /// depend on the app). Anything other than an earlier index keeps the step from running.
+    /// Index of an earlier step in the same batch that must have succeeded for this one to run (an
+    /// app's leftovers depend on the app). Anything other than an earlier index keeps the step from
+    /// running.
     public let dependsOn: Int?
+    /// When set, the item moved (the source) or deleted must still be exactly this one, or the step
+    /// does nothing and reports `err`. Put back passes the identity the journal recorded.
+    public let expectedSource: ItemIdentity?
 
-    public init(op: AdminOp, dependsOn: Int? = nil) {
+    public init(op: AdminOp, dependsOn: Int? = nil, expectedSource: ItemIdentity? = nil) {
         self.op = op
         self.dependsOn = dependsOn
+        self.expectedSource = expectedSource
     }
 }
 
@@ -32,11 +37,21 @@ public enum AdminStepResult: Equatable, Sendable {
 /// what happened. The script prints exactly one line per step, `R<TAB><index><TAB><status>`,
 /// with status `ok`, `gone`, `skip`, `exists` or `err`.
 ///
-/// Safety: each path is written once, single-quoted (`'` → `'\''`), into a variable (`src`, `dst`,
-/// `item`) that is only ever used double-quoted, so the shell never expands, splits or globs
-/// anything from a name. Tools get `--` before paths and have absolute paths; nothing is evaluated;
-/// paths never appear in comments or output. A path that is not absolute, is `/`, has a `.` or `..`
-/// component or a NUL byte never reaches a tool: its step just reports `err`.
+/// Safety:
+/// - Each step is one call line. Paths and names are single-quoted with `'` → `'\''`, done on
+///   unicode scalars (a `'` followed by a combining mark is one Swift Character, so Character-based
+///   replacing would miss it). Inside the functions every value is used double-quoted, so the shell
+///   never expands, splits or globs anything from a name. Tools have absolute paths and get `--`;
+///   nothing is evaluated; paths never appear in comments or output.
+/// - When the script is made, the folder each step acts in (a move's destination folder, a
+///   delete's item folder) is read with lstat. At run time the step `cd -P`s into it and acts on
+///   `./<name>` only if it is still that same directory (device, inode, owner); a folder swapped for
+///   a link or another folder makes the step `err`.
+/// - A move records the source's identity right before `mv -n -h` (lstat, never across volumes)
+///   and is `ok` only when `./<name>` has exactly that identity afterwards. If something else
+///   arrived in a folder that belongs to root, it is moved back where it came from.
+/// - A path that is not absolute, is `/`, has a `.` or `..` component or a NUL byte (checked on
+///   UTF-8 bytes), or whose folder is not a real directory, never reaches a tool: `err`.
 public enum AdminScript {
     public static let goneReason = "already gone"
     public static let skippedReason = "kept because the app itself was not removed"
@@ -44,18 +59,28 @@ public enum AdminScript {
     public static let refusedReason = "macOS refused, even with your password"
     public static let noResultReason = "no result"
 
+    /// Reads the identity of each step's folder now (planning time) and builds the script.
     public static func make(_ steps: [AdminStep]) -> String {
-        var lines = [
-            "set +e",
-            "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-            "export PATH",
-        ]
+        make(steps, folders: steps.map(plannedFolder))
+    }
+
+    /// The folder a step acts in, if it is a real directory right now (lstat): the destination's
+    /// folder for a move, the item's folder for a delete.
+    static func plannedFolder(of step: AdminStep) -> ItemIdentity? {
+        let target: URL
+        switch step.op {
+        case .move(_, let to, _): target = to
+        case .delete(let url): target = url
+        }
+        guard let path = AdminPath(target) else { return nil }
+        return ItemIdentity.of(path: path.folder, directoryOnly: true)
+    }
+
+    /// `folders[i]` is the planned identity of step i's folder (nil: not a real directory).
+    static func make(_ steps: [AdminStep], folders: [ItemIdentity?]) -> String {
+        var lines = [prelude]
         for (index, step) in steps.enumerated() {
-            lines.append("# step \(index)")
-            lines.append("s\(index)=0")
-            lines += body(of: step, at: index)
-            lines.append("if [ \"$r\" = ok ]; then s\(index)=1; fi")
-            lines.append("printf 'R\\t\(index)\\t%s\\n' \"$r\"")
+            lines.append(call(for: step, at: index, folder: index < folders.count ? folders[index] : nil))
         }
         // A non-zero exit would make osascript throw away everything the script printed.
         lines.append("exit 0")
@@ -89,63 +114,127 @@ public enum AdminScript {
         }
     }
 
-    /// The lines that set `r` to this step's status. Something exists when `-e` (it, or what a link
-    /// points to) or `-L` (a link, even a dangling one) says so.
-    private static func body(of step: AdminStep, at index: Int) -> [String] {
-        var branches: [(test: String, status: String)] = []
-        if let head = step.dependsOn {
-            guard (0..<index).contains(head) else { return ["r=skip"] }
-            branches.append(("[ \"$s\(head)\" != 1 ]", "skip"))
+    /// The functions every step calls. Arguments:
+    /// - `move_ <index> <head|-> <bootout 0|1> <expected identity|-> <undo 0|1> <source> <folder>
+    ///   <folder identity> <name>`
+    /// - `delete_ <index> <head|-> <expected identity|-> <folder> <folder identity> <name>`
+    static let prelude = #"""
+        set +e
+        PATH=/usr/bin:/bin:/usr/sbin:/sbin
+        export PATH
+        unset CDPATH
+        ok_=' '
+        id_() { /usr/bin/stat -f '%d:%i:%u' -- "$1" 2>/dev/null; }
+        at_() { [ -e "$1" ] || [ -L "$1" ]; }
+        report_() {
+          if [ "$2" = ok ]; then ok_="$ok_$1 "; fi
+          printf 'R\t%s\t%s\n' "$1" "$2"
         }
+        after_() {
+          if [ "$1" = - ]; then return 0; fi
+          case "$ok_" in *" $1 "*) return 0 ;; esac
+          return 1
+        }
+        in_() { cd -P -- "$1" 2>/dev/null && [ "$(id_ .)" = "$2" ]; }
+        move_() {
+          if ! after_ "$2"; then report_ "$1" skip; return; fi
+          if ! at_ "$6"; then report_ "$1" gone; return; fi
+          if ! in_ "$7" "$8"; then report_ "$1" err; return; fi
+          if at_ "./$9"; then report_ "$1" exists; return; fi
+          if [ "$3" = 1 ]; then /bin/launchctl bootout system "$6" >/dev/null 2>&1; fi
+          was_=$(id_ "$6")
+          if [ -z "$was_" ] || [ "${was_%%:*}" != "${8%%:*}" ]; then report_ "$1" err; return; fi
+          if [ "$4" != - ] && [ "$was_" != "$4" ]; then report_ "$1" err; return; fi
+          /bin/mv -n -h -- "$6" "./$9" >/dev/null 2>&1
+          if [ "$(id_ "./$9")" = "$was_" ] && ! at_ "$6"; then report_ "$1" ok; return; fi
+          if [ "$5" = 1 ] && ! at_ "$6"; then /bin/mv -n -h -- "./$9" "$6" >/dev/null 2>&1; fi
+          report_ "$1" err
+        }
+        delete_() {
+          if ! after_ "$2"; then report_ "$1" skip; return; fi
+          if ! in_ "$4" "$5"; then report_ "$1" err; return; fi
+          if [ "$3" != - ] && at_ "./$6" && [ "$(id_ "./$6")" != "$3" ]; then report_ "$1" err; return; fi
+          /bin/rm -rf -- "./$6" >/dev/null 2>&1
+          if at_ "./$6"; then report_ "$1" err; else report_ "$1" ok; fi
+        }
+        """#
+
+    /// The one line that runs this step.
+    private static func call(for step: AdminStep, at index: Int, folder: ItemIdentity?) -> String {
+        var head = "-"
+        if let dependsOn = step.dependsOn {
+            guard (0..<index).contains(dependsOn) else { return "report_ \(index) skip" }
+            head = String(dependsOn)
+        }
+        let expected = step.expectedSource?.stamp ?? "-"
         switch step.op {
         case .move(let from, let to, let bootOutDaemon):
-            guard let source = quotedPath(from), let destination = quotedPath(to) else { return ["r=err"] }
-            let sourceExists = #"{ [ -e "$src" ] || [ -L "$src" ]; }"#
-            let destinationExists = #"{ [ -e "$dst" ] || [ -L "$dst" ]; }"#
-            branches.append(("! \(sourceExists)", "gone"))
-            branches.append((destinationExists, "exists"))
-            var action: [String] = []
-            if bootOutDaemon {
-                action.append(#"/bin/launchctl bootout system "$src" >/dev/null 2>&1"#)
+            guard let source = AdminPath(from), let destination = AdminPath(to), let folder else {
+                return "report_ \(index) err"
             }
-            action.append(#"/bin/mv -n -- "$src" "$dst" >/dev/null 2>&1"#)
-            action.append("if ! \(sourceExists) && \(destinationExists); then r=ok; else r=err; fi")
-            return ["src=\(source)", "dst=\(destination)"] + chain(branches, otherwise: action)
+            // Moving back what arrived by mistake is only safe where the user can't have put it.
+            let undo = folder.owner == 0 ? 1 : 0
+            return ["move_", String(index), head, bootOutDaemon ? "1" : "0", expected, String(undo),
+                    quote(source.full), quote(destination.folder), folder.stamp, quote(destination.name)]
+                .joined(separator: " ")
         case .delete(let url):
-            guard let item = quotedPath(url) else { return ["r=err"] }
-            return ["item=\(item)"] + chain(branches, otherwise: [
-                #"/bin/rm -rf -- "$item" >/dev/null 2>&1"#,
-                #"if [ -e "$item" ] || [ -L "$item" ]; then r=err; else r=ok; fi"#,
-            ])
+            guard let item = AdminPath(url), let folder else { return "report_ \(index) err" }
+            return ["delete_", String(index), head, expected, quote(item.folder), folder.stamp, quote(item.name)]
+                .joined(separator: " ")
         }
     }
 
-    private static func chain(_ branches: [(test: String, status: String)], otherwise: [String]) -> [String] {
-        guard !branches.isEmpty else { return otherwise }
-        var lines: [String] = []
-        for (position, branch) in branches.enumerated() {
-            lines.append("\(position == 0 ? "if" : "elif") \(branch.test); then")
-            lines.append("  r=\(branch.status)")
-        }
-        lines.append("else")
-        lines += otherwise.map { "  " + $0 }
-        lines.append("fi")
-        return lines
-    }
-
-    /// The path single-quoted for sh, or nil when a root script must never touch it. Trailing
-    /// slashes are dropped so a symlink is acted on itself, never followed to its target.
-    static func quotedPath(_ url: URL) -> String? {
-        guard url.isFileURL else { return nil }
-        var path = url.path(percentEncoded: false)
-        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
-        guard path.hasPrefix("/"), path != "/", !path.contains("\0") else { return nil }
-        let components = path.split(separator: "/")
-        guard !components.contains(where: { $0 == "." || $0 == ".." }) else { return nil }
-        return quote(path)
-    }
-
+    /// Single-quotes `text` for sh. Works on unicode scalars so every U+0027 is escaped, even one
+    /// that a following combining mark joins into a bigger Character.
     static func quote(_ text: String) -> String {
-        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        var scalars = String.UnicodeScalarView()
+        scalars.append("'")
+        for scalar in text.unicodeScalars {
+            if scalar == "'" {
+                scalars.append(contentsOf: #"'\''"#.unicodeScalars)
+            } else {
+                scalars.append(scalar)
+            }
+        }
+        scalars.append("'")
+        return String(scalars)
+    }
+}
+
+/// A path the root script may act on, split at its last slash. Checked on UTF-8 bytes, never on
+/// Characters: a combining mark after `/` or `.` would hide a separator or a `..` from String APIs.
+struct AdminPath: Equatable {
+    /// Without trailing slashes, so a link is acted on itself, never followed to its target.
+    let full: String
+    let folder: String
+    let name: String
+
+    private static let slash = UInt8(ascii: "/")
+    private static let dot = UInt8(ascii: ".")
+
+    /// nil for anything that is not a file URL with an absolute path other than `/`, or that has a
+    /// `.` or `..` component or a NUL byte.
+    init?(_ url: URL) {
+        guard url.isFileURL else { return nil }
+        let bytes = Self.trimmed(Array(url.path(percentEncoded: false).utf8))
+        guard bytes.first == Self.slash, bytes.count > 1, !bytes.contains(0) else { return nil }
+        let parts = bytes.split(separator: Self.slash)
+        guard !parts.contains(where: { $0.elementsEqual([Self.dot]) || $0.elementsEqual([Self.dot, Self.dot]) })
+        else { return nil }
+        guard let last = bytes.lastIndex(of: Self.slash) else { return nil }
+        full = String(decoding: bytes, as: UTF8.self)
+        folder = String(decoding: Self.trimmed(Array(bytes[...last])), as: UTF8.self)
+        name = String(decoding: bytes[(last + 1)...], as: UTF8.self)
+    }
+
+    static func trimmingTrailingSlashes(_ path: String) -> String {
+        String(decoding: trimmed(Array(path.utf8)), as: UTF8.self)
+    }
+
+    /// Drops trailing slashes, keeping a lone `/`.
+    private static func trimmed(_ bytes: [UInt8]) -> [UInt8] {
+        var bytes = bytes
+        while bytes.count > 1, bytes.last == slash { bytes.removeLast() }
+        return bytes
     }
 }

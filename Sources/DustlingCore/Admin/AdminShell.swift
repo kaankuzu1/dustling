@@ -39,12 +39,17 @@ public struct OsascriptAdminShell: AdminShell {
         do {
             return Self.result(from: try commands.run("/usr/bin/osascript", ["-e", source]))
         } catch {
-            return .failed(reason: error.localizedDescription)
+            return Self.result(from: error)
         }
     }
 
+    /// The script did not fit in one command line (the system's argument size limit).
+    public static let tooManyItemsReason = "Too many items for one password request. Try again with fewer items."
+
     /// The AppleScript source. `\` and `"` are escaped so neither the script nor the prompt can end
     /// the string early; line breaks and tabs stay literal, which AppleScript keeps as they are.
+    /// Escaping works on unicode scalars: a `"` or `\` followed by a combining mark is one Swift
+    /// Character, and Character-based replacing would leave it unescaped.
     static func appleScript(script: String, prompt: String, privileged: Bool) -> String {
         guard privileged else {
             return "do shell script \(literal(script)) without altering line endings"
@@ -53,15 +58,20 @@ public struct OsascriptAdminShell: AdminShell {
             + " with administrator privileges without altering line endings"
     }
 
-    private static func literal(_ text: String) -> String {
-        let escaped = text
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        return "\"" + escaped + "\""
+    static func literal(_ text: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        scalars.append("\"")
+        for scalar in text.unicodeScalars {
+            if scalar == "\\" || scalar == "\"" { scalars.append("\\") }
+            scalars.append(scalar)
+        }
+        scalars.append("\"")
+        return String(scalars)
     }
 
     /// osascript prints the script's output followed by one line break of its own, which is dropped.
-    /// A cancelled password box is error -128 (its message is localized, the number is not).
+    /// A cancelled password box is error -128, which osascript puts at the very end of its message
+    /// (the message itself is localized, the number is not).
     static func result(from command: CommandResult) -> AdminShellResult {
         if command.status == 0 {
             var output = command.stdout
@@ -69,9 +79,23 @@ public struct OsascriptAdminShell: AdminShell {
             return .finished(output: output)
         }
         let message = command.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        if message.contains("(-128)") || message.contains("User canceled") {
-            return .cancelled
-        }
+        if message.hasSuffix("(-128)") { return .cancelled }
+        if message.contains(argumentListTooLong) { return .failed(reason: tooManyItemsReason) }
         return .failed(reason: message.isEmpty ? "osascript stopped with status \(command.status)" : message)
     }
+
+    /// osascript could not even be started. E2BIG means the script was too long for one command line.
+    static func result(from error: any Error) -> AdminShellResult {
+        var current: NSError? = error as NSError
+        while let nsError = current {
+            if nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(E2BIG) {
+                return .failed(reason: tooManyItemsReason)
+            }
+            current = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        let description = error.localizedDescription
+        return .failed(reason: description.contains(argumentListTooLong) ? tooManyItemsReason : description)
+    }
+
+    private static let argumentListTooLong = "Argument list too long"
 }

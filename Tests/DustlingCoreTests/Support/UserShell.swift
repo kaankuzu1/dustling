@@ -4,7 +4,8 @@ import Foundation
 /// An `AdminShell` that runs the script as the current user with `/bin/sh -c`: no password box,
 /// no root. The environment is emptied and HOME points at the read-only `/var/empty`, so even a
 /// quoting bug that let a name like `;rm -rf ~` run could never reach the real home folder.
-/// Every call is recorded.
+/// Every call is recorded. `beforeRun` runs after the script was made (planned) and before it
+/// runs, to change the sandbox the way another program could in between.
 final class UserShell: AdminShell, @unchecked Sendable {
     struct Call: Equatable {
         let script: String
@@ -13,6 +14,11 @@ final class UserShell: AdminShell, @unchecked Sendable {
 
     private let lock = NSLock()
     private var _calls: [Call] = []
+    private let beforeRun: @Sendable () throws -> Void
+
+    init(beforeRun: @escaping @Sendable () throws -> Void = {}) {
+        self.beforeRun = beforeRun
+    }
 
     var calls: [Call] {
         lock.lock(); defer { lock.unlock() }
@@ -24,6 +30,7 @@ final class UserShell: AdminShell, @unchecked Sendable {
         _calls.append(Call(script: script, prompt: prompt))
         lock.unlock()
         do {
+            try beforeRun()
             let result = try ProcessCommandRunner().run(
                 "/usr/bin/env", ["-i", "HOME=/var/empty", "/bin/sh", "-c", script])
             return result.status == 0
