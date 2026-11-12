@@ -57,6 +57,18 @@ struct RepairTests {
         #expect(problems[4].fix == nil)
     }
 
+    @Test func protectedItemsHaveNoRetry() {
+        let entry = JournalEntry(originalPath: caches.appending(path: "com.apple.textunderstandingd").path, bytes: 5,
+                                 outcome: .failed(reason: "protected by macOS"))
+        let review = run([entry])
+        let problems = LastRunReview.problems(in: review, home: home, appName: appName)
+        #expect(problems.count == 1)
+        #expect(problems[0].result == .failed)
+        #expect(problems[0].reason == "Protected by macOS")
+        #expect(problems[0].fix == nil)
+        #expect(LastRunReview.retryableCount(in: review) == 0)
+    }
+
     @Test func retryCountCoversInUseAndFailedItemsOfACleanup() {
         #expect(LastRunReview.retryableCount(in: partialRun) == 3)
         let uninstall = run(partialRun.entries, kind: .uninstall(appName: "Zoom"))

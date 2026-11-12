@@ -4,6 +4,7 @@ public struct TrashMover: Sendable {
     private let backend: TrashBackend
     public let protectedPaths: ProtectedPaths
 
+    public static let protectedReason = TrashUnlocker.protectedReason
     public static let noAccessReason = "no access (Full Disk Access may be needed)"
 
     public init(backend: TrashBackend, protectedPaths: ProtectedPaths) {
@@ -50,7 +51,9 @@ public struct TrashMover: Sendable {
         do {
             return .movedToTrash(trashedPath: try backend.trash(url).path(percentEncoded: false))
         } catch {
-            return .failed(reason: error.localizedDescription)
+            // macOS can refuse (EPERM) inside a folder access() allowed, e.g. a protected subfolder.
+            return .failed(reason: TrashInspector.isPermissionDenied(error)
+                ? Self.protectedReason : error.localizedDescription)
         }
     }
 

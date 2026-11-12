@@ -10,6 +10,30 @@ struct TrashMoverTests {
         func trash(_ url: URL) throws -> URL { throw Boom() }
     }
 
+    struct FailingBackend: TrashBackend {
+        let error: Error
+        func trash(_ url: URL) throws -> URL { throw error }
+    }
+
+    @Test func trashRefusedWithEPERMIsProtected() throws {
+        let sandbox = try TestSandbox()
+        let root = try sandbox.directory("home/Library/Caches")
+        let file = try sandbox.file("home/Library/Caches/a.log")
+        let error = CocoaError(.fileWriteNoPermission, userInfo: [NSUnderlyingErrorKey: POSIXError(.EPERM)])
+        let (mover, _) = make(sandbox, backend: FailingBackend(error: error))
+        #expect(mover.moveToTrash(file, allowedRoots: [root]) == .failed(reason: "protected by macOS"))
+        #expect(TrashMover.protectedReason == TrashUnlocker.protectedReason)
+    }
+
+    @Test func trashRefusedWithEACCESKeepsDescription() throws {
+        let sandbox = try TestSandbox()
+        let root = try sandbox.directory("home/Library/Caches")
+        let file = try sandbox.file("home/Library/Caches/a.log")
+        let error = CocoaError(.fileWriteNoPermission, userInfo: [NSUnderlyingErrorKey: POSIXError(.EACCES)])
+        let (mover, _) = make(sandbox, backend: FailingBackend(error: error))
+        #expect(mover.moveToTrash(file, allowedRoots: [root]) == .failed(reason: error.localizedDescription))
+    }
+
     private func make(_ sandbox: TestSandbox, backend: TrashBackend? = nil) -> (TrashMover, URL) {
         let trash = sandbox.root.appending(path: "trash", directoryHint: .isDirectory)
         let mover = TrashMover(

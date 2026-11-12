@@ -154,7 +154,7 @@ public enum LastRunReview {
             case .failed(let reason):
                 let internalEntry = entry.originalPath.hasPrefix("<")
                 return Problem(id: index, display: display, result: .failed, reason: sentence(reason),
-                               fix: retryable && !internalEntry ? .retry : nil)
+                               fix: retryable && !internalEntry && reason != TrashMover.protectedReason ? .retry : nil)
             case .needsAdmin:
                 return Problem(id: index, display: display, result: .needsAdmin,
                                reason: "Needs the cleanup helper (coming in a later version)", fix: nil)
@@ -247,7 +247,7 @@ public enum LastRunReview {
     private static func isRetryableEntry(_ entry: JournalEntry) -> Bool {
         switch entry.outcome {
         case .skipped(let reason): return inUseBundleID(reason) != nil
-        case .failed: return !entry.originalPath.hasPrefix("<")
+        case .failed(let reason): return !entry.originalPath.hasPrefix("<") && reason != TrashMover.protectedReason
         default: return false
         }
     }
