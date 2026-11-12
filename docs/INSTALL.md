@@ -48,7 +48,7 @@ macOS hides many caches, Mail downloads, iPhone backups and the Trash behind Ful
 2. Quit Dustling, then drag the new version onto **Applications** and choose **Replace**.
 3. Open it. You confirm the first open again for each new version, as above.
 
-Because Dustling isn't signed with a Developer ID yet, macOS may keep showing the Full Disk Access switch as on while no longer honoring it for the new version. Dustling checks this whenever it opens and tells you if access was lost. To fix it, select Dustling in the Full Disk Access list, remove it with the **−** button, then add it again with **+** (or from Dustling's setup).
+From version 0.x.y on, Full Disk Access stays on through updates, because every release is signed with the same certificate. If you update from an older version, macOS may still show the switch as on while no longer honoring it. Dustling checks this whenever it opens and tells you if access was lost. To fix it, select Dustling in the Full Disk Access list, remove it with the **−** button, then add it again with **+** (or from Dustling's setup).
 
 ## Check the download
 
