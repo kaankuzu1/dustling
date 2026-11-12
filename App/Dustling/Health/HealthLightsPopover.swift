@@ -152,7 +152,7 @@ struct HealthPopover: View {
     private var headline: String {
         if let fda = lights.first(where: { $0.kind == .fullDiskAccess }), fda.state == .warning {
             if models.accessMemory.isLost(models.health.fullDiskAccess) {
-                return RepairCase.fullDiskAccessLost.copy.title + "."
+                return RepairCase.fullDiskAccessLostCopy(models.fullDiskAccessLoss ?? .unknown).title + "."
             }
             return "Full Disk Access is off, so some folders can't be scanned."
         }

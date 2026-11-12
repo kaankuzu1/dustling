@@ -267,6 +267,76 @@ struct RepairTests {
         #expect(defaults.object(forKey: FullDiskAccessMemory.key) == nil)
     }
 
+    @Test func lossCauseIsNewCopyWhenRequirementDiffers() {
+        let defaults = ScratchDefaults.make("dustling-memory")
+        FullDiskAccessMemory(defaults: defaults, currentRequirement: "req-A").observe(.granted)
+        let other = FullDiskAccessMemory(defaults: defaults, currentRequirement: "req-B")
+        #expect(other.lossCause(.denied) == .newCopy)
+    }
+
+    @Test func lossCauseIsTurnedOffForSameRequirement() {
+        let defaults = ScratchDefaults.make("dustling-memory")
+        FullDiskAccessMemory(defaults: defaults, currentRequirement: "req-A").observe(.granted)
+        let same = FullDiskAccessMemory(defaults: defaults, currentRequirement: "req-A")
+        #expect(same.lossCause(.denied) == .turnedOff)
+    }
+
+    @Test func legacyFlagWithoutRequirementIsUnknownCause() {
+        let defaults = ScratchDefaults.make("dustling-memory")
+        defaults.set(true, forKey: FullDiskAccessMemory.key)
+        let memory = FullDiskAccessMemory(defaults: defaults, currentRequirement: "req-A")
+        #expect(memory.lossCause(.denied) == .unknown)
+    }
+
+    @Test func noCauseWhenNeverGrantedOrGranted() {
+        let defaults = ScratchDefaults.make("dustling-memory")
+        let memory = FullDiskAccessMemory(defaults: defaults, currentRequirement: "req-A")
+        #expect(memory.lossCause(.denied) == nil)
+        memory.observe(.granted)
+        #expect(memory.lossCause(.granted) == nil)
+        #expect(memory.lossCause(.unknown) == nil)
+    }
+
+    @Test func nilRequirementStoresNothing() {
+        let defaults = ScratchDefaults.make("dustling-memory")
+        let memory = FullDiskAccessMemory(defaults: defaults, currentRequirement: nil)
+        memory.observe(.granted)
+        #expect(defaults.object(forKey: FullDiskAccessMemory.requirementKey) == nil)
+        #expect(memory.lossCause(.denied) == .unknown)
+    }
+
+    @Test func acknowledgeClearsRequirement() {
+        let defaults = ScratchDefaults.make("dustling-memory")
+        let memory = FullDiskAccessMemory(defaults: defaults, currentRequirement: "req-A")
+        memory.observe(.granted)
+        #expect(defaults.string(forKey: FullDiskAccessMemory.requirementKey) == "req-A")
+        memory.acknowledgeLoss()
+        #expect(defaults.object(forKey: FullDiskAccessMemory.requirementKey) == nil)
+        #expect(memory.lossCause(.denied) == nil)
+    }
+
+    @Test func sampleMemoryLossIsUnknownCause() {
+        let defaults = ScratchDefaults.make("dustling-memory")
+        let memory = FullDiskAccessMemory(defaults: defaults, currentRequirement: "req-A")
+        memory.useSample(wasGranted: true)
+        #expect(memory.lossCause(.denied) == .unknown)
+        #expect(defaults.object(forKey: FullDiskAccessMemory.requirementKey) == nil)
+    }
+
+    @Test func lostCopyPerCause() {
+        let newCopy = RepairCase.fullDiskAccessLostCopy(.newCopy)
+        let off = RepairCase.fullDiskAccessLostCopy(.turnedOff)
+        let unknown = RepairCase.fullDiskAccessLostCopy(.unknown)
+        #expect(newCopy.title == "Turn Full Disk Access on for this copy")
+        #expect(off.title == "Full Disk Access was turned off")
+        #expect(unknown.title == "Full Disk Access was turned off")
+        for c in [newCopy, off, unknown] { #expect(c.fix == "Open System Settings") }
+        #expect(newCopy.why.contains("click −"))
+        #expect(unknown.why.contains("click −"))
+        #expect(!off.why.contains("click −"))
+        #expect(RepairCase.fullDiskAccessLost.copy == unknown)
+    }
+
     @Test func repairCasesHaveTheDesignCopy() {
         let fda = RepairCase.fullDiskAccessLost.copy
         #expect(fda.title == "Full Disk Access was turned off")

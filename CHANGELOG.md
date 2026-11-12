@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- When Full Disk Access is off for this copy of Dustling but System Settings still shows it switched on, Dustling now says macOS is holding it for another copy and how to fix it (select Dustling, click −, drag this copy in). Setup also warns when you open Dustling from the disk image or Downloads.
+
 ## [0.1.2] - 2026-11-09
 
 A polish release: every screen checked against the design in light and dark at every window size, smoother loading, an "All clean" state, and two fixes found while clicking through.

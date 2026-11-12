@@ -42,6 +42,8 @@ final class AppModels {
     @ObservationIgnored let quit: QuitCoordinator
     /// Remembers that Full Disk Access was on, so losing it blocks a scan instead of shrinking it.
     @ObservationIgnored let accessMemory = FullDiskAccessMemory()
+    /// Why Full Disk Access is gone (another copy, or switched off), nil while it isn't lost.
+    var fullDiskAccessLoss: FullDiskAccessLoss? { accessMemory.lossCause(health.fullDiskAccess) }
     /// The blocker sheet over the main window (SCREENS-final §8), only for cases that stop a screen.
     var blocker: RepairCase?
     /// The scan choice the last junk scan started with: its tiles stay until the next scan.

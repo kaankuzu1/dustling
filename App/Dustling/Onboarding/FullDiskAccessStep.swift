@@ -47,10 +47,41 @@ struct FullDiskAccessStep: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
                 statusLine
+                if copyNeedsMoving {
+                    hint("You opened Dustling from the disk image or Downloads. Move it to Applications and open it from there first, so the permission goes to the copy you keep.")
+                }
+                if showsStaleEntryHint {
+                    hint("Already switched on in System Settings? macOS may be holding it for another copy of Dustling. Select Dustling, click −, then drag this one into the list.")
+                }
                 Button("Skip for now") { models.onboarding.step = .permissions }
             }
         }
         .animation(DustlingTheme.Motion.animation(DustlingTheme.Motion.toggle, reduceMotion: reduceMotion), value: isGranted)
+        // Waiting a while with access still off is the sign of a stale entry for another copy.
+        .task(id: models.health.fullDiskAccess) {
+            showsStaleEntryHint = false
+            guard models.health.fullDiskAccess != .granted else { return }
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            showsStaleEntryHint = true
+        }
+    }
+
+    @State private var showsStaleEntryHint = false
+
+    /// Opened from the disk image or Downloads: the permission would go to a copy that is about to move.
+    private var copyNeedsMoving: Bool {
+        switch CodeIdentity.runningLocation(bundleURL: Bundle.main.bundleURL) {
+        case .translocated, .diskImage: true
+        case .applications, .elsewhere: false
+        }
+    }
+
+    private func hint(_ text: String) -> some View {
+        Text(text)
+            .font(OnboardingType.caption())
+            .foregroundStyle(Palette.muted)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder private var header: some View {

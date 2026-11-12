@@ -7,7 +7,7 @@ public enum RepairCase: Equatable, Sendable {
     /// Re-registering the helper failed and approval is needed in Login Items & Extensions. Reserved
     /// for the helper (Plan 2): in v1 the helper is "not available yet".
     case helperNotResponding
-    /// A real read was denied after access had been on (an ad-hoc rebuild changes the signature).
+    /// A real read was denied after access had been on (another copy, or switched off).
     case fullDiskAccessLost
     /// The last cleanup left items in use or failed.
     case itemsDidNotMove(count: Int)
@@ -18,6 +18,28 @@ public enum RepairCase: Equatable, Sendable {
         public let fix: String
     }
 
+    /// Why Full Disk Access was lost, as far as Dustling can tell.
+    /// `.unknown` is also what a Full Disk Access loss with no recorded cause shows.
+    public static func fullDiskAccessLostCopy(_ cause: FullDiskAccessLoss) -> Copy {
+        switch cause {
+        case .newCopy:
+            return Copy(
+                title: "Turn Full Disk Access on for this copy",
+                why: "macOS gives this permission to one exact copy of an app. This Dustling is a different copy (an update, or a second copy on this Mac), so macOS asks again. If System Settings already shows Dustling switched on, that's the other copy: select Dustling, click −, then drag this Dustling into the list.",
+                fix: "Open System Settings")
+        case .turnedOff:
+            return Copy(
+                title: "Full Disk Access was turned off",
+                why: "Dustling is switched off under Full Disk Access in System Settings. Dustling noticed by trying a real read, so nothing was scanned with missing folders.",
+                fix: "Open System Settings")
+        case .unknown:
+            return Copy(
+                title: "Full Disk Access was turned off",
+                why: "Full Disk Access is off for this copy of Dustling. If System Settings shows Dustling switched on, macOS is holding it for another copy: select Dustling, click −, then drag this Dustling into the list.",
+                fix: "Open System Settings")
+        }
+    }
+
     public var copy: Copy {
         switch self {
         case .helperNotResponding:
@@ -26,12 +48,7 @@ public enum RepairCase: Equatable, Sendable {
                 why: "Dustling tried to register it again and that didn't work. System caches and launch daemons can't be moved until it's repaired.",
                 fix: "Repair helper")
         case .fullDiskAccessLost:
-            // The design says "this build changed it". Dustling can't tell a rebuild from the user
-            // switching it off, so the cause is given as a possibility (a design question).
-            return Copy(
-                title: "Full Disk Access was turned off",
-                why: "macOS ties the permission to the app's signature, so a new build can turn it off. Dustling noticed by trying a real read, so nothing was scanned with missing folders.",
-                fix: "Open System Settings")
+            return Self.fullDiskAccessLostCopy(.unknown)
         case .itemsDidNotMove(let count):
             return Copy(
                 title: "\(LastRunReview.items(count)) couldn't be moved",
@@ -41,17 +58,28 @@ public enum RepairCase: Equatable, Sendable {
     }
 }
 
-/// Remembers, across launches, that Full Disk Access was on. Losing it later (an ad-hoc rebuild
-/// changes the signature, and macOS drops the grant between runs) is then a blocker before a scan,
-/// instead of a quietly smaller result. Someone who never granted access is in limited mode and is
+/// Why Full Disk Access is gone: macOS holds it for a copy with a different code signature
+/// requirement (`newCopy`), the same copy was switched off (`turnedOff`), or Dustling can't tell.
+public enum FullDiskAccessLoss: Equatable, Sendable {
+    case newCopy, turnedOff, unknown
+}
+
+/// Remembers, across launches, that Full Disk Access was on, and for which code requirement. Losing it
+/// later is then a blocker before a scan, instead of a quietly smaller result. Someone who never granted access is in limited mode and is
 /// never blocked.
 @MainActor
 public final class FullDiskAccessMemory {
     public static let key = "fullDiskAccessWasGranted"
+    public static let requirementKey = "fullDiskAccessGrantedRequirement"
     private let defaults: UserDefaults
+    private let currentRequirement: String?
 
-    public init(defaults: UserDefaults = .standard) {
+    public init(
+        defaults: UserDefaults = .standard,
+        currentRequirement: String? = CodeIdentity.currentDesignatedRequirement()
+    ) {
         self.defaults = defaults
+        self.currentRequirement = currentRequirement
     }
 
     /// Set by the DEBUG fixture: the memory lives in this value only and nothing is saved.
@@ -61,6 +89,17 @@ public final class FullDiskAccessMemory {
         guard status == .granted else { return }
         if sample != nil { sample = true; return }
         if !defaults.bool(forKey: Self.key) { defaults.set(true, forKey: Self.key) }
+        if let currentRequirement, defaults.string(forKey: Self.requirementKey) != currentRequirement {
+            defaults.set(currentRequirement, forKey: Self.requirementKey)
+        }
+    }
+
+    /// Why access is lost now, or nil when it isn't.
+    public func lossCause(_ status: FullDiskAccessStatus) -> FullDiskAccessLoss? {
+        guard isLost(status) else { return nil }
+        if sample != nil { return .unknown }
+        guard let saved = defaults.string(forKey: Self.requirementKey), let currentRequirement else { return .unknown }
+        return saved == currentRequirement ? .turnedOff : .newCopy
     }
 
     /// True when access was on before and a real read is denied now.
@@ -72,6 +111,7 @@ public final class FullDiskAccessMemory {
     public func acknowledgeLoss() {
         if sample != nil { sample = false; return }
         defaults.set(false, forKey: Self.key)
+        defaults.removeObject(forKey: Self.requirementKey)
     }
 
     /// For screenshots: pretend access was on, without reading or writing the saved value.
