@@ -252,6 +252,27 @@ struct AdminMoverTests {
         #expect(size(trashed) == -1)
     }
 
+    @Test func moveIntoAFolderTheUserCantWriteNeedsTheRecordedItem() throws {
+        let sandbox = try TestSandbox()
+        let trashed = try sandbox.file("home/.Trash/helper", bytes: 4)
+        let folder = try sandbox.directory("Library/PrivilegedHelperTools")
+        #expect(chmod(folder.path(percentEncoded: false), 0o555) == 0)
+        defer { _ = chmod(folder.path(percentEncoded: false), 0o755) }
+        let shell = UserShell()
+        let mover = AdminMover(shell: shell, environment: sandbox.environment)
+        let destination = folder.appending(path: "helper")
+        #expect(mover.perform([moveStep(trashed, destination)], prompt: "p") == [refused])
+        #expect(shell.calls.first?.script.hasSuffix("\nreport_ 0 err\nexit 0\n") == true)
+        #expect(size(trashed) == 4)
+        // With the recorded identity it is planned as a staged move (which the user-level shell
+        // then can't perform; root could).
+        let recorded = try #require(ItemIdentity.of(trashed))
+        #expect(mover.perform([moveStep(trashed, destination, expected: recorded)], prompt: "p") == [refused])
+        #expect(shell.calls.last?.script.contains("\nmove_ 0 - 0 \(recorded.stamp) s '") == true)
+        #expect(size(trashed) == 4)
+        #expect(contents(folder).isEmpty)
+    }
+
     @Test func deleteChecksTheRecordedItem() throws {
         let sandbox = try TestSandbox()
         let swapped = try sandbox.file("home/.Trash/a", bytes: 4)

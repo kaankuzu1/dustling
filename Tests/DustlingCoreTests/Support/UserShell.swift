@@ -32,7 +32,7 @@ final class UserShell: AdminShell, @unchecked Sendable {
         do {
             try beforeRun()
             let result = try ProcessCommandRunner().run(
-                "/usr/bin/env", ["-i", "HOME=/var/empty", "/bin/sh", "-c", script])
+                "/bin/sh", ["-c", script], environment: ["HOME": "/var/empty"])
             return result.status == 0
                 ? .finished(output: result.stdout)
                 : .failed(reason: result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))

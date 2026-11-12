@@ -23,9 +23,18 @@ public struct ProcessCommandRunner: CommandRunning {
     public init() {}
 
     public func run(_ executable: String, _ arguments: [String]) throws -> CommandResult {
+        try run(executable, arguments, environment: nil)
+    }
+
+    /// Like `run(_:_:)`, but when `environment` is given the program gets exactly that environment
+    /// instead of a copy of Dustling's.
+    public func run(_ executable: String, _ arguments: [String], environment: [String: String]?) throws
+        -> CommandResult
+    {
         let process = Process()
         process.executableURL = URL(filePath: executable)
         process.arguments = arguments
+        if let environment { process.environment = environment }
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe

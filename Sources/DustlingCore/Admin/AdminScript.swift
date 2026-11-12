@@ -47,9 +47,18 @@ public enum AdminStepResult: Equatable, Sendable {
 ///   delete's item folder) is read with lstat. At run time the step `cd -P`s into it and acts on
 ///   `./<name>` only if it is still that same directory (device, inode, owner); a folder swapped for
 ///   a link or another folder makes the step `err`.
-/// - A move records the source's identity right before `mv -n -h` (lstat, never across volumes)
-///   and is `ok` only when `./<name>` has exactly that identity afterwards. If something else
-///   arrived in a folder that belongs to root, it is moved back where it came from.
+/// - A move reads the source's identity (lstat) and checks it is on the folder's volume and, when
+///   given, is `expectedSource`; only then is a daemon booted out and the item moved, never
+///   overwriting (`mv -n -h`).
+///   - Into a folder the user can write (the Trash): the source goes straight to `./<name>` (as
+///     `mv … .` when the name is the source's own, so mv never treats `./<name>` as a folder), and
+///     the step is `ok` only if `./<name>` then has exactly the source's identity.
+///   - Into a folder the user can't write (Put back): `expectedSource` is required, or the step is
+///     `err` without running. The source is first renamed to a hidden temporary name inside the
+///     pinned folder, where no one but root can touch it; it is published as `./<name>` only if
+///     that staged item is exactly the expected one. Anything else is never published and never
+///     moved back out by path: it is deleted when it is the user's own (only they could have put it
+///     there) and otherwise left under the hidden name; the step is `err`.
 /// - A path that is not absolute, is `/`, has a `.` or `..` component or a NUL byte (checked on
 ///   UTF-8 bytes), or whose folder is not a real directory, never reaches a tool: `err`.
 public enum AdminScript {
@@ -59,26 +68,36 @@ public enum AdminScript {
     public static let refusedReason = "macOS refused, even with your password"
     public static let noResultReason = "no result"
 
-    /// Reads the identity of each step's folder now (planning time) and builds the script.
+    /// Reads each step's folder now (planning time) and builds the script.
     public static func make(_ steps: [AdminStep]) -> String {
         make(steps, folders: steps.map(plannedFolder))
     }
 
+    /// What planning learned about the folder a step acts in.
+    struct PlannedFolder: Equatable {
+        let identity: ItemIdentity
+        /// Whether Dustling's user could change the folder (and so race root inside it).
+        let userCanWrite: Bool
+    }
+
     /// The folder a step acts in, if it is a real directory right now (lstat): the destination's
     /// folder for a move, the item's folder for a delete.
-    static func plannedFolder(of step: AdminStep) -> ItemIdentity? {
+    static func plannedFolder(of step: AdminStep) -> PlannedFolder? {
         let target: URL
         switch step.op {
         case .move(_, let to, _): target = to
         case .delete(let url): target = url
         }
-        guard let path = AdminPath(target) else { return nil }
-        return ItemIdentity.of(path: path.folder, directoryOnly: true)
+        guard let path = AdminPath(target),
+              let identity = ItemIdentity.of(path: path.folder, directoryOnly: true)
+        else { return nil }
+        return PlannedFolder(identity: identity, userCanWrite: access(path.folder, W_OK) == 0)
     }
 
-    /// `folders[i]` is the planned identity of step i's folder (nil: not a real directory).
-    static func make(_ steps: [AdminStep], folders: [ItemIdentity?]) -> String {
-        var lines = [prelude]
+    /// `folders[i]` is what planning found for step i's folder (nil: not a real directory).
+    /// `user` is the account Dustling runs as: only its own items may be deleted when staged by mistake.
+    static func make(_ steps: [AdminStep], folders: [PlannedFolder?], user: uid_t = getuid()) -> String {
+        var lines = [prelude, "me_=\(user)"]
         for (index, step) in steps.enumerated() {
             lines.append(call(for: step, at: index, folder: index < folders.count ? folders[index] : nil))
         }
@@ -115,9 +134,11 @@ public enum AdminScript {
     }
 
     /// The functions every step calls. Arguments:
-    /// - `move_ <index> <head|-> <bootout 0|1> <expected identity|-> <undo 0|1> <source> <folder>
-    ///   <folder identity> <name>`
+    /// - `move_ <index> <head|-> <bootout 0|1> <expected identity|-> <mode s|d|n> <source> <folder>
+    ///   <folder identity> <name>`; mode `s` stages (folder the user can't write), `d` moves into the
+    ///   folder under the source's own name, `n` moves to `./<name>`.
     /// - `delete_ <index> <head|-> <expected identity|-> <folder> <folder identity> <name>`
+    /// `me_` (set after the functions) is the user Dustling runs as.
     static let prelude = #"""
         set +e
         PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -141,14 +162,32 @@ public enum AdminScript {
           if ! at_ "$6"; then report_ "$1" gone; return; fi
           if ! in_ "$7" "$8"; then report_ "$1" err; return; fi
           if at_ "./$9"; then report_ "$1" exists; return; fi
-          if [ "$3" = 1 ]; then /bin/launchctl bootout system "$6" >/dev/null 2>&1; fi
           was_=$(id_ "$6")
           if [ -z "$was_" ] || [ "${was_%%:*}" != "${8%%:*}" ]; then report_ "$1" err; return; fi
           if [ "$4" != - ] && [ "$was_" != "$4" ]; then report_ "$1" err; return; fi
-          /bin/mv -n -h -- "$6" "./$9" >/dev/null 2>&1
-          if [ "$(id_ "./$9")" = "$was_" ] && ! at_ "$6"; then report_ "$1" ok; return; fi
-          if [ "$5" = 1 ] && ! at_ "$6"; then /bin/mv -n -h -- "./$9" "$6" >/dev/null 2>&1; fi
-          report_ "$1" err
+          if [ "$3" = 1 ]; then /bin/launchctl bootout system "$6" >/dev/null 2>&1; fi
+          case "$5" in
+            s) stage_ "$1" "$4" "$6" "$9" ;;
+            d) /bin/mv -n -h -- "$6" . >/dev/null 2>&1; landed_ "$1" "$6" "$9" ;;
+            *) /bin/mv -n -h -- "$6" "./$9" >/dev/null 2>&1; landed_ "$1" "$6" "$9" ;;
+          esac
+        }
+        landed_() {
+          if [ "$(id_ "./$3")" = "$was_" ] && ! at_ "$2"; then report_ "$1" ok; else report_ "$1" err; fi
+        }
+        stage_() {
+          tmp_=".dustling-$$-$1"
+          if at_ "./$tmp_"; then report_ "$1" err; return; fi
+          /bin/mv -n -h -- "$3" "./$tmp_" >/dev/null 2>&1
+          got_=$(id_ "./$tmp_")
+          if [ -z "$got_" ]; then report_ "$1" err; return; fi
+          if [ "$got_" != "$was_" ] || { [ "$2" != - ] && [ "$got_" != "$2" ]; }; then
+            case "$got_" in *":$me_") /bin/rm -rf -- "./$tmp_" >/dev/null 2>&1 ;; esac
+            report_ "$1" err
+            return
+          fi
+          /bin/mv -n -h -- "./$tmp_" "./$4" >/dev/null 2>&1
+          if [ "$(id_ "./$4")" = "$was_" ] && ! at_ "./$tmp_"; then report_ "$1" ok; else report_ "$1" err; fi
         }
         delete_() {
           if ! after_ "$2"; then report_ "$1" skip; return; fi
@@ -160,7 +199,7 @@ public enum AdminScript {
         """#
 
     /// The one line that runs this step.
-    private static func call(for step: AdminStep, at index: Int, folder: ItemIdentity?) -> String {
+    private static func call(for step: AdminStep, at index: Int, folder: PlannedFolder?) -> String {
         var head = "-"
         if let dependsOn = step.dependsOn {
             guard (0..<index).contains(dependsOn) else { return "report_ \(index) skip" }
@@ -172,14 +211,25 @@ public enum AdminScript {
             guard let source = AdminPath(from), let destination = AdminPath(to), let folder else {
                 return "report_ \(index) err"
             }
-            // Moving back what arrived by mistake is only safe where the user can't have put it.
-            let undo = folder.owner == 0 ? 1 : 0
-            return ["move_", String(index), head, bootOutDaemon ? "1" : "0", expected, String(undo),
-                    quote(source.full), quote(destination.folder), folder.stamp, quote(destination.name)]
+            let mode: String
+            if !folder.userCanWrite {
+                // Root only puts into a folder the user can't write what it can prove came from Put back.
+                guard step.expectedSource != nil else { return "report_ \(index) err" }
+                mode = "s"
+            } else if Array(source.name.utf8) == Array(destination.name.utf8) {
+                mode = "d"
+            } else {
+                // Residual: a numbered name ("name 2") must be given to mv as `./name 2`, which mv
+                // treats as a folder to move into if one appears there at that instant.
+                mode = "n"
+            }
+            return ["move_", String(index), head, bootOutDaemon ? "1" : "0", expected, mode,
+                    quote(source.full), quote(destination.folder), folder.identity.stamp, quote(destination.name)]
                 .joined(separator: " ")
         case .delete(let url):
             guard let item = AdminPath(url), let folder else { return "report_ \(index) err" }
-            return ["delete_", String(index), head, expected, quote(item.folder), folder.stamp, quote(item.name)]
+            return ["delete_", String(index), head, expected, quote(item.folder), folder.identity.stamp,
+                    quote(item.name)]
                 .joined(separator: " ")
         }
     }

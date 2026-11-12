@@ -123,9 +123,11 @@ struct AdminScriptTests {
         #expect(exists(b))
     }
 
-    /// Script text only (never run): planned folder identities are made up.
-    private func text(_ steps: [AdminStep], folderOwner: uid_t = 501) -> String {
-        AdminScript.make(steps, folders: steps.map { _ in ItemIdentity(device: 7, inode: 42, owner: folderOwner) })
+    /// Script text only (never run): what planning found is made up.
+    private func text(_ steps: [AdminStep], userCanWrite: Bool = true) -> String {
+        let folder = AdminScript.PlannedFolder(
+            identity: ItemIdentity(device: 7, inode: 42, owner: 501), userCanWrite: userCanWrite)
+        return AdminScript.make(steps, folders: steps.map { _ in folder }, user: 501)
     }
 
     /// How many `$name` / `${…}` expansions in a line are outside double quotes (a small sh
@@ -158,9 +160,10 @@ struct AdminScriptTests {
         return count
     }
 
-    /// The step lines, after the functions.
+    /// The step lines, after the functions and the `me_=` line.
     private func callLines(_ script: String) -> [String] {
-        Array(script.dropFirst(AdminScript.prelude.count).split(separator: "\n").map(String.init))
+        Array(script.dropFirst(AdminScript.prelude.count).split(separator: "\n").map(String.init)
+            .filter { !$0.hasPrefix("me_=") })
     }
 
     @Test func bootOutLineOnlyForStepsThatAskForIt() throws {
@@ -173,16 +176,23 @@ struct AdminScriptTests {
                                 bootOutDaemon: false)),
         ])
         #expect(callLines(script) == [
-            "move_ 0 - 1 - 0 '/Library/LaunchDaemons/com.example.helper.plist' '/Users/u/.Trash' 7:42:501 'com.example.helper.plist'",
-            "move_ 1 - 0 - 0 '/Library/Caches/com.example' '/Users/u/.Trash' 7:42:501 'com.example'",
+            "move_ 0 - 1 - d '/Library/LaunchDaemons/com.example.helper.plist' '/Users/u/.Trash' 7:42:501 'com.example.helper.plist'",
+            "move_ 1 - 0 - d '/Library/Caches/com.example' '/Users/u/.Trash' 7:42:501 'com.example'",
             "exit 0",
         ])
-        // launchctl appears once, in move_, only behind the bootout flag ($3) and before the move.
+        // launchctl appears once, in move_, only behind the bootout flag ($3): after the volume and
+        // expected-identity checks, before any move.
         let bootOut = #"if [ "$3" = 1 ]; then /bin/launchctl bootout system "$6" >/dev/null 2>&1; fi"#
         #expect(script.components(separatedBy: "launchctl").count == 2)
         let bootOutAt = try #require(script.range(of: bootOut)).lowerBound
-        let moveAt = try #require(script.range(of: #"/bin/mv -n -h -- "$6" "./$9""#)).lowerBound
-        #expect(bootOutAt < moveAt)
+        let volumeCheckAt = try #require(script.range(of: #"[ "${was_%%:*}" != "${8%%:*}" ]"#)).lowerBound
+        let expectedCheckAt = try #require(script.range(of: #"[ "$was_" != "$4" ]"#)).lowerBound
+        let movesAt = try #require(script.range(of: #"case "$5" in"#)).lowerBound
+        #expect(volumeCheckAt < bootOutAt)
+        #expect(expectedCheckAt < bootOutAt)
+        #expect(bootOutAt < movesAt)
+        #expect(script.components(separatedBy: "/bin/mv ").count == 5)
+        #expect(try #require(script.range(of: "/bin/mv ")).lowerBound > bootOutAt)
     }
 
     @Test func scriptStartsSafelyAndUsesAbsoluteTools() {
@@ -194,11 +204,15 @@ struct AdminScriptTests {
         ])
         #expect(script.hasPrefix("set +e\nPATH=/usr/bin:/bin:/usr/sbin:/sbin\nexport PATH\n"))
         #expect(callLines(script) == [
-            "move_ 0 - 0 - 0 '/Library/Caches/a' '/Users/u/.Trash' 7:42:501 'a'",
+            "move_ 0 - 0 - d '/Library/Caches/a' '/Users/u/.Trash' 7:42:501 'a'",
             "delete_ 1 0 1:2:0 '/Users/u/.Trash' 7:42:501 'b'",
             "exit 0",
         ])
+        #expect(script.contains("\nme_=501\n"))
+        #expect(script.contains(#"/bin/mv -n -h -- "$6" . >/dev/null 2>&1"#))
         #expect(script.contains(#"/bin/mv -n -h -- "$6" "./$9" >/dev/null 2>&1"#))
+        #expect(script.contains(#"/bin/mv -n -h -- "$3" "./$tmp_" >/dev/null 2>&1"#))
+        #expect(script.contains(#"/bin/mv -n -h -- "./$tmp_" "./$4" >/dev/null 2>&1"#))
         #expect(script.contains(#"/bin/rm -rf -- "./$6" >/dev/null 2>&1"#))
         #expect(script.contains(#"cd -P -- "$1""#))
         // In the functions, every expansion sits inside double quotes.
@@ -210,16 +224,101 @@ struct AdminScriptTests {
         #expect(script.hasSuffix("exit 0\n"))
     }
 
-    @Test func moveBackOnlyIntoRootFolders() {
-        let step = AdminStep(op: .move(from: URL(filePath: "/Users/u/.Trash/x"), to: URL(filePath: "/Library/x"),
-                                       bootOutDaemon: false))
-        #expect(callLines(text([step], folderOwner: 0)).first == "move_ 0 - 0 - 1 '/Users/u/.Trash/x' '/Library' 7:42:0 'x'")
-        #expect(callLines(text([step], folderOwner: 501)).first == "move_ 0 - 0 - 0 '/Users/u/.Trash/x' '/Library' 7:42:501 'x'")
+    @Test func modeFollowsTheFolderAndTheName() {
+        let source = URL(filePath: "/Users/u/.Trash/x")
+        let recorded = ItemIdentity(device: 7, inode: 99, owner: 0)
+        let putBack = AdminStep(op: .move(from: source, to: URL(filePath: "/Library/x"), bootOutDaemon: false),
+                                expectedSource: recorded)
+        let unchecked = AdminStep(op: .move(from: source, to: URL(filePath: "/Library/x"), bootOutDaemon: false))
+        let numbered = AdminStep(op: .move(from: URL(filePath: "/Library/x"), to: URL(filePath: "/Users/u/.Trash/x 2"),
+                                           bootOutDaemon: false))
+        // A folder the user can't write: staged, and only with the recorded identity.
+        #expect(callLines(text([putBack], userCanWrite: false)).first
+            == "move_ 0 - 0 7:99:0 s '/Users/u/.Trash/x' '/Library' 7:42:501 'x'")
+        #expect(callLines(text([unchecked], userCanWrite: false)).first == "report_ 0 err")
+        // A folder the user can write: into the folder under the same name, or to the numbered name.
+        #expect(callLines(text([unchecked])).first == "move_ 0 - 0 - d '/Users/u/.Trash/x' '/Library' 7:42:501 'x'")
+        #expect(callLines(text([numbered])).first
+            == "move_ 0 - 0 - n '/Library/x' '/Users/u/.Trash' 7:42:501 'x 2'")
     }
 
     @Test func quoteEscapesEveryApostropheScalar() {
         let quoted = AdminScript.quote("a'\u{301}b'\u{FE0F}")
         #expect(Array(quoted.unicodeScalars) == Array("'a'\\''\u{301}b'\\''\u{FE0F}'".unicodeScalars))
+    }
+
+    // MARK: - Moves into a folder the user can't write (staged)
+
+    /// Runs `script` as the user and returns its output.
+    private func output(of script: String) -> String {
+        guard case .finished(let output) = UserShell().run(script: script, prompt: "test") else {
+            Issue.record("the script did not finish")
+            return ""
+        }
+        return output
+    }
+
+    private func hidden(in folder: URL) -> [String] {
+        ((try? fm.contentsOfDirectory(atPath: folder.path(percentEncoded: false))) ?? [])
+            .filter { $0.hasPrefix(".dustling-") }
+    }
+
+    @Test func putBackIsStagedThenPublished() throws {
+        let sandbox = try TestSandbox()
+        let trashed = try sandbox.file("home/.Trash/com.x.plist", bytes: 4)
+        let folder = try sandbox.directory("Library/LaunchDaemons")
+        let recorded = try #require(ItemIdentity.of(trashed))
+        let step = AdminStep(op: .move(from: trashed, to: folder.appending(path: "com.x.plist"), bootOutDaemon: false),
+                             expectedSource: recorded)
+        // Planned as a folder the user can't write; it is writable here so the user-level shell can act.
+        let plan = AdminScript.PlannedFolder(identity: try #require(ItemIdentity.of(folder)), userCanWrite: false)
+        let script = AdminScript.make([step], folders: [plan])
+        #expect(script.contains(" s '"))
+        #expect(AdminScript.parse(output(of: script), count: 1) == [.done])
+        #expect(ItemIdentity.of(folder.appending(path: "com.x.plist")) == recorded)
+        #expect(!exists(trashed))
+        #expect(hidden(in: folder).isEmpty)
+    }
+
+    /// `stage_` is run alone with a recorded identity (`was_`) the source does not have: what the
+    /// script sees when another program swapped the item just before root's rename.
+    @Test func stagedItemThatIsNotTheRecordedOneIsNeverPublished() throws {
+        let sandbox = try TestSandbox()
+        let source = try sandbox.file("home/.Trash/helper", bytes: 4)
+        let folder = try sandbox.directory("Library/PrivilegedHelperTools")
+        func stage(as user: uid_t) -> String {
+            output(of: [
+                AdminScript.prelude, "me_=\(user)",
+                "cd -P -- \(AdminScript.quote(folder.path(percentEncoded: false)))",
+                "was_=1:2:3",
+                "stage_ 0 - \(AdminScript.quote(source.path(percentEncoded: false))) 'helper'",
+                "exit 0",
+            ].joined(separator: "\n") + "\n")
+        }
+        // Someone else's item: kept under the hidden name, never published, never moved back out.
+        #expect(stage(as: getuid() &+ 1) == "R\t0\terr\n")
+        #expect(!exists(folder.appending(path: "helper")))
+        #expect(hidden(in: folder).count == 1)
+        #expect(!exists(source))
+        // The user's own item (only they could have swapped it in): deleted, never published.
+        let hiddenName = try #require(hidden(in: folder).first)
+        _ = rename(folder.appending(path: hiddenName).path(percentEncoded: false), source.path(percentEncoded: false))
+        #expect(stage(as: getuid()) == "R\t0\terr\n")
+        #expect(!exists(folder.appending(path: "helper")))
+        #expect(hidden(in: folder).isEmpty)
+        #expect(!exists(source))
+    }
+
+    @Test func moveToANumberedNameWorks() throws {
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        try sandbox.file("home/.Trash/a.log", bytes: 1)
+        let item = try sandbox.file("Library/Logs/a.log", bytes: 3)
+        let script = AdminScript.make([move(item, trash.appending(path: "a 2.log"))])
+        #expect(script.contains(" n '"))
+        #expect(AdminScript.parse(output(of: script), count: 1) == [.done])
+        #expect(size(trash.appending(path: "a 2.log")) == 3)
+        #expect(size(trash.appending(path: "a.log")) == 1)
     }
 
     // MARK: - Deletes
@@ -361,9 +460,37 @@ struct AdminScriptTests {
 
     // MARK: - osascript
 
-    @Test func osascriptWithoutPrivilegesRunsScript() {
-        let result = OsascriptAdminShell(privileged: false).run(script: "echo 'a\"b'", prompt: "x")
+    @Test func osascriptWithoutPrivilegesRunsScript() throws {
+        let shell = OsascriptAdminShell(privileged: false)
+        let result = shell.run(script: "echo 'a\"b'", prompt: "x")
         #expect(result == .finished(output: "a\"b\n"))
+        // Nothing of Dustling's environment reaches the script's shell (this test process has HOME,
+        // USER, TMPDIR…; bash would also run code from BASH_FUNC_*%%, SHELLOPTS or PS4).
+        guard case .finished(let environment) = shell.run(script: "/usr/bin/env", prompt: "x") else {
+            Issue.record("env did not run")
+            return
+        }
+        let names = Set(environment.split(separator: "\n").map { String($0.prefix { $0 != "=" }) })
+        #expect(names.isSubset(of: ["PATH", "PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"]), "\(names)")
+        #expect(environment.contains("PATH=/usr/bin:/bin:/usr/sbin:/sbin\n"))
+        #expect(OsascriptAdminShell.childEnvironment == ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+    }
+
+    @Test func processRunnerCanReplaceTheEnvironment() throws {
+        let poisoned = [
+            "PATH": "/usr/bin:/bin",
+            "BASH_FUNC_printf%%": "() { /bin/echo pwned; }",
+            "SHELLOPTS": "xtrace",
+            "PS4": "$(/bin/echo pwned >&2)",
+        ]
+        // The threat: bash (/bin/sh) obeys such variables before the first line of a script…
+        let obeyed = try ProcessCommandRunner().run("/bin/sh", ["-c", "printf '%s\\n' ok"], environment: poisoned)
+        #expect(obeyed.stdout == "pwned\n")
+        // …so the admin shell starts osascript with exactly its own environment.
+        let clean = try ProcessCommandRunner().run(
+            "/bin/sh", ["-c", "printf '%s\\n' ok"], environment: OsascriptAdminShell.childEnvironment)
+        #expect(clean.stdout == "ok\n")
+        #expect(clean.stderr.isEmpty)
     }
 
     @Test func appleScriptEscapesBackslashesAndQuotes() {

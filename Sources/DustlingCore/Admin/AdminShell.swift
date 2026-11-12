@@ -21,7 +21,12 @@ public protocol AdminShell: Sendable {
 /// script (Apple TN2065), so callers put every step of one user action into one script.
 public struct OsascriptAdminShell: AdminShell {
     private let privileged: Bool
-    private let commands: any CommandRunning
+    private let commands = ProcessCommandRunner()
+
+    /// The whole environment osascript (and so the script's shell) gets. Nothing is inherited from
+    /// Dustling: /bin/sh is bash, which runs code from variables like `BASH_FUNC_name%%`,
+    /// `SHELLOPTS` and `PS4` before the script's first line. Non-ASCII paths work without a locale.
+    static let childEnvironment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
 
     public init() {
         self.init(privileged: true)
@@ -31,13 +36,13 @@ public struct OsascriptAdminShell: AdminShell {
     /// Only for the one test that checks the osascript round trip.
     init(privileged: Bool) {
         self.privileged = privileged
-        self.commands = ProcessCommandRunner()
     }
 
     public func run(script: String, prompt: String) -> AdminShellResult {
         let source = Self.appleScript(script: script, prompt: prompt, privileged: privileged)
         do {
-            return Self.result(from: try commands.run("/usr/bin/osascript", ["-e", source]))
+            return Self.result(from: try commands.run(
+                "/usr/bin/osascript", ["-e", source], environment: Self.childEnvironment))
         } catch {
             return Self.result(from: error)
         }
