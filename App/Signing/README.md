@@ -17,7 +17,7 @@ and every later build signed with the same certificate satisfies it.
 | `release-certificate.pem` | The public certificate. Safe to publish. |
 | `release-certificate.sha1` | Its SHA-1, one line. `scripts/build-dmg.sh` refuses to sign with any other certificate. |
 
-The private key is never in this repository. It lives in `dustling-signing.p12` (kept by the maintainer, for example in a password manager) and in two GitHub Actions secrets, `DUSTLING_SIGNING_P12_BASE64` and `DUSTLING_SIGNING_P12_PASSWORD`, which only tag builds can read.
+The private key is never in this repository. It lives in `dustling-signing.p12` (kept by the maintainer, for example in a password manager) and in two GitHub Actions secrets, `DUSTLING_SIGNING_P12_BASE64` and `DUSTLING_SIGNING_P12_PASSWORD`, which the release workflow passes only to tag builds.
 
 ## Making the certificate (once)
 

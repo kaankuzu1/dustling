@@ -72,6 +72,7 @@ Copy this into the release pull request and tick each line. Use a build of the b
 - [ ] First install: on a Mac user account that never ran Dustling, open the disk image. Its window shows the background, Dustling and the Applications folder, none cut off by the title bar.
 - [ ] Drag Dustling to Applications and open it: macOS asks once to confirm ([INSTALL.md](INSTALL.md)), then the setup opens over the main window. The sidebar shows "Startup items" in full.
 - [ ] Update: drag the new version over the old one while the old one is closed, then while it is open. Replacing works, and the new version opens.
+- [ ] After the update, if macOS dropped Full Disk Access, Dustling says so before scanning and the fix in Settings works.
 - [ ] After the update from a signed release, Full Disk Access is still on and Dustling doesn't ask for it again.
 
 **Permissions**

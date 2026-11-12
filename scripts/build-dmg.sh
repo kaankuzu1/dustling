@@ -45,6 +45,15 @@ done
 
 fail() { echo "error: $*" >&2; exit 1; }
 
+# A release build must be signed, and must be pinned to the committed certificate. Checked before
+# the build so a missing key doesn't cost several minutes.
+if [[ $REQUIRE_SIGNING -eq 1 ]]; then
+  [[ -z "${DUSTLING_SIGNING_EXPECTED_SHA1:-}" ]] \
+    || fail "DUSTLING_SIGNING_EXPECTED_SHA1 is for tests only; --require-signing always uses App/Signing/release-certificate.sha1"
+  [[ -n "${DUSTLING_SIGNING_P12_BASE64:-}${DUSTLING_SIGNING_P12:-}" ]] \
+    || fail "release builds must be signed with Dustling's certificate; see docs/RELEASING.md"
+fi
+
 # The single place the version lives. Plain `key: value` or `key: "value"`.
 project_setting() {
   sed -n "s/^[[:space:]]*$1:[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*$/\1/p" App/project.yml | sed -n 1p
@@ -162,10 +171,12 @@ if [[ -n "$P12_FILE" ]]; then
     "$KEYCHAIN" > /dev/null 2>&1 || fail "couldn't let codesign use the signing key"
 
   # Not `find-identity -v`: a self-signed identity is listed as not trusted, which is fine here.
-  IDENTITIES="$(security find-identity -p codesigning "$KEYCHAIN" | grep -E '^[[:space:]]+[0-9]+\)' || true)"
+  # The same identity can be listed twice (once per keychain search), so dedupe by hash.
+  IDENTITIES="$(security find-identity -p codesigning "$KEYCHAIN" | grep -E '^[[:space:]]+[0-9]+\)' \
+    | awk '{print tolower($2)}' | sort -u || true)"
   [[ "$(printf '%s\n' "$IDENTITIES" | grep -c .)" -eq 1 ]] \
     || fail "expected one signing identity in the key file, found: ${IDENTITIES:-none}"
-  IDENTITY="$(printf '%s' "$IDENTITIES" | awk '{print tolower($2)}')"
+  IDENTITY="$IDENTITIES"
   [[ "$IDENTITY" == "$PINNED" ]] \
     || fail "the signing certificate isn't Dustling's release certificate; signing with another one would turn Full Disk Access off for everyone"
 
@@ -178,6 +189,10 @@ if [[ -n "$P12_FILE" ]]; then
   [[ "$REQUIREMENT" == "$WANT" ]] \
     || fail "the app's designated requirement is not the expected one. Got: $REQUIREMENT"
   SIGNATURE="Dustling release certificate ($PINNED)"
+  # The key isn't needed any more; don't leave it around for the rest of the run.
+  security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+  KEYCHAIN=""
+  [[ "$P12_FILE" != "$STAGE/signing.p12" ]] || rm -f "$P12_FILE"
 elif [[ $REQUIRE_SIGNING -eq 1 ]]; then
   fail "release builds must be signed with Dustling's certificate; see docs/RELEASING.md"
 fi
@@ -186,6 +201,9 @@ echo "==> Packing $APP_NAME.dmg"
 ditto "$APP" "$STAGE/$APP_NAME.app"
 # Finder info or File Provider tags from an iCloud-synced checkout would break the signature.
 xattr -cr "$STAGE/$APP_NAME.app"
+# The same goes for the "hidden" file flag, which the asset catalog output can carry over from a
+# synced or cached build folder; it would make the copy in the disk image fail to verify.
+chflags -R nohidden "$STAGE/$APP_NAME.app"
 codesign --verify --deep --strict "$STAGE/$APP_NAME.app" || fail "the app's signature doesn't verify"
 
 # dmgbuild lays out the window (background, icon positions, no toolbar) by writing Finder's

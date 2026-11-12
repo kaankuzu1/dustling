@@ -19,10 +19,11 @@
 # permission. Signed with one certificate, it is `identifier "app.dustling.Dustling" and
 # certificate leaf = H"<sha1>"`, which every later build satisfies.
 #
-# Needs openssl. The CERT_DIR environment variable below exists for tests only.
+# Needs openssl. The DUSTLING_SIGNING_CERT_DIR environment variable (a folder to write the .pem and
+# .sha1 into instead of App/Signing) exists for tests only.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CERT_DIR="${DUSTLING_SIGNING_CERT_DIR:-$ROOT/App/Signing}"  # tests only: keeps a trial run away from the real files
 
 fail() { echo "error: $*" >&2; exit 1; }
@@ -43,9 +44,10 @@ command -v openssl >/dev/null || fail "openssl is missing"
 
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
-case "$OUT_DIR/" in
-  "$ROOT"/*) rmdir "$OUT_DIR" 2>/dev/null || true; fail "the key must stay out of the repository; pick a folder outside $ROOT" ;;
-esac
+if [[ "$OUT_DIR/" == "$ROOT"/* ]] || git -C "$OUT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  rmdir "$OUT_DIR" 2>/dev/null || true
+  fail "the key must stay out of any git repository; pick a folder outside $ROOT"
+fi
 
 P12="$OUT_DIR/dustling-signing.p12"
 PEM="$CERT_DIR/release-certificate.pem"
@@ -72,10 +74,13 @@ extendedKeyUsage = critical,codeSigning
 CNF
 
 openssl req -x509 -newkey rsa:3072 -nodes -days 7300 -sha256 \
-  -config "$WORK/openssl.cnf" -keyout "$WORK/key.pem" -out "$WORK/cert.pem" 2>/dev/null
+  -config "$WORK/openssl.cnf" -keyout "$WORK/key.pem" -out "$WORK/cert.pem" 2> "$WORK/openssl.log" \
+  || { cat "$WORK/openssl.log" >&2; fail "openssl couldn't make the certificate"; }
 # The password goes through the environment, not the command line, where `ps` could show it.
 export P12_PASSWORD="$DUSTLING_SIGNING_P12_PASSWORD"
-openssl pkcs12 -export -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
+# The old PBE-SHA1-3DES encryption is what an older macOS `security` can import; openssl 3's
+# default (AES) isn't readable there.
+openssl pkcs12 -export -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
   -name "Dustling Release Signing" -passout env:P12_PASSWORD -out "$WORK/dustling-signing.p12"
 
 SHA1="$(openssl x509 -in "$WORK/cert.pem" -outform DER | openssl dgst -sha1 -r | cut -d ' ' -f1 | tr 'A-F' 'a-f')"
