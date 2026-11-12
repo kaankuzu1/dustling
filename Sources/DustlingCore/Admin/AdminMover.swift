@@ -53,9 +53,10 @@ public struct AdminMover: Sendable {
     }
 
     /// Runs every step in one script. The folder each step acts in is read now (planning) and the
-    /// script refuses a step whose folder changed by the time it runs (see `AdminScript`). A move
-    /// into a folder the user can't write is refused (`err`, never run) unless it carries the
-    /// item's recorded `expectedSource`, as Put back's steps do.
+    /// script refuses a step whose folder changed by the time it runs (see `AdminScript`). These
+    /// moves are refused (`err`, never run): across volumes; into a folder the user can't write
+    /// without the item's recorded `expectedSource` (Put back's steps carry it); with
+    /// `bootOutDaemon` when the plist's folder is one the user can write.
     /// No steps: the shell is never called. The password box cancelled: every step is `.cancelled`.
     /// The shell failed: every step is `.notDone` with why.
     public func perform(_ steps: [AdminStep], prompt: String) -> [AdminStepResult] {

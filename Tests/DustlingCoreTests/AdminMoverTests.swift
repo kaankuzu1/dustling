@@ -268,9 +268,41 @@ struct AdminMoverTests {
         // then can't perform; root could).
         let recorded = try #require(ItemIdentity.of(trashed))
         #expect(mover.perform([moveStep(trashed, destination, expected: recorded)], prompt: "p") == [refused])
-        #expect(shell.calls.last?.script.contains("\nmove_ 0 - 0 \(recorded.stamp) s '") == true)
+        #expect(shell.calls.last?.script.contains("\nmove_ 0 - 0 \(recorded.stamp) 1 '") == true)
         #expect(size(trashed) == 4)
         #expect(contents(folder).isEmpty)
+    }
+
+    @Test func putBackFromASwappedTrashIsRefused() throws {
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        let trashed = try sandbox.file("home/.Trash/helper", bytes: 4)
+        let victim = try sandbox.file("elsewhere/helper", bytes: 6)
+        let folder = try sandbox.directory("Library/PrivilegedHelperTools")
+        let realTrash = sandbox.root.appending(path: "home/Trash-real")
+        let elsewhere = victim.deletingLastPathComponent()
+        let recorded = try #require(ItemIdentity.of(trashed))
+        let shell = UserShell(beforeRun: {
+            try FileManager.default.moveItem(at: trash, to: realTrash)
+            try FileManager.default.createSymbolicLink(at: trash, withDestinationURL: elsewhere)
+        })
+        let mover = AdminMover(shell: shell, environment: sandbox.environment)
+        #expect(mover.perform([moveStep(trashed, folder.appending(path: "helper"), expected: recorded)], prompt: "p")
+            == [refused])
+        #expect(size(victim) == 6)
+        #expect(size(realTrash.appending(path: "helper")) == 4)
+        #expect(contents(folder).isEmpty)
+    }
+
+    @Test func moveAcrossVolumesIsRefusedWhenPlanned() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.directory("home/.Trash")
+        let shell = UserShell()
+        let mover = AdminMover(shell: shell, environment: sandbox.environment)
+        // /dev is its own file system; the step must never reach mv (which would copy and delete).
+        let step = moveStep(URL(filePath: "/dev/null"), sandbox.environment.userTrash.appending(path: "null"))
+        #expect(mover.perform([step], prompt: "p") == [refused])
+        #expect(shell.calls.first?.script.hasSuffix("\nreport_ 0 err\nexit 0\n") == true)
     }
 
     @Test func deleteChecksTheRecordedItem() throws {

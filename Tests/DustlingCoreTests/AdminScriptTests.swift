@@ -51,6 +51,7 @@ struct AdminScriptTests {
             move(folder, trash.appending(path: "com.x")),
         ])
         #expect(results == [.done, .done])
+        #expect(hidden(in: trash).isEmpty)
         #expect(!exists(file))
         #expect(!exists(folder))
         #expect(size(trash.appending(path: "a.bin")) == 16)
@@ -123,11 +124,20 @@ struct AdminScriptTests {
         #expect(exists(b))
     }
 
-    /// Script text only (never run): what planning found is made up.
-    private func text(_ steps: [AdminStep], userCanWrite: Bool = true) -> String {
+    /// Script text only (never run): what planning found is made up. Destination (or item)
+    /// folders are 7:42:501, source folders 7:41:0, unless `sourceDevice` says otherwise.
+    private func text(
+        _ steps: [AdminStep], destinationWritable: Bool = true, sourceWritable: Bool = false, sourceDevice: UInt64 = 7
+    ) -> String {
         let folder = AdminScript.PlannedFolder(
-            identity: ItemIdentity(device: 7, inode: 42, owner: 501), userCanWrite: userCanWrite)
-        return AdminScript.make(steps, folders: steps.map { _ in folder }, user: 501)
+            identity: ItemIdentity(device: 7, inode: 42, owner: 501), userCanWrite: destinationWritable)
+        let source = AdminScript.PlannedFolder(
+            identity: ItemIdentity(device: sourceDevice, inode: 41, owner: 0), userCanWrite: sourceWritable)
+        let plans = steps.map { step -> AdminScript.StepPlan in
+            if case .move = step.op { return AdminScript.StepPlan(folder: folder, source: source) }
+            return AdminScript.StepPlan(folder: folder, source: nil)
+        }
+        return AdminScript.make(steps, plans: plans, user: 501, token: "T0K3N")
     }
 
     /// How many `$name` / `${…}` expansions in a line are outside double quotes (a small sh
@@ -160,10 +170,10 @@ struct AdminScriptTests {
         return count
     }
 
-    /// The step lines, after the functions and the `me_=` line.
+    /// The step lines, after the functions and the `me_=` / `tok_=` lines.
     private func callLines(_ script: String) -> [String] {
         Array(script.dropFirst(AdminScript.prelude.count).split(separator: "\n").map(String.init)
-            .filter { !$0.hasPrefix("me_=") })
+            .filter { !$0.hasPrefix("me_=") && !$0.hasPrefix("tok_=") })
     }
 
     @Test func bootOutLineOnlyForStepsThatAskForIt() throws {
@@ -176,22 +186,22 @@ struct AdminScriptTests {
                                 bootOutDaemon: false)),
         ])
         #expect(callLines(script) == [
-            "move_ 0 - 1 - d '/Library/LaunchDaemons/com.example.helper.plist' '/Users/u/.Trash' 7:42:501 'com.example.helper.plist'",
-            "move_ 1 - 0 - d '/Library/Caches/com.example' '/Users/u/.Trash' 7:42:501 'com.example'",
+            "move_ 0 - 1 - 1 '/Library/LaunchDaemons' 7:41:0 'com.example.helper.plist' '/Users/u/.Trash' 7:42:501 'com.example.helper.plist'",
+            "move_ 1 - 0 - 1 '/Library/Caches' 7:41:0 'com.example' '/Users/u/.Trash' 7:42:501 'com.example'",
             "exit 0",
         ])
-        // launchctl appears once, in move_, only behind the bootout flag ($3): after the volume and
-        // expected-identity checks, before any move.
-        let bootOut = #"if [ "$3" = 1 ]; then /bin/launchctl bootout system "$6" >/dev/null 2>&1; fi"#
+        // launchctl appears once, in move_, only behind the bootout flag: after the volume and
+        // expected-identity checks and the staging folder, before any move.
+        let bootOut = #"if [ "$b_" = 1 ]; then /bin/launchctl bootout system "$sd_/$sn_" >/dev/null 2>&1; fi"#
         #expect(script.components(separatedBy: "launchctl").count == 2)
         let bootOutAt = try #require(script.range(of: bootOut)).lowerBound
-        let volumeCheckAt = try #require(script.range(of: #"[ "${was_%%:*}" != "${8%%:*}" ]"#)).lowerBound
-        let expectedCheckAt = try #require(script.range(of: #"[ "$was_" != "$4" ]"#)).lowerBound
-        let movesAt = try #require(script.range(of: #"case "$5" in"#)).lowerBound
+        let volumeCheckAt = try #require(script.range(of: #"[ "${sid_%%:*}" != "${did_%%:*}" ]"#)).lowerBound
+        let expectedCheckAt = try #require(script.range(of: #"[ "$was_" != "$e_" ]"#)).lowerBound
+        let stagingAt = try #require(script.range(of: "/bin/mkdir -m 700")).lowerBound
         #expect(volumeCheckAt < bootOutAt)
         #expect(expectedCheckAt < bootOutAt)
-        #expect(bootOutAt < movesAt)
-        #expect(script.components(separatedBy: "/bin/mv ").count == 5)
+        #expect(stagingAt < bootOutAt)
+        #expect(script.components(separatedBy: "/bin/mv ").count == 4)
         #expect(try #require(script.range(of: "/bin/mv ")).lowerBound > bootOutAt)
     }
 
@@ -204,15 +214,18 @@ struct AdminScriptTests {
         ])
         #expect(script.hasPrefix("set +e\nPATH=/usr/bin:/bin:/usr/sbin:/sbin\nexport PATH\n"))
         #expect(callLines(script) == [
-            "move_ 0 - 0 - d '/Library/Caches/a' '/Users/u/.Trash' 7:42:501 'a'",
+            "move_ 0 - 0 - 1 '/Library/Caches' 7:41:0 'a' '/Users/u/.Trash' 7:42:501 'a'",
             "delete_ 1 0 1:2:0 '/Users/u/.Trash' 7:42:501 'b'",
             "exit 0",
         ])
-        #expect(script.contains("\nme_=501\n"))
-        #expect(script.contains(#"/bin/mv -n -h -- "$6" . >/dev/null 2>&1"#))
-        #expect(script.contains(#"/bin/mv -n -h -- "$6" "./$9" >/dev/null 2>&1"#))
-        #expect(script.contains(#"/bin/mv -n -h -- "$3" "./$tmp_" >/dev/null 2>&1"#))
-        #expect(script.contains(#"/bin/mv -n -h -- "./$tmp_" "./$4" >/dev/null 2>&1"#))
+        #expect(script.contains("\nme_=501\ntok_=T0K3N\n"))
+        // The only cross-folder rename: from the pinned source folder into the staging folder.
+        #expect(script.contains(#"/bin/mv -n -h -- "./$sn_" "$dd_/$st_/$sn_" >/dev/null 2>&1"#))
+        #expect(script.contains(#"/bin/mv -n -h -- "./$st_/$sn_" "./$st_/$dn_" >/dev/null 2>&1"#))
+        #expect(script.contains(#"/bin/mv -n -h -- "./$st_/$dn_" . >/dev/null 2>&1"#))
+        // Never a destination that mv could take for a folder to move into.
+        #expect(!script.contains(#""./$dn_" >"#))
+        #expect(script.contains(#"/bin/mkdir -m 700 -- "./$st_""#))
         #expect(script.contains(#"/bin/rm -rf -- "./$6" >/dev/null 2>&1"#))
         #expect(script.contains(#"cd -P -- "$1""#))
         // In the functions, every expansion sits inside double quotes.
@@ -224,7 +237,7 @@ struct AdminScriptTests {
         #expect(script.hasSuffix("exit 0\n"))
     }
 
-    @Test func modeFollowsTheFolderAndTheName() {
+    @Test func planningRefusesUnsafeMoves() {
         let source = URL(filePath: "/Users/u/.Trash/x")
         let recorded = ItemIdentity(device: 7, inode: 99, owner: 0)
         let putBack = AdminStep(op: .move(from: source, to: URL(filePath: "/Library/x"), bootOutDaemon: false),
@@ -232,14 +245,20 @@ struct AdminScriptTests {
         let unchecked = AdminStep(op: .move(from: source, to: URL(filePath: "/Library/x"), bootOutDaemon: false))
         let numbered = AdminStep(op: .move(from: URL(filePath: "/Library/x"), to: URL(filePath: "/Users/u/.Trash/x 2"),
                                            bootOutDaemon: false))
-        // A folder the user can't write: staged, and only with the recorded identity.
-        #expect(callLines(text([putBack], userCanWrite: false)).first
-            == "move_ 0 - 0 7:99:0 s '/Users/u/.Trash/x' '/Library' 7:42:501 'x'")
-        #expect(callLines(text([unchecked], userCanWrite: false)).first == "report_ 0 err")
-        // A folder the user can write: into the folder under the same name, or to the numbered name.
-        #expect(callLines(text([unchecked])).first == "move_ 0 - 0 - d '/Users/u/.Trash/x' '/Library' 7:42:501 'x'")
+        let daemon = AdminStep(op: .move(from: URL(filePath: "/Library/LaunchDaemons/d.plist"),
+                                         to: URL(filePath: "/Users/u/.Trash/d.plist"), bootOutDaemon: true))
+        // Into a folder the user can't write: only with the recorded identity.
+        #expect(callLines(text([putBack], destinationWritable: false, sourceWritable: true)).first
+            == "move_ 0 - 0 7:99:0 1 '/Users/u/.Trash' 7:41:0 'x' '/Library' 7:42:501 'x'")
+        #expect(callLines(text([unchecked], destinationWritable: false, sourceWritable: true)).first == "report_ 0 err")
+        // Into a folder the user can write, also to a numbered name.
         #expect(callLines(text([numbered])).first
-            == "move_ 0 - 0 - n '/Library/x' '/Users/u/.Trash' 7:42:501 'x 2'")
+            == "move_ 0 - 0 - 0 '/Library' 7:41:0 'x' '/Users/u/.Trash' 7:42:501 'x 2'")
+        // Never across volumes (mv would copy and delete instead of renaming).
+        #expect(callLines(text([numbered], sourceDevice: 8)).first == "report_ 0 err")
+        // Booting out a daemon whose plist folder the user could swap: refused.
+        #expect(callLines(text([daemon], sourceWritable: true)).first == "report_ 0 err")
+        #expect(callLines(text([daemon], sourceWritable: false)).first?.hasPrefix("move_ 0 - 1 - 1 ") == true)
     }
 
     @Test func quoteEscapesEveryApostropheScalar() {
@@ -271,42 +290,110 @@ struct AdminScriptTests {
         let step = AdminStep(op: .move(from: trashed, to: folder.appending(path: "com.x.plist"), bootOutDaemon: false),
                              expectedSource: recorded)
         // Planned as a folder the user can't write; it is writable here so the user-level shell can act.
-        let plan = AdminScript.PlannedFolder(identity: try #require(ItemIdentity.of(folder)), userCanWrite: false)
-        let script = AdminScript.make([step], folders: [plan])
-        #expect(script.contains(" s '"))
+        let real = try #require(AdminScript.plan(of: step))
+        let plan = AdminScript.StepPlan(
+            folder: AdminScript.PlannedFolder(identity: real.folder.identity, userCanWrite: false), source: real.source)
+        let script = AdminScript.make([step], plans: [plan])
+        #expect(script.contains("\nmove_ 0 - 0 \(recorded.stamp) 1 '"))
         #expect(AdminScript.parse(output(of: script), count: 1) == [.done])
         #expect(ItemIdentity.of(folder.appending(path: "com.x.plist")) == recorded)
         #expect(!exists(trashed))
         #expect(hidden(in: folder).isEmpty)
     }
 
-    /// `stage_` is run alone with a recorded identity (`was_`) the source does not have: what the
-    /// script sees when another program swapped the item just before root's rename.
-    @Test func stagedItemThatIsNotTheRecordedOneIsNeverPublished() throws {
-        let sandbox = try TestSandbox()
-        let source = try sandbox.file("home/.Trash/helper", bytes: 4)
+    /// Puts back `helper` from the Trash into a folder, with a test-only `in_` that swaps another
+    /// file in at `helper` just before root's rename (the third time a folder is pinned): what a
+    /// program running as the user could do at that instant. `me_` is set to `user`.
+    private func putBackWithSwap(in sandbox: TestSandbox, user: uid_t) throws
+        -> (output: String, folder: URL, kept: URL)
+    {
+        let trashed = try sandbox.file("home/.Trash/helper", bytes: 4)
+        let kept = sandbox.root.appending(path: "home/.Trash/kept")
+        let impostor = try sandbox.file("impostor", bytes: 9)
         let folder = try sandbox.directory("Library/PrivilegedHelperTools")
-        func stage(as user: uid_t) -> String {
-            output(of: [
-                AdminScript.prelude, "me_=\(user)",
-                "cd -P -- \(AdminScript.quote(folder.path(percentEncoded: false)))",
-                "was_=1:2:3",
-                "stage_ 0 - \(AdminScript.quote(source.path(percentEncoded: false))) 'helper'",
-                "exit 0",
-            ].joined(separator: "\n") + "\n")
-        }
-        // Someone else's item: kept under the hidden name, never published, never moved back out.
-        #expect(stage(as: getuid() &+ 1) == "R\t0\terr\n")
-        #expect(!exists(folder.appending(path: "helper")))
-        #expect(hidden(in: folder).count == 1)
-        #expect(!exists(source))
-        // The user's own item (only they could have swapped it in): deleted, never published.
-        let hiddenName = try #require(hidden(in: folder).first)
-        _ = rename(folder.appending(path: hiddenName).path(percentEncoded: false), source.path(percentEncoded: false))
-        #expect(stage(as: getuid()) == "R\t0\terr\n")
-        #expect(!exists(folder.appending(path: "helper")))
+        let step = AdminStep(op: .move(from: trashed, to: folder.appending(path: "helper"), bootOutDaemon: false),
+                             expectedSource: try #require(ItemIdentity.of(trashed)))
+        let real = try #require(AdminScript.plan(of: step))
+        let plan = AdminScript.StepPlan(
+            folder: AdminScript.PlannedFolder(identity: real.folder.identity, userCanWrite: false), source: real.source)
+        let q = { (url: URL) in AdminScript.quote(url.path(percentEncoded: false)) }
+        let swap = [
+            "pins_=0",
+            "in_() {",
+            "  pins_=$((pins_ + 1))",
+            "  if [ \"$pins_\" = 3 ]; then /bin/mv \(q(trashed)) \(q(kept)); /bin/cp \(q(impostor)) \(q(trashed)); fi",
+            "  cd -P -- \"$1\" 2>/dev/null && [ \"$(id_ .)\" = \"$2\" ]",
+            "}",
+        ].joined(separator: "\n")
+        let script = AdminScript.make([step], plans: [plan], user: user)
+            .replacingOccurrences(of: "\nme_=", with: "\n\(swap)\nme_=")
+        return (output(of: script), folder, kept)
+    }
+
+    @Test func swappedSourceIsNeverPublished() throws {
+        // The impostor is the user's own: deleted, nothing published, the staging folder removed.
+        let ownSandbox = try TestSandbox()
+        let own = try putBackWithSwap(in: ownSandbox, user: getuid())
+        #expect(own.output == "R\t0\terr\n")
+        #expect(((try? fm.contentsOfDirectory(atPath: own.folder.path(percentEncoded: false))) ?? []).isEmpty)
+        #expect(size(own.kept) == 4)
+        // Someone else's (as seen by `me_`): kept inside the hidden staging folder, never published,
+        // never moved back out.
+        let otherSandbox = try TestSandbox()
+        let other = try putBackWithSwap(in: otherSandbox, user: getuid() &+ 1)
+        #expect(other.output == "R\t0\terr\n")
+        let left = (try? fm.contentsOfDirectory(atPath: other.folder.path(percentEncoded: false))) ?? []
+        #expect(left.count == 1 && left.first?.hasPrefix(".dustling-") == true)
+        #expect(size(other.folder.appending(path: "\(left.first ?? "")/helper")) == 9)
+        #expect(!exists(other.folder.appending(path: "helper")))
+        #expect(size(other.kept) == 4)
+    }
+
+    @Test func trashSwappedJustBeforeTheRenameIsNeverUsed() throws {
+        // Right after root re-pins the Trash (source folder) for the rename, the Trash is swapped
+        // for a link to a folder holding a same-named item. The rename names the source relative to
+        // the pinned folder, so it still takes the recorded item; the other item is never touched.
+        let sandbox = try TestSandbox()
+        let trashed = try sandbox.file("home/.Trash/helper", bytes: 4)
+        let victim = try sandbox.file("elsewhere/helper", bytes: 6)
+        let trash = sandbox.root.appending(path: "home/.Trash")
+        let realTrash = sandbox.root.appending(path: "home/Trash-real")
+        let elsewhere = sandbox.root.appending(path: "elsewhere")
+        let folder = try sandbox.directory("Library/PrivilegedHelperTools")
+        let recorded = try #require(ItemIdentity.of(trashed))
+        let step = AdminStep(op: .move(from: trashed, to: folder.appending(path: "helper"), bootOutDaemon: false),
+                             expectedSource: recorded)
+        let q = { (url: URL) in AdminScript.quote(url.path(percentEncoded: false)) }
+        let swap = [
+            "pins_=0",
+            "in_() {",
+            "  pins_=$((pins_ + 1))",
+            "  cd -P -- \"$1\" 2>/dev/null && [ \"$(id_ .)\" = \"$2\" ] || return 1",
+            "  if [ \"$pins_\" = 3 ]; then /bin/mv \(q(trash)) \(q(realTrash)) && /bin/ln -s \(q(elsewhere)) \(q(trash)); fi",
+            "}",
+        ].joined(separator: "\n")
+        let script = AdminScript.make([step]).replacingOccurrences(of: "\nme_=", with: "\n\(swap)\nme_=")
+        #expect(AdminScript.parse(output(of: script), count: 1) == [.done])
+        #expect((try? fm.destinationOfSymbolicLink(atPath: trash.path(percentEncoded: false))) != nil)
+        #expect(ItemIdentity.of(folder.appending(path: "helper")) == recorded)
+        #expect(size(victim) == 6)
         #expect(hidden(in: folder).isEmpty)
-        #expect(!exists(source))
+        #expect(!exists(realTrash.appending(path: "helper")))
+    }
+
+    @Test func stagingFolderMustBeNew() throws {
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        let elsewhere = try sandbox.directory("elsewhere")
+        let item = try sandbox.file("Library/Caches/a", bytes: 4)
+        // Someone already put a link where the staging folder would be made.
+        try fm.createSymbolicLink(at: trash.appending(path: ".dustling-T0K3N-0"), withDestinationURL: elsewhere)
+        let step = move(item, trash.appending(path: "a"))
+        let script = AdminScript.make([step], plans: [AdminScript.plan(of: step)], token: "T0K3N")
+        #expect(AdminScript.parse(output(of: script), count: 1)
+            == [.notDone(reason: "macOS refused, even with your password")])
+        #expect(size(item) == 4)
+        #expect(((try? fm.contentsOfDirectory(atPath: elsewhere.path(percentEncoded: false))) ?? []).isEmpty)
     }
 
     @Test func moveToANumberedNameWorks() throws {
@@ -315,7 +402,7 @@ struct AdminScriptTests {
         try sandbox.file("home/.Trash/a.log", bytes: 1)
         let item = try sandbox.file("Library/Logs/a.log", bytes: 3)
         let script = AdminScript.make([move(item, trash.appending(path: "a 2.log"))])
-        #expect(script.contains(" n '"))
+        #expect(script.contains("\nmove_ 0 - 0 - 0 '"))
         #expect(AdminScript.parse(output(of: script), count: 1) == [.done])
         #expect(size(trash.appending(path: "a 2.log")) == 3)
         #expect(size(trash.appending(path: "a.log")) == 1)
@@ -483,12 +570,12 @@ struct AdminScriptTests {
             "SHELLOPTS": "xtrace",
             "PS4": "$(/bin/echo pwned >&2)",
         ]
-        // The threat: bash (/bin/sh) obeys such variables before the first line of a script…
-        let obeyed = try ProcessCommandRunner().run("/bin/sh", ["-c", "printf '%s\\n' ok"], environment: poisoned)
+        // The threat: bash (which /bin/sh is) obeys such variables before the first line of a script…
+        let obeyed = try ProcessCommandRunner().run("/bin/bash", ["-c", "printf '%s\\n' ok"], environment: poisoned)
         #expect(obeyed.stdout == "pwned\n")
         // …so the admin shell starts osascript with exactly its own environment.
         let clean = try ProcessCommandRunner().run(
-            "/bin/sh", ["-c", "printf '%s\\n' ok"], environment: OsascriptAdminShell.childEnvironment)
+            "/bin/bash", ["-c", "printf '%s\\n' ok"], environment: OsascriptAdminShell.childEnvironment)
         #expect(clean.stdout == "ok\n")
         #expect(clean.stderr.isEmpty)
     }
