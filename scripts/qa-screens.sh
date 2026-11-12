@@ -82,6 +82,7 @@ STATES=(
   "home-limited||-DustlingHomeFixture limited"
   "junk-scanning||-DustlingHomeFixture scanning"
   "junk-empty-trash||-DustlingHomeFixture emptytrash"
+  "junk-empty-trash-problems||-DustlingHomeFixture emptytrashproblems"
   "junk-review-files||-DustlingHomeFixture reviewfiles"
   "junk-close-apps||-DustlingHomeFixture closeapps"
   "junk-done||-DustlingHomeFixture done"

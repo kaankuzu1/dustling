@@ -33,6 +33,7 @@ public struct TrashInspector: Sendable {
     private let sizer: DirectorySizer
     private let inspect: @Sendable (URL) -> Kind
     private let includeExternalVolumes: Bool
+    private let blocker: @Sendable (URL, uid_t) -> TrashBlocker?
 
     static let noAccessReason = "no access, grant Full Disk Access"
 
@@ -43,15 +44,18 @@ public struct TrashInspector: Sendable {
     ) {
         self.init(
             environment: environment, journal: journal, logger: logger, sizer: sizer,
-            includeExternalVolumes: includeExternalVolumes, inspect: Self.lstatKind)
+            includeExternalVolumes: includeExternalVolumes, inspect: Self.lstatKind,
+            blocker: { TrashUnlocker.blocker(of: $0, userID: $1) })
     }
 
     /// Test seam: replaces the `lstat` classification so error branches can be exercised.
     init(
         environment: SystemEnvironment, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer,
         includeExternalVolumes: Bool = true,
-        inspect: @escaping @Sendable (URL) -> Kind
+        inspect: @escaping @Sendable (URL) -> Kind,
+        blocker: @escaping @Sendable (URL, uid_t) -> TrashBlocker? = { TrashUnlocker.blocker(of: $0, userID: $1) }
     ) {
+        self.blocker = blocker
         self.includeExternalVolumes = includeExternalVolumes
         self.inspect = inspect
         self.environment = environment
@@ -138,12 +142,7 @@ public struct TrashInspector: Sendable {
                     for child in children {
                         let bytes = sizer.measure(child).bytes
                         let outcome: DeletionOutcome
-                        do {
-                            try FileManager.default.removeItem(at: child)   // never follows symlinks
-                            outcome = .deleted
-                        } catch {
-                            outcome = .failed(reason: error.localizedDescription)
-                        }
+                        outcome = remove(child)
                         entries.append(JournalEntry(
                             originalPath: child.path, bytes: bytes, outcome: outcome))
                     }
@@ -170,6 +169,28 @@ public struct TrashInspector: Sendable {
             record.entries.append(Self.marker("<history>", error))
         }
         return record
+    }
+
+    /// Deletes one Trash child. When that fails, unlocks the user's own locked items (the user
+    /// confirmed emptying) and tries once more; what still fails is explained, not guessed at.
+    private func remove(_ child: URL) -> DeletionOutcome {
+        let fm = FileManager.default
+        do {
+            try fm.removeItem(at: child)   // never follows symlinks
+            return .deleted
+        } catch {
+            _ = TrashUnlocker.unlockOwnItems(in: child, userID: environment.userID)
+        }
+        do {
+            try fm.removeItem(at: child)
+            return .deleted
+        } catch {
+            switch blocker(child, environment.userID) {
+            case .otherOwner?: return .needsAdmin
+            case .protectedByMacOS?: return .failed(reason: "protected by macOS")
+            case nil: return .failed(reason: error.localizedDescription)
+            }
+        }
     }
 
     // MARK: - Discovery

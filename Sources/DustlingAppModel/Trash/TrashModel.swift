@@ -13,6 +13,48 @@ public enum EmptyTrashResult: Sendable {
     case refused(reason: String)
 }
 
+/// What Empty Trash could not delete, counted by cause, for the sheet to say so in plain words.
+public struct EmptyTrashProblems: Equatable, Sendable {
+    /// Belong to another account on this Mac; only an administrator can delete them.
+    public let needsAdmin: Int
+    /// Protected by macOS.
+    public let protected: Int
+    /// Failed for another reason; the log has it.
+    public let failed: Int
+
+    /// Nil when the run left nothing behind. The `<history>` / `<log>` markers are not Trash items.
+    public static func of(_ record: RunRecord) -> EmptyTrashProblems? {
+        var admin = 0, protected = 0, failed = 0
+        for entry in record.entries where !entry.originalPath.hasPrefix("<") {
+            switch entry.outcome {
+            case .needsAdmin: admin += 1
+            case .failed(let reason): if reason == "protected by macOS" { protected += 1 } else { failed += 1 }
+            default: break
+            }
+        }
+        guard admin + protected + failed > 0 else { return nil }
+        return EmptyTrashProblems(needsAdmin: admin, protected: protected, failed: failed)
+    }
+
+    public var message: String {
+        var parts: [String] = []
+        if needsAdmin > 0 {
+            parts.append("\(Self.count(needsAdmin, "item belongs", "items belong")) to another account on this Mac, usually because an installer put them there. Open the Trash in Finder and empty it there: Finder asks for your password.")
+        }
+        if protected > 0 {
+            parts.append("\(Self.count(protected, "item is", "items are")) protected by macOS and can't be deleted.")
+        }
+        if failed > 0 {
+            parts.append("\(Self.count(failed, "item", "items")) couldn't be deleted. The log has the reason for each.")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    private static func count(_ n: Int, _ one: String, _ many: String) -> String {
+        "\(n) \(n == 1 ? one : many)"
+    }
+}
+
 @MainActor @Observable
 public final class TrashModel {
     /// Nil until the first `refresh()`.

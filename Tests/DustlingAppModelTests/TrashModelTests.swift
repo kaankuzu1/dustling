@@ -233,10 +233,33 @@ struct TrashModelTests {
         await model.refresh()
         #expect(model.items == [item])   // refresh never re-read the real Trash
     }
+
+    @Test func problemsSummaryNamesEachCause() {
+        func entry(_ name: String, _ outcome: DeletionOutcome) -> JournalEntry {
+            JournalEntry(originalPath: "/t/\(name)", bytes: 1, outcome: outcome)
+        }
+        let record = RunRecord(startedAt: Date(), kind: .emptyTrash, entries: [
+            entry("a", .deleted), entry("b", .needsAdmin), entry("c", .failed(reason: "protected by macOS")),
+            entry("d", .failed(reason: "boom")), entry("e", .failed(reason: "boom")),
+            JournalEntry(originalPath: "<log>", bytes: 0, outcome: .failed(reason: "disk full")),
+        ], restorable: false)
+        let problems = EmptyTrashProblems.of(record)
+        #expect(problems == EmptyTrashProblems(needsAdmin: 1, protected: 1, failed: 2))
+        #expect(problems?.message == "1 item belongs to another account on this Mac, usually because an installer put them there. Open the Trash in Finder and empty it there: Finder asks for your password. 1 item is protected by macOS and can't be deleted. 2 items couldn't be deleted. The log has the reason for each.")
+    }
+
+    @Test func problemsSummaryPluralsAndNil() {
+        let admin = EmptyTrashProblems(needsAdmin: 5, protected: 0, failed: 0)
+        #expect(admin.message.hasPrefix("5 items belong to another account"))
+        #expect(EmptyTrashProblems(needsAdmin: 0, protected: 3, failed: 0).message == "3 items are protected by macOS and can't be deleted.")
+        #expect(EmptyTrashProblems(needsAdmin: 0, protected: 0, failed: 1).message == "1 item couldn't be deleted. The log has the reason for each.")
+        let clean = RunRecord(startedAt: Date(), kind: .emptyTrash, entries: [
+            JournalEntry(originalPath: "/t/a", bytes: 1, outcome: .deleted)], restorable: false)
+        #expect(EmptyTrashProblems.of(clean) == nil)
+    }
 }
 
 private extension TrashModel {
     /// What the sheet would show and the user confirm.
     var shownBytes: UInt64 { contents?.size.bytes ?? 0 }
-
 }

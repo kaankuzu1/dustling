@@ -47,7 +47,7 @@ struct JunkScanView: View {
         .sheet(isPresented: $confirmingEmptyTrash) { EmptyTrashSheet() }
         .dismissedOnQuit($confirmingEmptyTrash)
         #if DEBUG
-        .task { if HomeFixture.state == "emptytrash" { confirmingEmptyTrash = true } }
+        .task { if HomeFixture.state == "emptytrash" || HomeFixture.state == "emptytrashproblems" { confirmingEmptyTrash = true } }
         #endif
     }
 

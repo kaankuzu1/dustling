@@ -274,7 +274,7 @@ final class AppModels {
         // too, never the real history.
         if !history.isFixture { showHistoryFixture("runs") }
         uninstallerCounted = uninstallerFixture
-        selection = ["emptytrash", "reviewfiles", "closeapps", "scanning", "done"].contains(HomeFixture.state) ? .junkScan : .home
+        selection = ["emptytrash", "emptytrashproblems", "reviewfiles", "closeapps", "scanning", "done"].contains(HomeFixture.state) ? .junkScan : .home
     }
 
     /// The fixture's scan: the sample results instead of reading the disk.

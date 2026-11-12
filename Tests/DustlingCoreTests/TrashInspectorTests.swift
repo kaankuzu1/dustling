@@ -75,7 +75,14 @@ struct TrashInspectorTests {
         let lockedDir = locked.deletingLastPathComponent()
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: lockedDir.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedDir.path) }
-        let (inspector, _) = makeInspector(sandbox)
+        // Claim to be another user so the folder isn't unlocked (it would be, for its owner).
+        var environment = sandbox.environment
+        environment.userID = 503
+        let inspector = TrashInspector(
+            environment: environment,
+            journal: RunJournal(directory: environment.historyDirectory),
+            logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: false, inspect: TrashInspector.lstatKind, blocker: { _, _ in nil })
         let record = inspector.emptyTrash()
         #expect(record.entries.count == 2)
         let lockedEntry = try #require(record.entries.first { $0.originalPath.hasSuffix("locked") })
@@ -307,6 +314,46 @@ struct TrashInspectorTests {
         let (inspector, _) = makeInspector(sandbox)
         let contents = inspector.contents()
         #expect(contents.items.isEmpty && contents.issues.isEmpty && contents.size.bytes == 0)
+    }
+
+    @Test func emptyTrashDeletesLockedOwnItems() throws {
+        let sandbox = try TestSandbox()
+        let file = try sandbox.file("home/.Trash/locked/a.bin", bytes: 64)
+        let folder = file.deletingLastPathComponent()
+        _ = chflags(file.path, UInt32(UF_IMMUTABLE))
+        _ = chmod(folder.path, 0o555)
+        defer { _ = chflags(file.path, 0); _ = chmod(folder.path, 0o755) }
+        let (inspector, _) = makeInspector(sandbox)
+        let record = inspector.emptyTrash()
+        #expect(record.entries.count == 1)
+        #expect(record.entries.allSatisfy { $0.outcome == .deleted })
+        let left = try FileManager.default.contentsOfDirectory(atPath: sandbox.environment.userTrash.path)
+        #expect(left.isEmpty)
+    }
+
+    @Test func mixedOwnershipReportsNeedsAdmin() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.file("home/.Trash/ok.bin", bytes: 8)
+        let stuck = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8)
+        let dir = stuck.deletingLastPathComponent()
+        _ = chmod(dir.path, 0o555)
+        defer { _ = chmod(dir.path, 0o755) }
+        // The environment claims to be uid 503, so the read-only folder isn't "ours" and stays
+        // locked: a real removal failure. The injected blocker says why.
+        var environment = sandbox.environment
+        environment.userID = 503
+        let inspector = TrashInspector(
+            environment: environment,
+            journal: RunJournal(directory: environment.historyDirectory),
+            logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: false, inspect: TrashInspector.lstatKind,
+            blocker: { url, _ in url.lastPathComponent == "TI App" ? .otherOwner(count: 2) : nil })
+        let record = inspector.emptyTrash()
+        func outcome(_ name: String) -> DeletionOutcome? {
+            record.entries.first { $0.originalPath.hasSuffix(name) }?.outcome
+        }
+        #expect(outcome("ok.bin") == .deleted)
+        #expect(outcome("TI App") == .needsAdmin)
     }
 }
 

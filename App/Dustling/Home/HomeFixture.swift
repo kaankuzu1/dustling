@@ -3,7 +3,7 @@ import DustlingAppModel
 import DustlingCore
 import Foundation
 
-/// DEBUG only. `-DustlingHomeFixture ready|scanning|done|limited|emptytrash|reviewfiles|closeapps` shows Home and the Junk scan with
+/// DEBUG only. `-DustlingHomeFixture ready|scanning|done|limited|emptytrash|emptytrashproblems|reviewfiles|closeapps` shows Home and the Junk scan with
 /// the approved mockup's sample numbers (`DISK`, `CATS` and `TRASH` in screens.html), for screenshots
 /// without anyone's real files:
 /// - Full Disk Access reads as on (`limited`: off, with the consent places locked), in memory only.
@@ -118,6 +118,16 @@ enum HomeFixture {
         OpenAppHolder(bundleID: "com.apple.mail", name: "Mail", bundleURL: URL(filePath: "/System/Applications/Mail.app"),
                       bytes: UInt64(0.62 * gb), itemCount: 2),
     ]
+
+    /// A finished Empty Trash that left five installer-owned apps and one protected item behind.
+    /// Never run: the paths are the fixture's.
+    static func emptyTrashProblemRecord() -> RunRecord {
+        var entries = [JournalEntry(originalPath: "/sample/Screen Recording.mov", bytes: UInt64(1.9 * gb), outcome: .deleted),
+                       JournalEntry(originalPath: "/sample/old-project.zip", bytes: UInt64(0.82 * gb), outcome: .deleted)]
+        entries += (1...5).map { JournalEntry(originalPath: "/sample/TI App \($0)", bytes: 0, outcome: .needsAdmin) }
+        entries.append(JournalEntry(originalPath: "/sample/Protected", bytes: 0, outcome: .failed(reason: "protected by macOS")))
+        return RunRecord(startedAt: Date(), kind: .emptyTrash, entries: entries, restorable: false)
+    }
 
     static func trashItems(home: URL) -> [TrashItem] {
         let trash = home.appending(path: ".Trash")

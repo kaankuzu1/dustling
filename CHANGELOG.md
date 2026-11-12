@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- Empty Trash now deletes items you locked (Get Info's Locked box) and folders you made read-only, as Finder does. When something can't be deleted, the sheet stays open and says how many items are left and why: items an installer left to another account on this Mac (with a button that opens the Trash in Finder, which asks for your password), items macOS protects, and anything else.
 - When Full Disk Access is off for this copy of Dustling but System Settings still shows it switched on, Dustling now says macOS is holding it for another copy and how to fix it (select Dustling, click −, drag this copy in). Setup also warns when you open Dustling from the disk image or Downloads.
 
 ## [0.1.2] - 2026-11-09
