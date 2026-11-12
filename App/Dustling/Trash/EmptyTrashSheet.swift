@@ -33,7 +33,7 @@ struct EmptyTrashSheet: View {
                     .font(.system(size: 22))
                     .foregroundStyle(Palette.ink2)
                     .accessibilityHidden(true)
-                Text(leftBehind == nil ? "Empty the Trash?" : "Some items are still in the Trash")
+                Text(leftBehind?.problems.title ?? "Empty the Trash?")
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 15).weight(.semibold))
                     .foregroundStyle(Palette.ink)
                     .accessibilityAddTraits(.isHeader)
@@ -79,10 +79,12 @@ struct EmptyTrashSheet: View {
                     }
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
+                        .background(Button("") { dismiss() }.keyboardShortcut(.cancelAction).opacity(0).accessibilityHidden(true))
+                        .dustlingPrimary()
                 } else {
                     Button("Cancel", role: .cancel) { dismiss() }
                         .keyboardShortcut(.cancelAction)
+                        .disabled(trash.isEmptying)
                     Button("Empty Trash", role: .destructive) { if let shown { empty(confirmed: shown) } }
                         .buttonStyle(.borderedProminent)
                         .tint(Palette.danger)

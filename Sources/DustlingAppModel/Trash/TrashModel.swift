@@ -25,10 +25,10 @@ public struct EmptyTrashProblems: Equatable, Sendable {
     /// Nil when the run left nothing behind. The `<history>` / `<log>` markers are not Trash items.
     public static func of(_ record: RunRecord) -> EmptyTrashProblems? {
         var admin = 0, protected = 0, failed = 0
-        for entry in record.entries where !entry.originalPath.hasPrefix("<") {
+        for entry in record.entries where !entry.originalPath.hasPrefix("<") && !TrashInspector.isLocationFailure(entry) {
             switch entry.outcome {
             case .needsAdmin: admin += 1
-            case .failed(let reason): if reason == "protected by macOS" { protected += 1 } else { failed += 1 }
+            case .failed(let reason): if reason == TrashUnlocker.protectedReason { protected += 1 } else { failed += 1 }
             default: break
             }
         }
@@ -36,10 +36,18 @@ public struct EmptyTrashProblems: Equatable, Sendable {
         return EmptyTrashProblems(needsAdmin: admin, protected: protected, failed: failed)
     }
 
+    /// How many items are still in the Trash.
+    public var total: Int { needsAdmin + protected + failed }
+
+    /// The sheet's title once some items could not be deleted.
+    public var title: String {
+        total == 1 ? "1 item is still in the Trash" : "\(total) items are still in the Trash"
+    }
+
     public var message: String {
         var parts: [String] = []
         if needsAdmin > 0 {
-            parts.append("\(Self.count(needsAdmin, "item belongs", "items belong")) to another account on this Mac, usually because an installer put them there. Open the Trash in Finder and empty it there: Finder asks for your password.")
+            parts.append("\(Self.count(needsAdmin, "item belongs", "items belong")) to another account on this Mac, usually because an installer put \(needsAdmin == 1 ? "it" : "them") there. Open the Trash in Finder and empty it there: Finder asks for your password.")
         }
         if protected > 0 {
             parts.append("\(Self.count(protected, "item is", "items are")) protected by macOS and can't be deleted.")

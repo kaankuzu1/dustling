@@ -55,7 +55,7 @@ struct TrashUnlockerTests {
         defer { restore(dir) }
         let result = TrashUnlocker.blocker(
             of: sandbox.root.appending(path: "home/.Trash/pkg"), userID: getuid(),
-            owner: { $0.lastPathComponent == "a" || $0.lastPathComponent == "b" ? 503 : getuid() })
+            owner: { $0.lastPathComponent == "a" || $0.lastPathComponent == "b" ? getuid() &+ 1 : getuid() })
         #expect(result == .otherOwner(count: 2))
     }
 
@@ -63,5 +63,60 @@ struct TrashUnlockerTests {
         let sandbox = try TestSandbox()
         try sandbox.file("home/.Trash/x/y", bytes: 8)
         #expect(TrashUnlocker.blocker(of: sandbox.root.appending(path: "home/.Trash/x"), userID: getuid()) == nil)
+    }
+
+    @Test func userOwnedEntryThatFailsWithEPERMIsProtected() throws {
+        let sandbox = try TestSandbox()
+        let dir = try sandbox.directory("home/.Trash/x/Private")
+        let root = sandbox.root.appending(path: "home/.Trash/x")
+        defer { restore(dir) }
+        #expect(chmod(dir.path, 0o000) == 0)
+        // Real fts error here is EACCES; a protected folder reports EPERM, so inject that.
+        let plain = TrashUnlocker.blocker(of: root, userID: getuid(), owner: { _ in getuid() })
+        #expect(plain == nil)
+        let injected = TrashUnlocker.blocker(
+            of: root, userID: getuid(), owner: { _ in getuid() },
+            failure: { $0.lastPathComponent == "Private" ? EPERM : nil })
+        #expect(injected == .protectedByMacOS)
+    }
+
+    @Test func hardLinkedLockedFileKeepsItsFlagAndIsReported() throws {
+        let sandbox = try TestSandbox()
+        let outside = try sandbox.file("outside/data.bin", bytes: 8)
+        let linked = sandbox.root.appending(path: "home/.Trash/data.bin")
+        try fm.createDirectory(at: linked.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.linkItem(at: outside, to: linked)
+        #expect(chflags(linked.path, UInt32(UF_IMMUTABLE)) == 0)
+        defer { restore(outside, linked) }
+        #expect(TrashUnlocker.unlockOwnItems(in: linked, userID: getuid()) == 0)
+        var st = stat()
+        #expect(lstat(outside.path, &st) == 0)
+        #expect(st.st_flags & UInt32(UF_IMMUTABLE) != 0)
+        #expect(TrashUnlocker.blocker(of: linked, userID: getuid()) == .protectedByMacOS)
+    }
+
+    @Test func nestedFolderWithoutReadPermissionIsUnlockedInOnePass() throws {
+        let sandbox = try TestSandbox()
+        let inner = try sandbox.file("home/.Trash/a/b/c.bin", bytes: 8)
+        let b = inner.deletingLastPathComponent()
+        let a = b.deletingLastPathComponent()
+        defer { restore(b, a) }
+        #expect(chmod(b.path, 0o300) == 0)
+        #expect(chmod(a.path, 0o500) == 0)
+        TrashUnlocker.unlockOwnItems(in: a, userID: getuid())
+        try fm.removeItem(at: a)
+    }
+
+    @Test func foreignFolderInsideWritableFolderCountsOnce() throws {
+        let sandbox = try TestSandbox()
+        let dir = try sandbox.directory("home/.Trash/pkg/Contents")
+        try sandbox.file("home/.Trash/pkg/Contents/f", bytes: 8)
+        defer { restore(dir) }
+        #expect(chmod(dir.path, 0o555) == 0)
+        let other = getuid() &+ 1
+        let result = TrashUnlocker.blocker(
+            of: sandbox.root.appending(path: "home/.Trash/pkg"), userID: getuid(),
+            owner: { $0.lastPathComponent == "Contents" ? other : getuid() })
+        #expect(result == .otherOwner(count: 1))
     }
 }

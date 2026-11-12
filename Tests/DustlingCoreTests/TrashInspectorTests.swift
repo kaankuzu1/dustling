@@ -77,7 +77,7 @@ struct TrashInspectorTests {
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedDir.path) }
         // Claim to be another user so the folder isn't unlocked (it would be, for its owner).
         var environment = sandbox.environment
-        environment.userID = 503
+        environment.userID = getuid() &+ 1
         let inspector = TrashInspector(
             environment: environment,
             journal: RunJournal(directory: environment.historyDirectory),
@@ -320,8 +320,8 @@ struct TrashInspectorTests {
         let sandbox = try TestSandbox()
         let file = try sandbox.file("home/.Trash/locked/a.bin", bytes: 64)
         let folder = file.deletingLastPathComponent()
-        _ = chflags(file.path, UInt32(UF_IMMUTABLE))
-        _ = chmod(folder.path, 0o555)
+        #expect(chflags(file.path, UInt32(UF_IMMUTABLE)) == 0)
+        #expect(chmod(folder.path, 0o555) == 0)
         defer { _ = chflags(file.path, 0); _ = chmod(folder.path, 0o755) }
         let (inspector, _) = makeInspector(sandbox)
         let record = inspector.emptyTrash()
@@ -341,7 +341,7 @@ struct TrashInspectorTests {
         // The environment claims to be uid 503, so the read-only folder isn't "ours" and stays
         // locked: a real removal failure. The injected blocker says why.
         var environment = sandbox.environment
-        environment.userID = 503
+        environment.userID = getuid() &+ 1
         let inspector = TrashInspector(
             environment: environment,
             journal: RunJournal(directory: environment.historyDirectory),
@@ -354,6 +354,29 @@ struct TrashInspectorTests {
         }
         #expect(outcome("ok.bin") == .deleted)
         #expect(outcome("TI App") == .needsAdmin)
+    }
+
+    @Test func nilBlockerWithPermissionDeniedErrorIsProtected() throws {
+        let sandbox = try TestSandbox()
+        let stuck = try sandbox.file("home/.Trash/locked/inner.bin")
+        let dir = stuck.deletingLastPathComponent()
+        #expect(chmod(dir.path, 0o555) == 0)
+        defer { _ = chmod(dir.path, 0o755) }
+        var environment = sandbox.environment
+        environment.userID = getuid() &+ 1
+        let inspector = TrashInspector(
+            environment: environment, journal: RunJournal(directory: environment.historyDirectory),
+            logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: false, inspect: TrashInspector.lstatKind, blocker: { _, _ in .protectedByMacOS })
+        let record = inspector.emptyTrash()
+        #expect(record.entries.first?.outcome == .failed(reason: TrashUnlocker.protectedReason))
+    }
+
+    @Test func permissionDeniedIsFoundInUnderlyingErrors() {
+        let inner = NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))
+        let outer = NSError(domain: NSCocoaErrorDomain, code: 513, userInfo: [NSUnderlyingErrorKey: inner])
+        #expect(TrashInspector.isPermissionDenied(outer))
+        #expect(!TrashInspector.isPermissionDenied(NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT))))
     }
 }
 

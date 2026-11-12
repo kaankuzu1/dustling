@@ -25,7 +25,7 @@ public struct TrashContents: Sendable {
 }
 
 /// Sizes the Trash and empties it. Emptying is the one permanent delete in Dustling; callers must
-/// confirm with the user first. Every child is reported as `.deleted` or `.failed`.
+/// confirm with the user first. Every child is reported as `.deleted`, `.needsAdmin` (belongs to another account) or `.failed`.
 public struct TrashInspector: Sendable {
     private let environment: SystemEnvironment
     private let journal: RunJournal
@@ -36,6 +36,7 @@ public struct TrashInspector: Sendable {
     private let blocker: @Sendable (URL, uid_t) -> TrashBlocker?
 
     static let noAccessReason = "no access, grant Full Disk Access"
+    static let symlinkReason = "trash location is a symbolic link, not emptied"
 
     /// `includeExternalVolumes: false` limits sizing and emptying to `~/.Trash`.
     public init(
@@ -187,10 +188,28 @@ public struct TrashInspector: Sendable {
         } catch {
             switch blocker(child, environment.userID) {
             case .otherOwner?: return .needsAdmin
-            case .protectedByMacOS?: return .failed(reason: "protected by macOS")
-            case nil: return .failed(reason: error.localizedDescription)
+            case .protectedByMacOS?: return .failed(reason: TrashUnlocker.protectedReason)
+            case nil:
+                return .failed(reason: Self.isPermissionDenied(error)
+                    ? TrashUnlocker.protectedReason : error.localizedDescription)
             }
         }
+    }
+
+    /// True when the error, or one it wraps, is POSIX EPERM ("Operation not permitted").
+    static func isPermissionDenied(_ error: Error) -> Bool {
+        var current: NSError? = error as NSError
+        while let e = current {
+            if e.domain == NSPOSIXErrorDomain, e.code == Int(EPERM) { return true }
+            current = e.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
+    }
+
+    /// True for an entry that reports a Trash location that couldn't be emptied, not an item in it.
+    public static func isLocationFailure(_ entry: JournalEntry) -> Bool {
+        guard case .failed(let reason) = entry.outcome else { return false }
+        return reason == noAccessReason || reason == symlinkReason
     }
 
     // MARK: - Discovery
@@ -310,7 +329,7 @@ public struct TrashInspector: Sendable {
         let reason: String
         switch failure {
         case .denied: reason = noAccessReason
-        case .symlink: reason = "trash location is a symbolic link, not emptied"
+        case .symlink: reason = symlinkReason
         case .other(let text): reason = text
         }
         return JournalEntry(originalPath: url.path, bytes: 0, outcome: .failed(reason: reason))
