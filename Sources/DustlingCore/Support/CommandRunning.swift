@@ -33,12 +33,14 @@ public struct ProcessCommandRunner: CommandRunning {
         process.standardInput = FileHandle.nullDevice
         try process.run()
 
-        // Drain both pipes concurrently so a full pipe buffer can never block the child.
+        // Drain both pipes concurrently so a full pipe buffer can never block the child. Dedicated
+        // threads, not the global queue: when callers block every Swift concurrency thread in here
+        // (parallel tests do), GCD starts no thread for the global queue and the wait never ends.
         let box = OutputBox()
         let group = DispatchGroup()
         for (pipe, isOut) in [(outPipe, true), (errPipe, false)] {
             group.enter()
-            DispatchQueue.global().async {
+            Thread.detachNewThread {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 box.store(data, isOut: isOut)
                 group.leave()
