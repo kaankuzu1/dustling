@@ -45,7 +45,7 @@ public enum RepairCase: Equatable, Sendable {
         case .helperNotResponding:
             return Copy(
                 title: "The cleanup helper isn't responding",
-                why: "Dustling tried to register it again and that didn't work. System caches and launch daemons can't be moved until it's repaired.",
+                why: "Dustling tried to register it again and that didn't work. System startup items can't be turned on or off until it's repaired.",
                 fix: "Repair helper")
         case .fullDiskAccessLost:
             return Self.fullDiskAccessLostCopy(.unknown)
@@ -135,8 +135,9 @@ public enum LastRunReview {
         public let display: String
         public let result: Result
         public let reason: String
-        /// nil when there is nothing the user can do now (a protected item, a history write, an item
-        /// needing the password while Full Disk Access is off).
+        /// nil when there is nothing the user can do now (a protected item, one macOS refused even with
+        /// the password or that the password step can't move safely, one kept in a hidden folder in
+        /// /Library, a history write, an item needing the password while Full Disk Access is off).
         public let fix: Fix?
     }
 
@@ -159,8 +160,10 @@ public enum LastRunReview {
             case .failed(let reason):
                 return Problem(id: index, display: display, result: .failed, reason: sentence(reason), fix: fix)
             case .needsAdmin:
-                return Problem(id: index, display: display, result: .needsAdmin,
-                               reason: PasswordCopy.reason(fullDiskAccess: fullDiskAccess), fix: fix)
+                // An older run's System caches and logs: shown, never retried (Dustling leaves them alone).
+                let reason = isSystemManaged(entry.originalPath)
+                    ? ProtectedPaths.systemManagedReason : PasswordCopy.reason(fullDiskAccess: fullDiskAccess)
+                return Problem(id: index, display: display, result: .needsAdmin, reason: reason, fix: fix)
             case .movedToTrash, .deleted:
                 return nil
             }
@@ -206,13 +209,16 @@ public enum LastRunReview {
     /// `catalog` should be the categories the places check allows right now
     /// (`HomeMosaic.scannable`), and `skipping` what a cleanup would leave alone now. With
     /// `fullDiskAccess`, items that needed admin rights are tried again too (the run asks for the Mac
-    /// password once), in any category, including those that need admin rights.
+    /// password once). Never what is in System caches and logs, which Dustling never cleans (an older
+    /// run may list it).
     public static func retryPlan(
         for run: RunRecord, catalog: [JunkCategory], running: Set<String>, skipping: CleanupSkip = .none,
         fullDiskAccess: Bool
     ) -> RetryPlan {
         var plan = RetryPlan()
         guard isRetryable(run.kind) else { return plan }
+        // System caches and logs are never cleaned, so never retried.
+        let catalog = catalog.filter { !$0.isNeverCleaned }
         for entry in run.entries where isRetryableEntry(entry, fullDiskAccess: fullDiskAccess) {
             let url = URL(filePath: entry.originalPath)
             var owner: String?
@@ -251,12 +257,28 @@ public enum LastRunReview {
     private static func isRetryable(_ kind: RunKind) -> Bool { kind == .junkClean }
 
     private static func isRetryableEntry(_ entry: JournalEntry, fullDiskAccess: Bool) -> Bool {
+        if isSystemManaged(entry.originalPath) { return false }
         switch entry.outcome {
         case .skipped(let reason): return inUseBundleID(reason) != nil
-        case .failed(let reason): return !entry.originalPath.hasPrefix("<") && reason != TrashMover.protectedReason
+        case .failed(let reason): return !entry.originalPath.hasPrefix("<") && !isFinal(reason)
         case .needsAdmin: return fullDiskAccess
         case .movedToTrash, .deleted: return false
         }
+    }
+
+    /// In the system's caches or logs (`/Library/Caches`, `/Library/Logs`): macOS manages what is
+    /// there, and Dustling never cleans it (`JunkCategory.isNeverCleaned`). Runs from before that
+    /// may still list such items; they are shown, never retried.
+    static func isSystemManaged(_ path: String) -> Bool {
+        ["/Library/Caches/", "/Library/Logs/"].contains { path.hasPrefix($0) }
+    }
+
+    /// Failures a retry can't change: macOS protects the item, macOS refused even with the
+    /// password, the password step can't do it safely, or the item is kept in a hidden folder in
+    /// /Library (no longer where a retry would look).
+    private static func isFinal(_ reason: String) -> Bool {
+        [TrashMover.protectedReason, AdminScript.refusedReason, AdminScript.unsafeReason,
+         AdminScript.putBackUnsafeReason].contains(reason) || AdminScript.isKeptAside(reason)
     }
 
     static func inUseBundleID(_ reason: String) -> String? {

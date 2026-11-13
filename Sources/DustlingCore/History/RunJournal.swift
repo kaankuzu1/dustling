@@ -241,10 +241,14 @@ public struct RunJournal: Sendable {
     /// (`AdminMover.restorePrompt`), each only if the item in the Trash is still the recorded one,
     /// owner included. Put back: `.restored`. The password box closed: `.failed` with
     /// `putBackNeedsPasswordReason`. The name taken meanwhile: `.conflict`; the item gone:
-    /// `.missingFromTrash`; otherwise `.failed` with the script's reason. An entry recorded without
-    /// an owner (older records) isn't sent: it fails with the move's reason and
-    /// `putBackInFinderNote`. One whose folders Dustling can't open, or whose destination folder is
-    /// missing or a link, fails with the move's reason and is never sent.
+    /// `.missingFromTrash`; otherwise `.failed` with the script's reason. History files are plain
+    /// files the user (and so any program running as the user) can write, so only an entry shaped
+    /// like what Dustling itself moves with the password is sent (`PasswordPutBack`: directly out of
+    /// a Trash, directly into a folder Dustling moves from with the password for the run's kind,
+    /// reached without links); any other, and one recorded without an owner (older records), isn't
+    /// sent: it fails with the move's reason and `putBackInFinderNote`. One whose folders Dustling
+    /// can't open, or whose destination folder is missing or a link, fails with the move's reason
+    /// and is never sent.
     /// The journal is saved once after the password step.
     public func restore(runID: UUID, paths: Set<String>? = nil, admin: AdminMover? = nil) throws -> [RestoreOutcome] {
         guard var run = try all().first(where: { $0.id == runID }) else {
@@ -290,13 +294,18 @@ public struct RunJournal: Sendable {
             } catch {
                 let folder = original.deletingLastPathComponent()
                 let folderWritable = fm.isWritableFile(atPath: folder.path)
-                if admin != nil, Self.needsPassword(error, trashed: trashed, folder: folder, folderWritable: folderWritable) {
+                if let admin, Self.needsPassword(error, trashed: trashed, folder: folder, folderWritable: folderWritable) {
                     // Not Full Disk Access (it's on when there is `admin`): the folder or the item itself.
                     let reason = Self.restoreFailureReason(error, trashedPath: trashed, destinationWritable: false)
-                    if let expected = entry.trashedIdentity?.itemIdentity {
+                    // The run comes from a file the user can write: only a Put back shaped like what
+                    // Dustling moves with the password gets the password (`PasswordPutBack`).
+                    if let expected = entry.trashedIdentity?.itemIdentity,
+                       let target = PasswordPutBack.target(
+                           trashed: trashed, original: entry.originalPath, recordedOwner: expected.owner,
+                           kind: run.kind, environment: admin.environment) {
                         let step = AdminStep(
-                            op: .move(from: URL(fileURLWithPath: trashed), to: original, bootOutDaemon: false),
-                            expectedSource: expected)
+                            op: .move(from: target.from, to: target.to, bootOutDaemon: false),
+                            expectedSource: expected, expectedFolder: target.folder)
                         withPassword.append((index, results.count, step))
                         results.append(.failed(entry.originalPath, reason: reason))   // until the password step
                     } else {

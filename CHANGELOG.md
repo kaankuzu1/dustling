@@ -8,20 +8,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
-- Apps and files that belong to the system, such as an app an installer put in Applications with an administrator's rights, a launch daemon an app left behind, or a cache folder only an administrator can change, no longer stay where they are. Dustling asks for your Mac password once per cleanup, uninstall, retry or Empty Trash, with the standard macOS password box, and moves them to the Trash (or deletes them) together. Put back asks once too; putting back items from several runs in History asks once per run. This needs Full Disk Access; without it, Dustling says those items need Full Disk Access, then your Mac password. While the password box is open, the screen says Dustling is waiting for your Mac password.
-- System caches and logs can now be cleaned. The place is never ticked for you: tick it on the Junk scan screen, and Dustling asks for your Mac password once to move what belongs to the system. Before, it waited for the cleanup helper. Switching system startup items on or off still waits for the helper.
+- Full Disk Access now stays on through updates. From 0.2.0, every release is signed with the same certificate, so macOS keeps the permission when you update. If you're updating from 0.1.x, turn it on once more.
+- Apps and files that belong to the system, such as an app an installer put in Applications with an administrator's rights, a launch daemon an app left behind, or a cache folder in your Library that only an administrator can change, no longer stay where they are. Dustling asks for your Mac password once per cleanup, uninstall, retry or Empty Trash, with the standard macOS password box, and moves them to the Trash (or deletes them) together. Put back asks once too; putting back items from several runs in History asks once per run. This needs Full Disk Access; without it, Dustling says those items need Full Disk Access, then your Mac password. While the password box is open, the screen says Dustling is waiting for your Mac password.
+- Items moved with your password keep their owner in the Trash, so Put back returns them exactly as they were. Emptying the Trash in Finder asks for your password for them too.
 
 ### Changed
 
+- Dustling never cleans System caches and logs: macOS manages them. Their tile shows how much space they take but can't be ticked, a retry leaves them alone, and `dustling-cli clean` no longer picks them, even with `--include systemCachesAndLogs`.
 - Files that need administrator rights in a cleanup, an uninstall or History now say "Needs your Mac password" instead of "Needs the cleanup helper (coming in a later version)". Retry on the Dustling health page tries them again, asking for your password once. In the Uninstaller such leftovers are marked System instead of Helper and can be unticked like any other, and before an uninstall the confirmation says how many items belong to the system and that Dustling will ask for your Mac password to move them.
-- `dustling-cli clean` no longer picks System caches and logs by default, matching the app. Name it with `--include systemCachesAndLogs`; the command line still only records its items as needing admin rights, without touching them.
 - If you quit while the password box is open, Dustling says it is waiting for your answer, and a box still open closes when Dustling quits, so answering it after Dustling quits can't move anything.
 
 ### Fixed
 
-- Empty Trash now deletes items you locked (Get Info's Locked box) and folders you made read-only, as Finder does. When something can't be deleted, the sheet stays open and says how many items are left and why: items an installer left to another account on this Mac (with a button that opens the Trash in Finder, which asks for your password), items macOS protects, and anything else.
+- Empty Trash now deletes items you locked (Get Info's Locked box) and folders you made read-only, as Finder does. When something can't be deleted, the sheet stays open and says how many items are left and why: items that belong to the system (empty the Trash again and enter your Mac password, or use the button that opens the Trash in Finder), items macOS protects, and anything else.
+- Empty Trash no longer says it needs Full Disk Access when the Trash holds a folder of another account that Dustling can't look inside, such as one an installer left. It empties the Trash, deleting that folder with your Mac password, and shows the size as "or more".
 - When Full Disk Access is off for this copy of Dustling but System Settings still shows it switched on, Dustling now says macOS is holding it for another copy and how to fix it (select Dustling, click −, drag this copy in). Setup also warns when you open Dustling from the disk image or Downloads.
-- When macOS refuses to move a cache folder it protects, the run history now says "Protected by macOS" instead of a vague permission error, and Dustling no longer offers to retry it.
+- When macOS refuses to move a cache folder it protects, or won't even let Dustling look at it, the run history now says "Protected by macOS" instead of a vague permission error, and Dustling no longer offers to retry it.
 - Running Dustling from an Applications folder on another disk no longer brings up setup's warning about opening it from the disk image.
 - The diagnostics report names "protected by macOS" and the password step's reasons instead of counting them as "other error".
 

@@ -121,7 +121,7 @@ struct SummaryView: View {
     private var buttons: some View {
         let trash = models.trash
         let junk = models.junk
-        let size = trash.canEmpty && !trash.externalVolumesSkipped ? trash.contents?.size.bytes : nil
+        let size = trash.canEmpty && !trash.sizeIsLowerBound ? trash.contents?.size.bytes : nil
         return HStack(spacing: 8) {
             Button { confirmingEmptyTrash = true } label: {
                 HStack(spacing: 6) {

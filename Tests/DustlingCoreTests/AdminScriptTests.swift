@@ -350,7 +350,7 @@ struct AdminScriptTests {
         #expect(try body(of: "move_").contains(#"back_ "$sd_" "$sid_" "$sn_" "$iid_""#))
         // Only the planned item left in the bridge is `held` (and gets the bridge's path, once).
         #expect(AdminScript.prelude.contains(
-            #"if [ "$2" = held ] && [ "$bp_" != 1 ]; then printf 'B\t%s\n' "$br_"; bp_=1; fi"#))
+            #"if { [ "$2" = held ] || [ "$2" = partial ]; } && [ "$bp_" != 1 ]; then printf 'B\t%s\n' "$br_"; bp_=1; fi"#))
         #expect(try body(of: "move_").contains(
             #"elif [ "$(id_ "$k_/$sn_")" = "$iid_" ] || [ "$(id_ "$k_/$dn_")" = "$iid_" ]; then fin_ held"#))
         #expect(try body(of: "take_").contains(#"elif ! empty_ "$k_"; then t_=held_other; fi"#))
@@ -415,6 +415,45 @@ struct AdminScriptTests {
         // Booting out a daemon whose plist folder chain isn't root-only: refused.
         #expect(callLines(text([daemon], sourceRootOnly: false)).first == "report_ 0 unsafe")
         #expect(callLines(text([daemon])).first?.hasPrefix("move_ 0 - 1 - 1 ") == true)
+    }
+
+    @Test func everyStepHasATrashAtOneEnd() {
+        // A move out of a folder that isn't a Trash goes only into one; into a folder the user can't
+        // write, only out of a Trash; root deletes only what is directly in a Trash.
+        let planned = ItemIdentity(device: 7, inode: 99, owner: 0)
+        func move(_ from: String, _ to: String, expected: ItemIdentity? = nil) -> AdminStep {
+            AdminStep(op: .move(from: URL(filePath: from), to: URL(filePath: to), bootOutDaemon: false),
+                      expectedSource: expected)
+        }
+        let sideways = move("/Library/Caches/x", "/Users/u/Library/Caches/x", expected: planned)
+        let intoLockedTrash = move("/Library/Caches/x", "/Users/u/.Trash/x", expected: planned)
+        let fromInsideTheTrash = move("/Users/u/.Trash/a/x", "/Library/x", expected: planned)
+        #expect(callLines(text([sideways])).first == "report_ 0 unsafe")
+        #expect(callLines(text([sideways], destinationWritable: false)).first == "report_ 0 unsafe")
+        #expect(callLines(text([intoLockedTrash], destinationWritable: false)).first == "report_ 0 unsafe")
+        #expect(callLines(text([fromInsideTheTrash], destinationWritable: false)).first == "report_ 0 unsafe")
+        #expect(callLines(text([intoLockedTrash])).first?.hasPrefix("move_ 0 - 0 7:99:0 1 ") == true)
+        for path in ["/Library/Caches/x", "/Users/u/.Trash/a/x", "/Users/u/x"] {
+            #expect(callLines(text([AdminStep(op: .delete(URL(filePath: path)))])).first == "report_ 0 unsafe", "\(path)")
+        }
+        #expect(callLines(text([AdminStep(op: .delete(URL(filePath: "/Users/u/.Trash/x")))])).first?
+            .hasPrefix("delete_ 0 - - '/Users/u/.Trash' ") == true)
+    }
+
+    @Test func putBackGoesOnlyIntoTheFolderItChecked() {
+        let trashed = URL(filePath: "/Users/u/.Trash/x")
+        let planned = ItemIdentity(device: 7, inode: 99, owner: 0)
+        func putBack(into folder: ItemIdentity) -> AdminStep {
+            AdminStep(op: .move(from: trashed, to: URL(filePath: "/Library/x"), bootOutDaemon: false),
+                      expectedSource: planned, expectedFolder: folder)
+        }
+        // Planning found the destination folder 7:42:501 (`text`).
+        #expect(callLines(text([putBack(into: ItemIdentity(device: 7, inode: 43, owner: 501))],
+                               destinationWritable: false)).first == "report_ 0 unsafe_putback")
+        #expect(callLines(text([putBack(into: ItemIdentity(device: 7, inode: 42, owner: 0))],
+                               destinationWritable: false)).first == "report_ 0 unsafe_putback")
+        #expect(callLines(text([putBack(into: ItemIdentity(device: 7, inode: 42, owner: 501))], destinationWritable: false))
+            .first == "move_ 0 - 0 7:99:0 1 '/Users/u/.Trash' 7:41:0 'x' 7:99:0 '/Library' 7:42:501 'x'")
     }
 
     @Test func planningSeesMissingItemsAndFolders() throws {
@@ -1192,6 +1231,28 @@ struct AdminScriptTests {
         #expect(size(outside) == 8)
     }
 
+    @Test func aDeleteThatLeavesPartOfTheItemSaysWhereTheRestIs() throws {
+        // rm stops at what it can't remove (here a folder the user, running the script, can't
+        // change; for root, a file macOS protects). The rest is no longer in the Trash: it is in
+        // the bridge, and the reason names it.
+        let sandbox = try TestSandbox()
+        let item = try sandbox.directory("home/.Trash/Stubborn")
+        try sandbox.file("home/.Trash/Stubborn/gone.bin", bytes: 4)
+        let locked = try sandbox.directory("home/.Trash/Stubborn/locked")
+        try sandbox.file("home/.Trash/Stubborn/locked/kept.bin", bytes: 5)
+        FolderMode.lock(locked)
+        let script = AdminScript.make([AdminStep(op: .delete(item))], planning: try sandbox.adminPlanning())
+        let out = output(of: script)
+        let bridge = try heldBridge(sandbox)
+        defer { FolderMode.unlock(URL(filePath: bridge + "/0/Stubborn/locked")) }
+        #expect(out == "B\t\(bridge)\nR\t0\tpartial\n")
+        #expect(AdminScript.parse(out, count: 1)
+            == [.notDone(reason: "macOS refused to delete part of it, even with your password. What is left is in \(bridge).")])
+        #expect(!exists(item))
+        #expect(size(URL(filePath: bridge + "/0/Stubborn/locked/kept.bin")) == 5)
+        #expect(!exists(URL(filePath: bridge + "/0/Stubborn/gone.bin")))
+    }
+
     @Test func deleteOfAnItemSwappedJustBeforeTheRenameDeletesNothing() throws {
         // Just before root takes the item out of the Trash, it is moved aside and another put in
         // its place. Root finds that isn't the planned item and gives it back: nothing is deleted.
@@ -1332,8 +1393,8 @@ struct AdminScriptTests {
 
     @Test func parseMapsEveryStatus() {
         let output = "R\t0\tok\nR\t1\tgone\nR\t2\tskip\nR\t3\texists\nR\t4\terr\nR\t5\tunsafe\n"
-            + "R\t6\tunsafe_putback\nB\t/Library/.dustling-Ab12Cd34\nR\t7\theld\nR\t8\theld_other\n"
-        #expect(AdminScript.parse(output, count: 9) == [
+            + "R\t6\tunsafe_putback\nB\t/Library/.dustling-Ab12Cd34\nR\t7\theld\nR\t8\theld_other\nR\t9\tpartial\n"
+        #expect(AdminScript.parse(output, count: 10) == [
             .done,
             .notDone(reason: "already gone"),
             .notDone(reason: "kept because the app itself was not removed"),
@@ -1345,7 +1406,13 @@ struct AdminScriptTests {
                 + "It is untouched in /Library/.dustling-Ab12Cd34."),
             .notDone(reason: "Something changed while it was moving, so Dustling stopped. "
                 + "Another program may have moved your item."),
+            .notDone(reason: "macOS refused to delete part of it, even with your password. "
+                + "What is left is in /Library/.dustling-Ab12Cd34."),
         ])
+        #expect(AdminScript.isKeptAside(AdminScript.heldReason(bridge: "/Library/.dustling-x")))
+        #expect(AdminScript.isKeptAside(AdminScript.partlyDeletedReason(bridge: nil)))
+        #expect(!AdminScript.isKeptAside(AdminScript.movedAwayReason))
+        #expect(!AdminScript.isKeptAside(AdminScript.refusedReason))
     }
 
     @Test func parseReadsWhereAHeldItemIs() {
@@ -1460,14 +1527,24 @@ struct AdminScriptTests {
         #expect(map(0, "", "") == .finished(output: ""))
         #expect(map(1, "", "0:17: execution error: User canceled. (-128)\n") == .cancelled)
         #expect(map(1, "", "0:17: execution error: Kullanıcı vazgeçti. (-128)\n") == .cancelled)
-        // Only the error number at the very end counts.
-        #expect(map(1, "", "0:17: execution error: User canceled.\n")
-            == .failed(reason: "0:17: execution error: User canceled."))
+        // Only the error number at the very end counts. osascript's position prefix is dropped.
+        #expect(map(1, "", "0:17: execution error: User canceled.\n") == .failed(reason: "User canceled."))
         #expect(map(1, "", "0:9: syntax error: (-128) in '/x' (-2741)\n")
-            == .failed(reason: "0:9: syntax error: (-128) in '/x' (-2741)"))
-        #expect(map(1, "", "0:9: execution error: (-1280)\n") == .failed(reason: "0:9: execution error: (-1280)"))
-        #expect(map(1, "", "  0:37: execution error: hi (3)\n") == .failed(reason: "0:37: execution error: hi (3)"))
+            == .failed(reason: "(-128) in '/x' (-2741)"))
+        #expect(map(1, "", "0:9: execution error: (-1280)\n") == .failed(reason: "(-1280)"))
+        #expect(map(1, "", "  0:37: execution error: hi (3)\n") == .failed(reason: "hi (3)"))
+        #expect(map(1, "", "sh: 1: no such thing\n") == .failed(reason: "sh: 1: no such thing"))
         #expect(map(1, "", "") == .failed(reason: "osascript stopped with status 1"))
+        // macOS turned the password down (three wrong tries, or an account that can't approve it),
+        // in any language.
+        let refused = AdminShellResult.failed(reason: "Your Mac password wasn't accepted.")
+        #expect(map(1, "", "0:2318: execution error: The administrator user name or password was incorrect. (-60007)\n")
+            == refused)
+        #expect(map(1, "", "0:2318: execution error: Yönetici kullanıcı adı veya parolası yanlış. (-60007)\n") == refused)
+        #expect(map(1, "", "0:2318: execution error: Authorization denied. (-60005)\n") == refused)
+        #expect(map(1, "", "0:2318: execution error: The authorization was canceled. (-60006)\n") == refused)
+        #expect(map(1, "", "0:2318: execution error: Some other failure. (-60008)\n")
+            == .failed(reason: "Some other failure. (-60008)"))
         let tooMany = AdminShellResult.failed(
             reason: "Too many items for one password request. Try again with fewer items.")
         #expect(map(1, "", "0:5: execution error: sh: Argument list too long (7)\n") == tooMany)

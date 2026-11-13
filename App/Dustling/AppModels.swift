@@ -377,8 +377,6 @@ final class AppModels {
             junk.showFixture(scans, phase: .moving(done: 12))
         default:
             junk.showFixture(scans, phase: .ready)
-            // Review files with System caches and logs ticked too, so its password note is in the picture.
-            if state == "reviewfiles" { junk.toggle(.systemCachesAndLogs) }
         }
         if HomeFixture.isLimited {
             trash.showFixture(items: [], inTrashBytes: 0, unreadableAt: environment.home.appending(path: ".Trash"))
@@ -508,7 +506,8 @@ final class AppModels {
         let reading: HomeFigures.TrashReading
         if let contents = trash.contents {
             reading = contents.issues.isEmpty
-                ? .read(bytes: contents.size.bytes, externalSkipped: trash.externalVolumesSkipped)
+                ? .read(bytes: contents.size.bytes, externalSkipped: trash.externalVolumesSkipped,
+                        systemUnread: trash.unreadableSystemItems > 0)
                 : .unreadable(movedSinceLastEmpty: trash.inTrashBytesSinceLastEmpty)
         } else {
             reading = .unknown

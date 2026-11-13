@@ -43,14 +43,14 @@ import Testing
         #expect(catalog.filter(\.isSelectedByDefault).map(\.id)
             == [.browserCaches, .xcodeJunk, .packageManagerCaches, .userCaches, .userLogs])
         let scans = catalog.map { CategoryScan(category: $0, items: [], bytes: 0, issues: []) }
-        // `dustling-cli clean`: System caches and logs only when named (`--include systemCachesAndLogs`),
-        // review categories too; the Trash never.
+        // `dustling-cli clean`: review categories only when named; System caches and logs and the
+        // Trash never, even when named.
         #expect(JunkCatalog.cleanChoice(scans, including: []).map(\.category.id)
             == [.browserCaches, .xcodeJunk, .packageManagerCaches, .userCaches, .userLogs])
         #expect(JunkCatalog.cleanChoice(scans, including: [.systemCachesAndLogs, .iosBackups, .trash])
             .map(\.category.id)
-            == [.browserCaches, .xcodeJunk, .packageManagerCaches, .userCaches, .userLogs, .systemCachesAndLogs,
-                .iosBackups])
+            == [.browserCaches, .xcodeJunk, .packageManagerCaches, .userCaches, .userLogs, .iosBackups])
+        #expect(catalog.filter(\.isNeverCleaned).map(\.id) == [.systemCachesAndLogs])
     }
 
     @Test func unreadableRootIsReportedNotZero() async throws {

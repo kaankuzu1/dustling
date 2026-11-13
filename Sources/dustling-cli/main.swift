@@ -20,6 +20,7 @@ Options:
   --yes                               Answer yes to the confirmation (for scripts)
 
 Cleaning and uninstalling only move items to the Trash. Empty Trash is the only permanent delete.
+System caches and logs (systemCachesAndLogs) are never cleaned: macOS manages them.
 """
 
 // A run left "in progress" by a crash or a force quit is finished off before anything else.

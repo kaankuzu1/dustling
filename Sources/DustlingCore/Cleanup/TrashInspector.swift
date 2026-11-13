@@ -15,12 +15,23 @@ public struct TrashItem: Equatable, Sendable {
 public struct TrashContents: Sendable {
     public var items: [TrashItem] = []
     public var size = SizeResult()
+    /// What keeps Dustling from knowing what Empty Trash would delete: a Trash location it can't read
+    /// (or that is a link), and an item macOS's privacy protection hides (EPERM, Full Disk Access).
     public var issues: [ScanIssue] = []
+    /// Places inside Trash items that belong to another account (the system, an installer) and that
+    /// Dustling can't read, such as a System caches folder only its own account may list. They are
+    /// in `size.unreadable` but not in `issues`: Empty Trash deletes them with the Mac password, so
+    /// they don't keep it from emptying, but `size` doesn't include what is inside them, so it is a
+    /// lower bound.
+    public var systemUnreadable: [URL] = []
 
-    public init(items: [TrashItem] = [], size: SizeResult = SizeResult(), issues: [ScanIssue] = []) {
+    public init(
+        items: [TrashItem] = [], size: SizeResult = SizeResult(), issues: [ScanIssue] = [], systemUnreadable: [URL] = []
+    ) {
         self.items = items
         self.size = size
         self.issues = issues
+        self.systemUnreadable = systemUnreadable
     }
 }
 
@@ -91,7 +102,8 @@ public struct TrashInspector: Sendable {
     }
 
     /// Like `size()`, plus why each unreadable location or item couldn't be read: EPERM/EACCES become
-    /// `.missingFullDiskAccess`, anything else `.unreadable`.
+    /// `.missingFullDiskAccess`, anything else `.unreadable`. What belongs to another account isn't an
+    /// issue (`TrashContents.systemUnreadable`).
     public func sizeWithIssues() -> (size: SizeResult, issues: [ScanIssue]) {
         let found = contents()
         return (found.size, found.issues)
@@ -120,7 +132,13 @@ public struct TrashInspector: Sendable {
                         found.size.bytes += r.bytes
                         found.size.fileCount += r.fileCount
                         found.size.unreadable += r.unreadable
-                        found.issues += r.unreadable.map(Self.classifyUnreadable)
+                        for url in r.unreadable {
+                            if Self.belongsToAnotherAccount(url, in: child, userID: environment.userID) {
+                                found.systemUnreadable.append(url)
+                            } else {
+                                found.issues.append(Self.classifyUnreadable(url))
+                            }
+                        }
                     }
                 }
             }
@@ -361,6 +379,29 @@ public struct TrashInspector: Sendable {
         case .denied: .missingFullDiskAccess(url)
         case .symlink, .other: .unreadable(url)
         }
+    }
+
+    /// Whether `url`, which the sizer couldn't read inside the Trash item `item`, belongs to another
+    /// account: it, or a folder it is in up to and including `item`, has another owner than `userID`
+    /// (lstat; a folder that can't be listed for lack of permission keeps what is inside it from
+    /// being looked at, so its own owner decides). Not when `url` itself can't even be looked at
+    /// because of macOS's privacy protection (EPERM): that is missing Full Disk Access.
+    static func belongsToAnotherAccount(_ url: URL, in item: URL, userID: uid_t) -> Bool {
+        let top = AdminPath.trimmingTrailingSlashes(item.path(percentEncoded: false))
+        var path = AdminPath.trimmingTrailingSlashes(url.path(percentEncoded: false))
+        var info = stat()
+        if lstat(path, &info) == 0 {
+            if info.st_uid != userID { return true }
+        } else if errno == EPERM {
+            return false
+        }
+        // The folders above it inside the item, then the item itself.
+        while path.hasPrefix(top + "/") {
+            path = (path as NSString).deletingLastPathComponent
+            if lstat(path, &info) == 0, info.st_uid != userID { return true }
+        }
+        if path != top, lstat(top, &info) == 0, info.st_uid != userID { return true }
+        return false
     }
 
     /// The sizer reports unreadable paths without a reason; ask the file system again for the errno.

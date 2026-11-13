@@ -103,9 +103,19 @@ public struct OsascriptAdminShell: AdminShell {
         return String(scalars)
     }
 
+    /// Why nothing ran when macOS turned the password down (a wrong password three times, or an
+    /// account that can't approve it).
+    public static let passwordNotAcceptedReason = "Your Mac password wasn't accepted."
+
+    /// The authorization errors macOS reports when it turns the password down: denied (-60005),
+    /// canceled by the system (-60006), no interaction allowed (-60007).
+    private static let authorizationFailures = ["(-60005)", "(-60006)", "(-60007)"]
+
     /// osascript prints the script's output followed by one line break of its own, which is dropped.
     /// A cancelled password box is error -128, which osascript puts at the very end of its message
-    /// (the message itself is localized, the number is not).
+    /// (the message itself is localized, the number is not); so are the authorization errors, which
+    /// become `passwordNotAcceptedReason`. Any other message loses osascript's position prefix
+    /// ("0:2318: execution error: "), which means nothing to the people reading it.
     static func result(from command: CommandResult) -> AdminShellResult {
         if command.status == 0 {
             var output = command.stdout
@@ -115,7 +125,20 @@ public struct OsascriptAdminShell: AdminShell {
         let message = command.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         if message.hasSuffix("(-128)") { return .cancelled }
         if message.contains(argumentListTooLong) { return .failed(reason: tooManyItemsReason) }
-        return .failed(reason: message.isEmpty ? "osascript stopped with status \(command.status)" : message)
+        if authorizationFailures.contains(where: { message.hasSuffix($0) }) {
+            return .failed(reason: passwordNotAcceptedReason)
+        }
+        let plain = withoutPosition(message)
+        return .failed(reason: plain.isEmpty ? "osascript stopped with status \(command.status)" : plain)
+    }
+
+    /// `message` without osascript's leading "<start>:<end>: " and the "execution error: " (or
+    /// "syntax error: ") after it.
+    static func withoutPosition(_ message: String) -> String {
+        guard let position = message.firstMatch(of: /^[0-9]+:[0-9]+:[ ]*/) else { return message }
+        var rest = message[position.range.upperBound...]
+        if let kind = rest.firstMatch(of: /^(execution|syntax) error:[ ]*/) { rest = rest[kind.range.upperBound...] }
+        return String(rest).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// osascript could not even be started. E2BIG means the script was too long for one command line.

@@ -27,7 +27,7 @@ It started with a full disk that blocked a macOS update, and a cleaner that some
   <a href="CHANGELOG.md">What's new</a>
 </p>
 
-> **Dustling isn't signed with an Apple Developer ID yet,** so macOS asks you to confirm the first time you open it. [Installing Dustling](docs/INSTALL.md) shows how. The admin helper for system caches comes later; see the [roadmap](#roadmap).
+> **Dustling isn't signed with an Apple Developer ID yet,** so macOS asks you to confirm the first time you open it. [Installing Dustling](docs/INSTALL.md) shows how. Apps and leftovers that belong to the system, such as an installer's app or a launch daemon, move to the Trash with your Mac password; switching system startup items on or off waits for the admin helper (see the [roadmap](#roadmap)). System caches and logs are never cleaned: macOS manages them.
 
 <p align="center">
   <picture>
@@ -159,8 +159,8 @@ It uses the Mac app's scan settings when the app has saved them (the `app.dustli
 | Command | What it does |
 | --- | --- |
 | `doctor` | Full Disk Access status, free and purgeable space, snapshot count, problems (exit 1 if any) |
-| `scan` | Categories with size and item count (`couldn't scan` or `at least` when something couldn't be read); `[review]`, `[needs admin]` and `[trash]` mark ones that are not ticked by default; separate totals for what's cleanable by default, review items, admin-only items and the Trash |
-| `clean [--include <categoryID>...]` | Moves the default categories (plus any you include, each item listed first) to the Trash. System caches and logs is never a default: `--include systemCachesAndLogs` records its items as needing admin rights without touching them (the app moves them with your Mac password) |
+| `scan` | Categories with size and item count (`couldn't scan` or `at least` when something couldn't be read); `[review]`, `[left alone]` and `[trash]` mark ones that are not ticked by default; separate totals for what's cleanable by default, review items, what Dustling leaves alone and the Trash |
+| `clean [--include <categoryID>...]` | Moves the default categories (plus any you include, each item listed first) to the Trash. System caches and logs are never cleaned: `--include systemCachesAndLogs` is refused |
 | `apps` | Numbered list of installed apps with sizes; a symlinked app shows where it points |
 | `uninstall <name\|number> [--all]` | Moves an app and its checked leftovers to the Trash; `--all` also moves unchecked ones |
 | `startup`, `startup disable\|enable <label>` | Lists login items and background agents, or turns one off or on |
@@ -192,7 +192,7 @@ Logs are written to `~/Library/Logs/Dustling/` and run history to `~/Library/App
 | Package manager caches (Homebrew, npm, pip, CocoaPods, Yarn) | `packageManagerCaches` | picked |
 | App caches, including sandboxed apps' caches | `userCaches` | picked |
 | App logs | `userLogs` | picked |
-| System caches and logs | `systemCachesAndLogs` | not picked: the app moves it with your Mac password when you tick it |
+| System caches and logs (shown for their size only) | `systemCachesAndLogs` | never cleaned: macOS manages them |
 | Old installers (`.dmg` / `.pkg` in Downloads) | `oldInstallers` | review |
 | Large or old downloads (≥ 500 MB, or not opened in 90 days) | `largeOldDownloads` | review |
 | iPhone and iPad backups | `iosBackups` | review |
@@ -223,7 +223,8 @@ Design notes live in [`docs/superpowers`](docs/superpowers):
 
 - [x] **Core engine and command-line tool.** Junk scan, uninstaller, startup items, History and Restore, health check.
 - [x] **The Mac app.** A SwiftUI interface with Dustling's "Mosaic" design: a mosaic view of your storage, live scanning, per-item progress and a guided Full Disk Access setup. Motion respects Reduce Motion, and the app supports VoiceOver and keyboard navigation.
-- [ ] **Admin helper.** A small privileged helper (via `SMAppService`) for system caches, launch daemons and package receipts. It repairs itself if macOS unregisters it.
+- [x] **Your Mac password for what belongs to the system.** Apps an installer put in Applications, launch daemons and other leftovers of the system move to the Trash (and back, and out of the Trash) with the standard macOS password box, once per action. Package receipts stay where they are, and System caches and logs are never cleaned.
+- [ ] **Admin helper.** A small privileged helper (via `SMAppService`) for switching system startup items (launch daemons and system launch agents) on and off. It repairs itself if macOS unregisters it.
 - [x] **Releases.** Versioned releases with a `.dmg` on GitHub Releases, a [changelog](CHANGELOG.md), and a website at [dustling.app](https://dustling.app).
 - [ ] **Signing.** A Developer ID signature and notarization, so macOS opens Dustling without asking, and a Homebrew cask.
 

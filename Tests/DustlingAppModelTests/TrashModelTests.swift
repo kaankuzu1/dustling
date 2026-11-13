@@ -30,6 +30,40 @@ struct TrashModelTests {
         #expect(FileManager.default.fileExists(atPath: old.path))
     }
 
+    @Test func emptyTrashStaysAvailableWithSystemItemsItCantReadInside() async throws {
+        // After a System caches clean the Trash holds folders of another account Dustling can't list.
+        // Empty Trash deletes them with the Mac password, so it stays on; the size is a lower bound.
+        let rig = try ModelRig()
+        try rig.file(rig.environment.userTrash.appending(path: "old.txt"), bytes: 4096)
+        let store = rig.environment.userTrash.appending(path: "com.apple.iconservices.store")
+        try rig.file(store.appending(path: "inner.bin"), bytes: 4096)
+        _ = chmod(store.path(percentEncoded: false), 0o111)
+        defer { _ = chmod(store.path(percentEncoded: false), 0o755) }
+        var environment = rig.environment
+        environment.userID = getuid() &+ 1   // so the folder belongs to "another account"
+        let journal = rig.journal
+        let deleted = Counter()
+        let model = TrashModel(
+            makeInspector: { _ in
+                TrashInspector(
+                    environment: environment, journal: journal, logger: RunLogger(directory: environment.logsDirectory),
+                    sizer: DirectorySizer(), includeExternalVolumes: false)
+            },
+            journal: journal, onRunCompleted: { deleted.bump() })
+        await model.refresh(fullDiskAccessGranted: true)
+        #expect(model.canEmpty)
+        #expect(model.disabledReason == nil)
+        #expect(model.unreadableSystemItems == 1)
+        #expect(model.sizeIsLowerBound)
+        #expect(!model.externalVolumesSkipped)
+        // The re-check right before deleting doesn't refuse it either.
+        guard case .emptied(let record) = await model.emptyTrash(confirmedBytes: model.shownBytes) else {
+            Issue.record("expected emptied"); return
+        }
+        #expect(deleted.value == 1)
+        #expect(record.entries.contains { $0.originalPath.hasSuffix("old.txt") && $0.outcome == .deleted })
+    }
+
     @Test func emptyTrashDisabledWhenTrashIsEmpty() async throws {
         let rig = try ModelRig()
         try FileManager.default.createDirectory(at: rig.environment.userTrash, withIntermediateDirectories: true)
@@ -247,13 +281,38 @@ struct TrashModelTests {
         ], restorable: false)
         let problems = EmptyTrashProblems.of(record)
         #expect(problems == EmptyTrashProblems(needsAdmin: 1, protected: 1, failed: 2))
-        #expect(problems?.message == "1 item belongs to another account on this Mac, usually because an installer put it there. Open the Trash in Finder and empty it there: Finder asks for your password. 1 item is protected by macOS and can't be deleted. 2 items couldn't be deleted. The log has the reason for each.")
+        #expect(problems?.message == "1 item belongs to the system. Empty Trash again and enter your Mac password, or empty the Trash in Finder. 1 item is protected by macOS and can't be deleted. 2 items couldn't be deleted. The log has the reason for each.")
+        #expect(problems?.title == "4 items are still in the Trash")
+    }
+
+    @Test func itemsKeptAsideInLibrarySayWhereTheyAre() {
+        // The password step stopped one on its way out, and could only delete part of another:
+        // neither is in the Trash any more, and the sheet says where they are.
+        func entry(_ name: String, _ outcome: DeletionOutcome) -> JournalEntry {
+            JournalEntry(originalPath: "/t/\(name)", bytes: 1, outcome: outcome)
+        }
+        let bridge = "/Library/.dustling-Ab12Cd34"
+        let record = RunRecord(startedAt: Date(), kind: .emptyTrash, entries: [
+            entry("a", .failed(reason: AdminScript.heldReason(bridge: bridge))),
+            entry("b", .failed(reason: AdminScript.partlyDeletedReason(bridge: bridge))),
+            entry("c", .needsAdmin),
+        ], restorable: false)
+        let problems = EmptyTrashProblems.of(record)
+        #expect(problems == EmptyTrashProblems(
+            needsAdmin: 1, protected: 0, failed: 0, heldAside: 1, partlyDeleted: 1, keptIn: bridge))
+        #expect(problems?.title == "3 items weren't deleted")
+        #expect(problems?.message == "1 item belongs to the system. Empty Trash again and enter your Mac password, or empty the Trash in Finder. 1 item stopped on its way out of the Trash because something changed. It is untouched in /Library/.dustling-Ab12Cd34. macOS refused to delete part of 1 item, even with your password. What is left of it is in /Library/.dustling-Ab12Cd34.")
+        #expect(problems?.message.contains("still in the Trash") == false)
+        let several = EmptyTrashProblems(needsAdmin: 0, protected: 0, failed: 0, heldAside: 2, partlyDeleted: 3, keptIn: bridge)
+        #expect(several.title == "5 items weren't deleted")
+        #expect(several.message == "2 items stopped on their way out of the Trash because something changed. They are untouched in /Library/.dustling-Ab12Cd34. macOS refused to delete part of 3 items, even with your password. What is left of them is in /Library/.dustling-Ab12Cd34.")
+        #expect(EmptyTrashProblems(needsAdmin: 0, protected: 0, failed: 0, heldAside: 1, partlyDeleted: 0, keptIn: nil).title
+            == "1 item wasn't deleted")
     }
 
     @Test func problemsSummaryPluralsAndNil() {
         let admin = EmptyTrashProblems(needsAdmin: 5, protected: 0, failed: 0)
-        #expect(admin.message.hasPrefix("5 items belong to another account"))
-        #expect(admin.message.contains("put them there"))
+        #expect(admin.message == "5 items belong to the system. Empty Trash again and enter your Mac password, or empty the Trash in Finder.")
         #expect(admin.title == "5 items are still in the Trash")
         #expect(EmptyTrashProblems(needsAdmin: 1, protected: 0, failed: 0).title == "1 item is still in the Trash")
         #expect(EmptyTrashProblems(needsAdmin: 0, protected: 3, failed: 0).message == "3 items are protected by macOS and can't be deleted.")

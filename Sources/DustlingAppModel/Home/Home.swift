@@ -343,8 +343,10 @@ public struct HomeFigures: Equatable, Sendable {
     /// The Trash as `TrashModel` last read it.
     public enum TrashReading: Equatable, Sendable {
         case unknown
-        /// `externalSkipped`: other volumes' Trash folders weren't opened (no Full Disk Access).
-        case read(bytes: UInt64, externalSkipped: Bool)
+        /// `externalSkipped`: other volumes' Trash folders weren't opened (no Full Disk Access): a
+        /// lower bound, shown with a locked cell. `systemUnread`: some items that belong to the system
+        /// couldn't be read (they are deleted with the Mac password): a lower bound, nothing locked.
+        case read(bytes: UInt64, externalSkipped: Bool, systemUnread: Bool = false)
         /// The Trash couldn't be read; `movedSinceLastEmpty` is what Dustling's own runs put there.
         case unreadable(movedSinceLastEmpty: UInt64)
     }
@@ -427,7 +429,7 @@ public struct HomeFigures: Equatable, Sendable {
         let trashBytes: UInt64?, trashLower: Bool
         switch input.trash {
         case .unknown: trashBytes = nil; trashLower = false
-        case .read(let bytes, let skipped): trashBytes = bytes; trashLower = skipped
+        case .read(let bytes, let skipped, let partial): trashBytes = bytes; trashLower = skipped || partial
         case .unreadable(let moved): trashBytes = moved; trashLower = true
         }
 
@@ -472,7 +474,7 @@ public struct HomeFigures: Equatable, Sendable {
         if trashPlaceOpen {
             switch trash {
             case .unreadable: count += 1
-            case .read(_, let skipped) where skipped: count += 1
+            case .read(_, let skipped, _) where skipped: count += 1
             default: break
             }
         }

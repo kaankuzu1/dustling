@@ -7,12 +7,12 @@ private let quarter: UInt64 = 268_435_456
 
 private func tile(
     _ id: JunkCategoryID, _ bytes: UInt64, selected: Bool = true, stopped: Bool = false,
-    selection: Selection = .preselected, items: Int = 3, inUse: Int = 0, needsPassword: Bool = false
+    selection: Selection = .preselected, items: Int = 3, inUse: Int = 0, leftAlone: Bool = false
 ) -> CategoryTileModel {
     CategoryTileModel(
         id: id, title: "\(id)", note: id == .iosBackups ? "Your data, never selected for you" : nil, bytes: bytes,
         itemCount: items, selection: selection, isSelected: selected, stopped: stopped, issues: [], inUseCount: inUse,
-        needsPassword: needsPassword)
+        leftAlone: leftAlone)
 }
 
 private let catalog: [JunkScreen.Entry] = [
@@ -41,7 +41,7 @@ struct JunkScreenTilesTests {
     @Test func tilesFollowTheCatalogInTwoSectionsWithoutTheTrash() {
         let tiles = JunkScreen.tiles(input(tiles: [
             tile(.userCaches, quarter), tile(.userLogs, 0), tile(.xcodeJunk, 2 * quarter),
-            tile(.systemCachesAndLogs, quarter, selected: false, needsPassword: true),
+            tile(.systemCachesAndLogs, quarter, selected: false, leftAlone: true),
             tile(.iosBackups, quarter, selected: false, selection: .review),
             tile(.mailDownloads, 0, selected: false, selection: .review),
         ]))
@@ -49,13 +49,14 @@ struct JunkScreenTilesTests {
         #expect(tiles.filter { $0.section == .safe }.count == 4)
         #expect(tiles.filter { $0.section == .review }.count == 2)
         #expect(tiles[0].status == .scanned && tiles[0].canToggle)
-        // System caches and logs: a normal tile the user may tick, saying that it asks for the password.
-        #expect(tiles[3].status == .scanned && tiles[3].canToggle && !tiles[3].isSelected)
-        #expect(tiles[3].note == "3 items, needs your Mac password")
+        // System caches and logs: its size for information, never ticked, never cleaned.
+        #expect(tiles[3].status == .leftAlone && !tiles[3].canToggle && !tiles[3].isSelected)
+        #expect(tiles[3].bytes == quarter)
+        #expect(tiles[3].note == "macOS manages these, so Dustling leaves them alone.")
+        #expect(tiles[3].accessibilityValue == "268.4 MB, left alone")
         let limited = JunkScreen.tiles(input(
-            tiles: [tile(.systemCachesAndLogs, quarter, selected: false, needsPassword: true)], fullDiskAccess: false))
-        #expect(limited.first { $0.id == .systemCachesAndLogs }?.note
-            == "3 items, needs Full Disk Access, then your Mac password")
+            tiles: [tile(.systemCachesAndLogs, quarter, selected: false, leftAlone: true)], fullDiskAccess: false))
+        #expect(limited.first { $0.id == .systemCachesAndLogs }?.note == "macOS manages these, so Dustling leaves them alone.")
         #expect(tiles[4].note == "Your data, never selected for you")
         #expect(tiles[5].note == "Review before removing")
         #expect(tiles[0].note == "3 items, rebuilt when needed")
@@ -64,7 +65,7 @@ struct JunkScreenTilesTests {
     @Test func emptyPlacesSayNothingIsThereAndTheScreenIsAllClean() {
         let empty = JunkScreen.tiles(input(tiles: [
             tile(.userCaches, 0, items: 0), tile(.userLogs, 0, items: 0), tile(.xcodeJunk, 0, items: 0),
-            tile(.systemCachesAndLogs, 0, selected: false, items: 0, needsPassword: true),
+            tile(.systemCachesAndLogs, 0, selected: false, items: 0, leftAlone: true),
             tile(.iosBackups, 0, selected: false, selection: .review, items: 0),
             tile(.mailDownloads, 0, selected: false, selection: .review, items: 0),
         ]))
@@ -76,16 +77,19 @@ struct JunkScreenTilesTests {
 
         let some = JunkScreen.tiles(input(tiles: [tile(.userCaches, 0, items: 0), tile(.userLogs, quarter)]))
         #expect(!JunkScreen.isAllClean(some))
-        // System caches can be cleaned now (with the password), so what they hold counts.
+        // System caches are never cleaned, so what they hold doesn't count.
         let system = JunkScreen.tiles(input(tiles: [
-            tile(.userCaches, 0, items: 0), tile(.systemCachesAndLogs, quarter, selected: false, needsPassword: true),
+            tile(.userCaches, 0, items: 0), tile(.userLogs, 0, items: 0), tile(.xcodeJunk, 0, items: 0),
+            tile(.systemCachesAndLogs, quarter, selected: false, leftAlone: true),
+            tile(.iosBackups, 0, selected: false, selection: .review, items: 0),
+            tile(.mailDownloads, 0, selected: false, selection: .review, items: 0),
         ]))
-        #expect(!JunkScreen.isAllClean(system))
+        #expect(JunkScreen.isAllClean(system))
         #expect(!JunkScreen.isAllClean([]))
         // Everything left out in Review files is still there: not "All clean".
         var leftOut = CategoryTileModel(
             id: .userCaches, title: "App caches", note: nil, bytes: quarter, itemCount: 2, selection: .preselected,
-            isSelected: true, stopped: false, issues: [], inUseCount: 0, needsPassword: false)
+            isSelected: true, stopped: false, issues: [], inUseCount: 0, leftAlone: false)
         leftOut.excludedBytes = quarter
         leftOut.excludedCount = 2
         #expect(!JunkScreen.isAllClean(JunkScreen.tiles(input(tiles: [leftOut]))))
@@ -268,10 +272,11 @@ struct JunkScreenTilesTests {
     @Test func selectionLineCountsWhatCanBeTicked() {
         let tiles = JunkScreen.tiles(input(tiles: [
             tile(.userCaches, quarter), tile(.userLogs, quarter, selected: false),
-            tile(.systemCachesAndLogs, quarter, selected: false, needsPassword: true),
+            tile(.systemCachesAndLogs, quarter, selected: false, leftAlone: true),
         ], places: [Place(id: .userCaches, access: .readable), Place(id: .userLogs, access: .readable),
                     Place(id: .systemCachesAndLogs, access: .readable), Place(id: .xcodeJunk, access: .locked)]))
-        #expect(JunkScreen.selectionLine(tiles, selectedBytes: quarter) == "1 of 3 selected, 268.4 MB")
+        // System caches and logs can't be ticked: not counted.
+        #expect(JunkScreen.selectionLine(tiles, selectedBytes: quarter) == "1 of 2 selected, 268.4 MB")
     }
 }
 

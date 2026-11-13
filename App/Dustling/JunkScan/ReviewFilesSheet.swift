@@ -5,8 +5,7 @@ import SwiftUI
 
 /// Review files: every file the cleanup would move, grouped by category in tile order. Unticking a
 /// file leaves it where it is. Files that can't move (in use, locked) are shown disabled with their
-/// reason and never count. System caches and logs say under their title that moving them asks for the
-/// Mac password. Done keeps the changes; Cancel drops them.
+/// reason and never count. Done keeps the changes; Cancel drops them.
 struct ReviewFilesSheet: View {
     @Environment(AppModels.self) private var models
     @Environment(\.dismiss) private var dismiss

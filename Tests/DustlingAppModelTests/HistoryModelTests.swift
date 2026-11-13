@@ -160,7 +160,8 @@ struct HistoryModelTests {
 
     @Test func putBackAsksForThePasswordForAFolderTheUserCantChange() async throws {
         let rig = try ModelRig()
-        let folder = rig.root.appending(path: "orig")
+        // A folder a junk clean moves from (App caches), so Put back may use the password there.
+        let folder = rig.cachesDirectory
         let original = try rig.file(folder.appending(path: "file.txt"), bytes: 100)
         // Moved by the runner, so the journal records who owned the item (Put back needs that).
         let record = await rig.runner().run([original], kind: .junkClean, allowedRoots: [folder], onItem: { _, _ in })

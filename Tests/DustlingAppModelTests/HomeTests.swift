@@ -368,6 +368,15 @@ struct HomeFiguresTests {
         #expect(skipped.trashIsLowerBound && skipped.isLowerBound)
     }
 
+    @Test func systemItemsDustlingCantReadInsideMakeTheTrashALowerBoundWithoutALock() {
+        // Nothing is locked: Empty Trash deletes them (with the password); only their size is unknown.
+        let partial = HomeFigures.make(input(
+            trash: .read(bytes: 10, externalSkipped: false, systemUnread: true), places: [Place(id: .trash, access: .readable)]))
+        #expect(partial.trashBytes == 10)
+        #expect(partial.trashIsLowerBound && partial.isLowerBound && partial.afterCleanupIsLowerBound)
+        #expect(partial.lockedCells == 0)
+    }
+
     @Test func placesThatOpenedAfterTheScanStayLockedUntilARescan() {
         // Scanned in limited mode; Full Disk Access arrived since.
         let scope = HomeScanScope(full: [.userLogs], partial: [.userCaches])

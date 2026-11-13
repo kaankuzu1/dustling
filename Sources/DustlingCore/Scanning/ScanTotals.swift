@@ -47,8 +47,8 @@ public struct ScanTotals: Equatable, Sendable {
     public var skippedInUse: UInt64 = 0
     /// Review categories (only cleaned when the user includes them).
     public var review = ScanTotal()
-    /// Categories that need admin rights: the app moves them with the Mac password when the user ticks
-    /// them; the CLI never touches them.
+    /// Categories that need admin rights. The only one, System caches and logs, is never cleaned
+    /// (`JunkCategory.isNeverCleaned`): it is shown for information only.
     public var needsAdmin = ScanTotal()
     /// The Trash (only ever emptied as a whole).
     public var trash = ScanTotal()

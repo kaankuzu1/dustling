@@ -18,11 +18,19 @@ public struct AdminStep: Equatable, Sendable {
     /// When set, the item moved (the source) or deleted must still be exactly this one, or the step
     /// does nothing and reports `err`. Put back passes the identity the journal recorded.
     public let expectedSource: ItemIdentity?
+    /// For a move: when set, the folder the item goes into must be exactly this one (volume, inode,
+    /// owner), or planning refuses the step as unsafe. Put back passes the folder it found by
+    /// walking down from the home folder or a system folder without following any link
+    /// (`PasswordPutBack`), so a link swapped in above the folder can't send root elsewhere.
+    public let expectedFolder: ItemIdentity?
 
-    public init(op: AdminOp, dependsOn: Int? = nil, expectedSource: ItemIdentity? = nil) {
+    public init(
+        op: AdminOp, dependsOn: Int? = nil, expectedSource: ItemIdentity? = nil, expectedFolder: ItemIdentity? = nil
+    ) {
         self.op = op
         self.dependsOn = dependsOn
         self.expectedSource = expectedSource
+        self.expectedFolder = expectedFolder
     }
 }
 
@@ -66,8 +74,9 @@ struct AdminPlanning: Sendable {
 
 /// Builds the one POSIX sh script that does every step of a user action as root, and reads back
 /// what happened. The script prints exactly one line per step, `R<TAB><index><TAB><status>`,
-/// with status `ok`, `gone`, `skip`, `exists`, `err`, `unsafe`, `unsafe_putback`, `held` or
-/// `held_other`. Before the first `held` step it prints the bridge's path once, `B<TAB><path>`.
+/// with status `ok`, `gone`, `skip`, `exists`, `err`, `unsafe`, `unsafe_putback`, `held`,
+/// `held_other` or `partial`. Before the first `held` or `partial` step it prints the bridge's path
+/// once, `B<TAB><path>`.
 ///
 /// Every step goes between a pinned folder and a root-only bridge on the same volume:
 /// - The bridge: once per script, root makes `/Library/.dustling-XXXXXXXX` with `mktemp -d`
@@ -103,7 +112,8 @@ struct AdminPlanning: Sendable {
 /// - A move (to the Trash, or Put back) is out of the source folder and into the destination, with
 ///   the destination's name checked free first (`exists`). A delete (Empty Trash) is out of the
 ///   folder, then `rm -rfx` on the verified item inside the bridge (never following links, never
-///   crossing mount points). `bootOutDaemon` stops the daemon (`launchctl bootout system <plist>`)
+///   crossing mount points); what macOS keeps even from root stays in the bridge (`partial`).
+///   `bootOutDaemon` stops the daemon (`launchctl bootout system <plist>`)
 ///   after the destination check and before the item is taken, and only if the plist is still the
 ///   planned item, a regular file and not a link.
 ///
@@ -112,9 +122,12 @@ struct AdminPlanning: Sendable {
 /// identity, whether the user can write it and the item's identity in it (`PlannedFolder.read`).
 /// It refuses a step when the item or a folder is on another volume than the bridge (or no bridge
 /// can be made), a folder is not a real directory, `bootOutDaemon` is asked for a plist whose folder
-/// chain isn't root-only, or a move goes into a folder the user can't write without
-/// `expectedSource`: `unsafe_putback` ("Dustling can't safely put this back with your password. Use
-/// Put Back in Finder.") for a move out of the Trash (`AdminPlanning.isTrash`), `unsafe` ("Dustling
+/// chain isn't root-only, a move has no Trash at either end (a move out of a folder that is not a
+/// Trash goes only into one; `AdminPlanning.isTrash`, which the item must be directly in), a move
+/// goes into a folder the user can't write other than out of a Trash with `expectedSource`, a move's
+/// destination folder is not its `expectedFolder`, or a delete is of something not directly in a
+/// Trash: `unsafe_putback` ("Dustling can't safely put this back with your password. Use
+/// Put Back in Finder.") for a move out of the Trash, `unsafe` ("Dustling
 /// can't safely move this with your password. Move it to the Trash in Finder.") for a move into the
 /// Trash or a delete. A move whose item (or source folder) is missing reports `gone`; a delete whose
 /// item is missing reports `ok` if it is still missing (and `err` if something appeared). An
@@ -141,6 +154,9 @@ struct AdminPlanning: Sendable {
 /// What it doesn't:
 /// - The plan is what was there at planning time. An item swapped before planning is what gets
 ///   planned; Put back's `expectedSource` (from the journal) covers that.
+/// - Which folders a Put back may go into is the caller's decision: the journal is a file the user
+///   can write, so `RunJournal.restore` only sends a Put back into a place Dustling moves from with
+///   the password (`PasswordPutBack`), and names the folder it checked (`expectedFolder`).
 /// - Between root's last check of `./<name>` and its rename, the entry can still change. If the
 ///   other entry is on the same volume, root takes it into the bridge, where it stays
 ///   (`held_other`); if it is a mount, the rename fails and nothing is taken (`err`).
@@ -294,7 +310,7 @@ public enum AdminScript {
     /// `bridge` where the bridge goes (nil: it can't be made); `isTrash` which folders are a Trash
     /// (a refused move out of one is a Put back).
     static func make(
-        _ steps: [AdminStep], plans: [StepPlan?], bridge: PlannedBridge?, isTrash: (String) -> Bool = { _ in false }
+        _ steps: [AdminStep], plans: [StepPlan?], bridge: PlannedBridge?, isTrash: (String) -> Bool
     ) -> String {
         let calls = steps.enumerated().map { index, step in
             call(for: step, at: index, plan: index < plans.count ? plans[index] : nil, bridge: bridge,
@@ -337,7 +353,27 @@ public enum AdminScript {
     /// Why a step is `held`: the planned item itself is still in the bridge at `bridge` (its path,
     /// from the script; nil if it didn't say), in that step's subfolder.
     public static func heldReason(bridge: String?) -> String {
-        "Something changed while it was moving, so Dustling stopped. It is untouched in \(bridge ?? "a hidden folder in /Library")."
+        heldPrefix + "\(bridge ?? unnamedBridge)."
+    }
+
+    /// Why a delete is `partial`: macOS refused to delete part of the item even to root (a file it
+    /// protects, a disk mounted inside); what is left is in the bridge at `bridge`, in that step's
+    /// subfolder, not in the Trash.
+    public static func partlyDeletedReason(bridge: String?) -> String {
+        partlyDeletedPrefix + "\(bridge ?? unnamedBridge)."
+    }
+
+    /// The start of every `heldReason` and `partlyDeletedReason`, whose ends name a folder that
+    /// changes with every password step.
+    public static let heldPrefix = "Something changed while it was moving, so Dustling stopped. It is untouched in "
+    public static let partlyDeletedPrefix =
+        "macOS refused to delete part of it, even with your password. What is left is in "
+    private static let unnamedBridge = "a hidden folder in /Library"
+
+    /// Whether `reason` says the item is kept in a hidden folder in /Library, not where it was
+    /// (`heldReason`, `partlyDeletedReason`).
+    public static func isKeptAside(_ reason: String) -> Bool {
+        reason.hasPrefix(heldPrefix) || reason.hasPrefix(partlyDeletedPrefix)
     }
 
     private static func result(for status: String, bridge: String?) -> AdminStepResult? {
@@ -351,6 +387,7 @@ public enum AdminScript {
         case "unsafe_putback": return .notDone(reason: putBackUnsafeReason)
         case "held": return .notDone(reason: heldReason(bridge: bridge))
         case "held_other": return .notDone(reason: movedAwayReason)
+        case "partial": return .notDone(reason: partlyDeletedReason(bridge: bridge))
         default: return nil
         }
     }
@@ -380,7 +417,7 @@ public enum AdminScript {
         at_() { [ -e "$1" ] || [ -L "$1" ]; }
         report_() {
           if [ "$2" = ok ]; then ok_="$ok_$1 "; fi
-          if [ "$2" = held ] && [ "$bp_" != 1 ]; then printf 'B\t%s\n' "$br_"; bp_=1; fi
+          if { [ "$2" = held ] || [ "$2" = partial ]; } && [ "$bp_" != 1 ]; then printf 'B\t%s\n' "$br_"; bp_=1; fi
           printf 'R\t%s\t%s\n' "$1" "$2"
         }
         after_() {
@@ -457,7 +494,7 @@ public enum AdminScript {
           if [ "$t_" = gone ]; then fin_ ok; return; fi
           if [ "$t_" != ok ]; then fin_ "$t_"; return; fi
           /bin/rm -rfx -- "$k_/$6" >/dev/null 2>&1
-          if at_ "$k_/$6"; then fin_ err; else fin_ ok; fi
+          if at_ "$k_/$6"; then fin_ partial; else fin_ ok; fi
         }
         """#
 
@@ -477,8 +514,13 @@ public enum AdminScript {
         case .move(let from, let to, let bootOutDaemon):
             guard let source = AdminPath(from), let destination = AdminPath(to) else { return refused }
             // Out of the Trash: a Put back, whose refusal points to Finder's Put Back.
-            if isTrash(source.folder) { unsafe = "report_ \(index) unsafe_putback" }
+            let fromTrash = isTrash(source.folder)
+            if fromTrash { unsafe = "report_ \(index) unsafe_putback" }
+            // Every move has a Trash at one end: out of any other folder, only into the Trash.
+            guard fromTrash || isTrash(destination.folder) else { return unsafe }
             guard let plan else { return unsafe }
+            // Put back names the folder it checked: any other folder there now is refused.
+            if let expectedFolder = step.expectedFolder, expectedFolder != plan.folder.identity { return unsafe }
             if plan.sourceGone { return "gone_ \(index) \(head)" }
             guard let sourceFolder = plan.source else { return unsafe }
             guard let item = plan.item else { return "gone_ \(index) \(head)" }
@@ -489,8 +531,8 @@ public enum AdminScript {
             else { return unsafe }
             // launchctl reads the plist by its path: only through a root-only chain.
             if bootOutDaemon && !sourceFolder.rootOnlyChain { return unsafe }
-            // Into a folder the user can't write, only the item Put back recorded.
-            if !plan.folder.userCanWrite && step.expectedSource == nil { return unsafe }
+            // Into a folder the user can't write: only out of the Trash, and only the item Put back recorded.
+            if !plan.folder.userCanWrite && (!fromTrash || step.expectedSource == nil) { return unsafe }
             if let expectedSource = step.expectedSource, expectedSource != item { return refused }
             let sameName = Array(source.name.utf8) == Array(destination.name.utf8)
             return ["move_", String(index), head, bootOutDaemon ? "1" : "0", expected, sameName ? "1" : "0",
@@ -499,6 +541,8 @@ public enum AdminScript {
                 .joined(separator: " ")
         case .delete(let url):
             guard let item = AdminPath(url) else { return refused }
+            // Root deletes only what is directly in a Trash.
+            guard isTrash(item.folder) else { return unsafe }
             guard let plan else { return unsafe }
             let fields = ["delete_", String(index), head, expected, quote(item.folder), plan.folder.identity.stamp,
                           quote(item.name)]

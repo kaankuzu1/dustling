@@ -15,42 +15,98 @@ public enum EmptyTrashResult: Sendable {
 
 /// What Empty Trash could not delete, counted by cause, for the sheet to say so in plain words.
 public struct EmptyTrashProblems: Equatable, Sendable {
-    /// Belong to another account on this Mac; only an administrator can delete them.
+    /// Belong to another account (the system, an installer): only the Mac password deletes them.
     public let needsAdmin: Int
     /// Protected by macOS.
     public let protected: Int
     /// Failed for another reason; the log has it.
     public let failed: Int
+    /// No longer in the Trash: the password step stopped while they were on their way out, because
+    /// something changed (`AdminScript.heldReason`). They are untouched in `keptIn`.
+    public let heldAside: Int
+    /// No longer in the Trash: macOS refused to delete part of them, even with the password
+    /// (`AdminScript.partlyDeletedReason`). What is left is in `keptIn`.
+    public let partlyDeleted: Int
+    /// The hidden folder in /Library that holds `heldAside` and `partlyDeleted` items, as the
+    /// password step named it (nil when there are none).
+    public let keptIn: String?
+
+    public init(
+        needsAdmin: Int, protected: Int, failed: Int, heldAside: Int = 0, partlyDeleted: Int = 0, keptIn: String? = nil
+    ) {
+        self.needsAdmin = needsAdmin
+        self.protected = protected
+        self.failed = failed
+        self.heldAside = heldAside
+        self.partlyDeleted = partlyDeleted
+        self.keptIn = keptIn
+    }
 
     /// Nil when the run left nothing behind. The `<history>` / `<log>` markers are not Trash items.
     public static func of(_ record: RunRecord) -> EmptyTrashProblems? {
-        var admin = 0, protected = 0, failed = 0
+        var admin = 0, protected = 0, failed = 0, held = 0, partly = 0
+        var keptIn: String?
         for entry in record.entries where !entry.originalPath.hasPrefix("<") && !TrashInspector.isLocationFailure(entry) {
             switch entry.outcome {
-            case .needsAdmin: admin += 1
-            case .failed(let reason): if reason == TrashUnlocker.protectedReason { protected += 1 } else { failed += 1 }
-            default: break
+            case .needsAdmin:
+                admin += 1
+            case .failed(let reason):
+                if reason == TrashUnlocker.protectedReason {
+                    protected += 1
+                } else if let folder = Self.folder(in: reason, after: AdminScript.heldPrefix) {
+                    held += 1
+                    keptIn = keptIn ?? folder
+                } else if let folder = Self.folder(in: reason, after: AdminScript.partlyDeletedPrefix) {
+                    partly += 1
+                    keptIn = keptIn ?? folder
+                } else {
+                    failed += 1
+                }
+            default:
+                break
             }
         }
-        guard admin + protected + failed > 0 else { return nil }
-        return EmptyTrashProblems(needsAdmin: admin, protected: protected, failed: failed)
+        guard admin + protected + failed + held + partly > 0 else { return nil }
+        return EmptyTrashProblems(
+            needsAdmin: admin, protected: protected, failed: failed, heldAside: held, partlyDeleted: partly, keptIn: keptIn)
     }
 
-    /// How many items are still in the Trash.
-    public var total: Int { needsAdmin + protected + failed }
+    /// The folder a kept-aside reason names: what follows `prefix`, without the final period.
+    private static func folder(in reason: String, after prefix: String) -> String? {
+        guard reason.hasPrefix(prefix) else { return nil }
+        var folder = String(reason.dropFirst(prefix.count))
+        if folder.hasSuffix(".") { folder.removeLast() }
+        return folder.isEmpty ? nil : folder
+    }
 
-    /// The sheet's title once some items could not be deleted.
+    /// How many items Empty Trash left.
+    public var total: Int { needsAdmin + protected + failed + heldAside + partlyDeleted }
+
+    /// The sheet's title once some items could not be deleted. Items kept aside in /Library are
+    /// no longer in the Trash, so then it doesn't say they are.
     public var title: String {
-        total == 1 ? "1 item is still in the Trash" : "\(total) items are still in the Trash"
+        if heldAside + partlyDeleted > 0 {
+            return total == 1 ? "1 item wasn't deleted" : "\(total) items weren't deleted"
+        }
+        return total == 1 ? "1 item is still in the Trash" : "\(total) items are still in the Trash"
     }
 
     public var message: String {
         var parts: [String] = []
+        let folder = keptIn ?? "a hidden folder in /Library"
         if needsAdmin > 0 {
-            parts.append("\(Self.count(needsAdmin, "item belongs", "items belong")) to another account on this Mac, usually because an installer put \(needsAdmin == 1 ? "it" : "them") there. Open the Trash in Finder and empty it there: Finder asks for your password.")
+            parts.append("\(Self.count(needsAdmin, "item belongs", "items belong")) to the system. Empty Trash again and enter your Mac password, or empty the Trash in Finder.")
         }
         if protected > 0 {
             parts.append("\(Self.count(protected, "item is", "items are")) protected by macOS and can't be deleted.")
+        }
+        if heldAside > 0 {
+            parts.append(heldAside == 1
+                ? "1 item stopped on its way out of the Trash because something changed. It is untouched in \(folder)."
+                : "\(heldAside) items stopped on their way out of the Trash because something changed. They are untouched in \(folder).")
+        }
+        if partlyDeleted > 0 {
+            parts.append("macOS refused to delete part of \(Self.count(partlyDeleted, "item", "items")), even with your password. What is left of \(partlyDeleted == 1 ? "it" : "them") is in \(folder).")
         }
         if failed > 0 {
             parts.append("\(Self.count(failed, "item", "items")) couldn't be deleted. The log has the reason for each.")
@@ -82,6 +138,14 @@ public final class TrashModel {
     /// Settings > Include Trash on external drives. Applies only with Full Disk Access; leaving other
     /// volumes out by choice is not "skipped" (nothing is shown as locked).
     @ObservationIgnored public var includeExternalVolumes = true
+    /// How many places inside the Trash belong to another account (the system) and couldn't be read
+    /// (`TrashContents.systemUnreadable`): Empty Trash still works (it deletes them with the Mac
+    /// password), but the size leaves out what is inside them.
+    public private(set) var unreadableSystemItems = 0
+
+    /// The size shown is only part of the Trash: other volumes weren't looked at, or some items that
+    /// belong to the system couldn't be read. Show it as "or more".
+    public var sizeIsLowerBound: Bool { externalVolumesSkipped || unreadableSystemItems > 0 }
 
     /// Builds the inspector for one refresh: `true` includes other volumes' Trash folders. Called on
     /// the main actor, so the app can give it the password step that applies now.
@@ -112,7 +176,9 @@ public final class TrashModel {
         self.onRunCompleted = onRunCompleted
     }
 
-    /// False until the Trash has been read, when any trash location is unreadable, and when it holds nothing.
+    /// False until the Trash has been read, when a trash location (or, for lack of Full Disk Access, an
+    /// item) is unreadable, and when it holds nothing. Items of another account that can't be read
+    /// don't count: Empty Trash deletes them with the Mac password.
     public var canEmpty: Bool { disabledReason == nil }
 
     /// Why Empty Trash is off, in plain words; nil when it is available.
@@ -148,11 +214,13 @@ public final class TrashModel {
         let journal = self.journal
         let found = await Blocking.run { () -> Snapshot in
             let found = inspector.contents()
-            return Snapshot(sized: (found.size, found.issues), items: found.items, inTrash: Self.inTrashBytes(journal))
+            return Snapshot(sized: (found.size, found.issues), items: found.items,
+                            systemUnreadable: found.systemUnreadable.count, inTrash: Self.inTrashBytes(journal))
         }
         guard mine == generation else { return }
         self.inspector = inspector
         externalVolumesSkipped = !access
+        unreadableSystemItems = found.systemUnreadable
         contents = found.sized
         items = found.items
         inTrashBytesSinceLastEmpty = found.inTrash.bytes
@@ -206,6 +274,7 @@ public final class TrashModel {
         contents = (SizeResult(bytes: bytes, fileCount: files), unreadableAt.map { [.missingFullDiskAccess($0)] } ?? [])
         self.items = items
         externalVolumesSkipped = unreadableAt != nil
+        unreadableSystemItems = 0
         inTrashBytesSinceLastEmpty = inTrashBytes
         historyProblem = nil
     }
@@ -220,6 +289,7 @@ public final class TrashModel {
     private struct Snapshot: Sendable {
         let sized: (size: SizeResult, issues: [ScanIssue])
         let items: [TrashItem]
+        let systemUnreadable: Int
         let inTrash: (bytes: UInt64, problem: String?)
     }
 

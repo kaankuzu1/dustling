@@ -40,6 +40,9 @@ public struct ProtectedPaths: Sendable {
 
     private let denied: [[String]]
     private let exactDenied: [[String]]
+    /// The system's caches and logs (`<system Library>/Caches`, `/Logs`), the folders of System caches
+    /// and logs (`JunkCategory.isNeverCleaned`): macOS manages them, so nothing in them ever moves.
+    private let systemManaged: [[String]]
     private let home: [String]
     private let usersRoot: [String]
     private let fixedExcluded: [[String]]
@@ -47,6 +50,8 @@ public struct ProtectedPaths: Sendable {
     private var excluded: [[String]] { fixedExcluded + (liveExclusions?.current ?? []) }
 
     static let excludedReason = "excluded in Settings"
+    /// Why nothing in the system's caches and logs folders moves.
+    public static let systemManagedReason = "macOS manages it, so Dustling leaves it alone"
     static let containsExcludedReason = "contains a folder excluded in Settings"
 
     /// `extraDenied` are the user's exclusions: anything equal to or inside one is denied, and so is
@@ -66,6 +71,8 @@ public struct ProtectedPaths: Sendable {
         exactDenied = Self.keys(for: Self.homeExactDenied.map {
             $0.isEmpty ? environment.home : environment.home.appending(path: $0)
         })
+        // Listed here, not read from the catalog: the catalog's filters are built from this guard.
+        systemManaged = Self.keys(for: ["Caches", "Logs"].map { environment.systemLibrary.appending(path: $0) })
         fixedExcluded = Self.keys(for: extraDenied, textualUnder: textualUnder)
         self.liveExclusions = liveExclusions
     }
@@ -139,6 +146,9 @@ public struct ProtectedPaths: Sendable {
         if denied.contains(where: { Self.isEqualOrInside(path, $0) }) || exactDenied.contains(path) {
             return .denied(reason: "protected location")
         }
+        if systemManaged.contains(where: { Self.isEqualOrInside(path, $0) }) {
+            return .denied(reason: Self.systemManagedReason)
+        }
         if Self.isStrictlyInside(path, usersRoot), !Self.isEqualOrInside(casePath, home) {
             return .denied(reason: "another user's files")
         }
@@ -190,12 +200,14 @@ public struct ProtectedPaths: Sendable {
     }
 
     /// True when `url` may not be excluded because Dustling never touches it or anything inside it
-    /// anyway: a protected folder tree (Documents, /System, …) or another user's files. The home folder
+    /// anyway: a protected folder tree (Documents, /System, …), the system's caches and logs, or another
+    /// user's files. The home folder
     /// and ~/Library themselves can be excluded (only they are protected, not what's inside).
     public func isProtectedTree(_ url: URL) -> Bool {
         let resolved = Self.resolve(url)
         let path = Self.key(resolved)
         if denied.contains(where: { Self.isEqualOrInside(path, $0) }) { return true }
+        if systemManaged.contains(where: { Self.isEqualOrInside(path, $0) }) { return true }
         return Self.isStrictlyInside(path, usersRoot) && !Self.isEqualOrInside(Self.caseKey(resolved), home)
     }
 

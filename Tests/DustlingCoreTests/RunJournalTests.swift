@@ -420,8 +420,10 @@ struct RunJournalTests {
 
     /// A run that moved `items` (trashed path → original path) to the Trash, with the identity each
     /// trashed item has now (`owner: false` drops the owner, as journals written before it had).
-    private func trashedRecord(_ items: [(URL, URL)], owner: Bool = true) -> RunRecord {
-        RunRecord(startedAt: Date(timeIntervalSince1970: 1_000), kind: .uninstall(appName: "Foo"), entries: items.map {
+    private func trashedRecord(
+        _ items: [(URL, URL)], owner: Bool = true, kind: RunKind = .uninstall(appName: "Foo")
+    ) -> RunRecord {
+        RunRecord(startedAt: Date(timeIntervalSince1970: 1_000), kind: kind, entries: items.map {
             var identity = TrashedIdentity.of(path: $0.0.path(percentEncoded: false))
             if !owner { identity?.owner = nil }
             return JournalEntry(originalPath: $0.1.path(percentEncoded: false), bytes: 1,
@@ -435,12 +437,14 @@ struct RunJournalTests {
     }
 
     @Test func restoreUsesPasswordForSystemFolders() throws {
+        // An uninstall put back: straight out of the Trash, straight into Applications, which the
+        // user can't write (a standard account), and a leftover into the user's own caches.
         let s = try TestSandbox()
-        let tools = try s.directory("Library/PrivilegedHelperTools")
-        let helper = try s.file("home/.Trash/com.example.helper", bytes: 4)
+        let tools = s.root.appending(path: "Applications")
+        let helper = try s.directory("home/.Trash/com.example.app")
         let mine = try s.file("home/.Trash/a.log", bytes: 2)
         try s.directory("home/Library/Caches")
-        let original = tools.appending(path: "com.example.helper")
+        let original = tools.appending(path: "com.example.app")
         let myOriginal = s.root.appending(path: "home/Library/Caches/a.log")
         let run = trashedRecord([(helper, original), (mine, myOriginal)])
         let j = journal(s)
@@ -453,9 +457,12 @@ struct RunJournalTests {
         #expect(out == [.restored(original.path(percentEncoded: false)), .restored(myOriginal.path(percentEncoded: false))])
         #expect(shell.calls.count == 1)
         #expect(shell.calls.first?.prompt == AdminMover.restorePrompt(count: 1))
-        // The recorded item (owner included) is what the script must find in the Trash.
+        // The recorded item (owner included) is what the script must find in the Trash, and the
+        // folder Put back checked is the one it must find there.
         let recorded = try #require(run.entries[0].trashedIdentity)
         #expect(shell.calls.first?.script.contains(" \(recorded.dev):\(recorded.ino):\(getuid()) ") == true)
+        let folder = try #require(ItemIdentity.of(tools))
+        #expect(shell.calls.first?.script.contains(" \(folder.stamp) 'com.example.app'\n") == true)
         #expect(FileManager.default.fileExists(atPath: original.path(percentEncoded: false)))
         let saved = try #require(try j.all().first)
         #expect(saved.entries.allSatisfy { $0.restored })
@@ -483,9 +490,9 @@ struct RunJournalTests {
 
     @Test func restoreKeepsTheItemInTheTrashWhenPasswordCancelled() throws {
         let s = try TestSandbox()
-        let tools = try s.directory("Library/PrivilegedHelperTools")
-        let helper = try s.file("home/.Trash/com.example.helper", bytes: 4)
-        let original = tools.appending(path: "com.example.helper")
+        let tools = s.root.appending(path: "Applications")
+        let helper = try s.file("home/.Trash/Tool.app", bytes: 4)
+        let original = tools.appending(path: "Tool.app")
         let run = trashedRecord([(helper, original)])
         let j = journal(s)
         try j.save(run)
@@ -568,5 +575,178 @@ struct RunJournalTests {
         #expect(!reason.contains("Finder") && !reason.contains("password"))
         #expect(shell.calls.isEmpty)
         #expect(FileManager.default.fileExists(atPath: helper.path(percentEncoded: false)))
+    }
+
+    // MARK: - Put back with the password trusts nothing in a History file
+
+    /// A run another program running as the user wrote into History: `trashed` back to `original`,
+    /// with `lock` locked so the normal move fails for lack of permission. The shell records every
+    /// call and runs nothing.
+    private func forgedPutBack(
+        _ s: TestSandbox, trashed: URL, original: URL, kind: RunKind, lock: [URL]
+    ) throws -> (out: [RestoreOutcome], shell: CannedShell) {
+        let run = trashedRecord([(trashed, original)], kind: kind)
+        let j = journal(s)
+        try j.save(run)
+        for folder in lock { FolderMode.lock(folder) }
+        defer { for folder in lock { FolderMode.unlock(folder) } }
+        let shell = CannedShell(.finished(output: "R\t0\tok\n"))
+        let out = try j.restore(runID: run.id, admin: try adminMover(shell, s))
+        return (out, shell)
+    }
+
+    /// The entry failed with the move's own reason and points to Finder's Put Back.
+    private func expectPutBackInFinder(_ out: [RestoreOutcome], _ original: URL) {
+        guard out.count == 1, case .failed(let p, let reason) = out[0] else {
+            Issue.record("expected one failed entry, got \(out)")
+            return
+        }
+        #expect(p == original.path(percentEncoded: false))
+        #expect(reason.hasSuffix(" Use Put Back in Finder."))
+    }
+
+    @Test func aForgedSourceOutsideTheTrashNeverReachesTheShell() throws {
+        let s = try TestSandbox()
+        let caches = try s.directory("Library/Caches")
+        try s.directory("home/.Trash")
+        // Somewhere else, or in a folder inside the Trash (not directly in it).
+        let sources = [try s.file("home/Downloads/zshenv", bytes: 3), try s.file("home/.Trash/inner/zshenv", bytes: 3)]
+        for (index, source) in sources.enumerated() {
+            let original = caches.appending(path: "zshenv \(index)")
+            let (out, shell) = try forgedPutBack(s, trashed: source, original: original, kind: .junkClean, lock: [caches])
+            expectPutBackInFinder(out, original)
+            #expect(shell.calls.isEmpty)
+            #expect(FileManager.default.fileExists(atPath: source.path(percentEncoded: false)))
+        }
+    }
+
+    @Test func aForgedDestinationOutsideTheDeclaredFoldersNeverReachesTheShell() throws {
+        let s = try TestSandbox()
+        let etc = try s.directory("private/etc")
+        let daemons = try s.directory("Library/LaunchDaemons")
+        let system = try s.directory("Library/Caches")
+        let caches = try s.directory("home/Library/Caches")
+        let deeper = try s.directory("home/Library/Caches/deeper")
+        let apps = s.root.appending(path: "Applications")
+        let bundle = try s.directory("Applications/Tool.app/Contents")
+        let uninstall = RunKind.uninstall(appName: "Foo")
+        let cases: [(original: URL, kind: RunKind, lock: [URL])] = [
+            // Root's shell startup file: no run moves anything from there.
+            (etc.appending(path: "zshenv"), uninstall, [etc]),
+            (etc.appending(path: "zshenv"), .junkClean, [etc]),
+            // A folder an uninstall uses, in a run of another kind.
+            (daemons.appending(path: "com.evil.plist"), .junkClean, [daemons]),
+            // System caches and logs: Dustling never cleans them, so nothing goes back there either.
+            (system.appending(path: "com.evil"), .junkClean, [system]),
+            // Inside a declared folder, not directly in it.
+            (deeper.appending(path: "evil"), .junkClean, [deeper]),
+            // An "app" inside another app, and something that isn't an app, in Applications.
+            (bundle.appending(path: "Helper.app"), uninstall, [bundle]),
+            (apps.appending(path: "evil"), uninstall, [apps]),
+            // Runs that never use the password.
+            (caches.appending(path: "evil"), .startupChange, [caches]),
+            (caches.appending(path: "evil"), .emptyTrash, [caches]),
+        ]
+        for (index, forged) in cases.enumerated() {
+            let trashed = try s.file("home/.Trash/evil \(index)", bytes: 3)
+            let (out, shell) = try forgedPutBack(
+                s, trashed: trashed, original: forged.original, kind: forged.kind, lock: forged.lock)
+            expectPutBackInFinder(out, forged.original)
+            #expect(shell.calls.isEmpty, "\(forged.original.path(percentEncoded: false)) \(forged.kind)")
+            #expect(FileManager.default.fileExists(atPath: trashed.path(percentEncoded: false)))
+        }
+    }
+
+    @Test func aLinkAboveTheFolderNeverReachesTheShell() throws {
+        // ~/Library swapped for a link to the system Library: ~/Library/LaunchAgents, a folder an
+        // uninstall uses, now leads into the system's LaunchAgents.
+        let s = try TestSandbox()
+        let system = try s.directory("Library/LaunchAgents")
+        let library = s.root.appending(path: "home/Library")
+        try FileManager.default.createSymbolicLink(at: library, withDestinationURL: s.root.appending(path: "Library"))
+        let original = library.appending(path: "LaunchAgents/com.evil.plist")
+        let trashed = try s.file("home/.Trash/com.evil.plist", bytes: 3)
+        let (out, shell) = try forgedPutBack(
+            s, trashed: trashed, original: original, kind: .uninstall(appName: "Foo"), lock: [system])
+        expectPutBackInFinder(out, original)
+        #expect(shell.calls.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: system.appending(path: "com.evil.plist").path(percentEncoded: false)))
+    }
+
+    @Test func onlyRootsItemsGoBackIntoTheSystemLaunchAndHelperFolders() throws {
+        // launchd runs a helper there as root whoever owns it: the user's own file never goes there
+        // with the password (a test can't make root's items, so only the refusal is shown).
+        let s = try TestSandbox()
+        for name in ["LaunchDaemons", "LaunchAgents", "PrivilegedHelperTools"] {
+            let folder = try s.directory("Library/\(name)")
+            let trashed = try s.file("home/.Trash/com.example.\(name)", bytes: 3)
+            let original = folder.appending(path: "com.example.\(name)")
+            let (out, shell) = try forgedPutBack(
+                s, trashed: trashed, original: original, kind: .uninstall(appName: "Foo"), lock: [folder])
+            expectPutBackInFinder(out, original)
+            #expect(shell.calls.isEmpty)
+        }
+    }
+
+    @Test func restoreUsesPasswordForAnAppInAFolderInApplications() throws {
+        let s = try TestSandbox()
+        let vendor = try s.directory("Applications/Vendor")
+        let app = try s.file("home/.Trash/Foo.app/Contents/Info.plist", bytes: 3)
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let original = vendor.appending(path: "Foo.app")
+        let run = trashedRecord([(app, original)])
+        let j = journal(s)
+        try j.save(run)
+        FolderMode.lock(vendor)
+        defer { FolderMode.unlock(vendor) }
+        let shell = UserShell(beforeRun: { FolderMode.unlock(vendor) })
+        #expect(try j.restore(runID: run.id, admin: try adminMover(shell, s)) == [.restored(original.path(percentEncoded: false))])
+        #expect(shell.calls.count == 1)
+        #expect(FileManager.default.fileExists(atPath: original.appending(path: "Contents/Info.plist").path(percentEncoded: false)))
+    }
+
+    @Test func restoreWithThePasswordWorksWithResolvedPaths() throws {
+        // A listing can hand back /private/var/... for the sandbox's /var/...: the run's paths are
+        // then not written the way the environment names its folders, and Put back still works.
+        let s = try TestSandbox()
+        let apps = s.root.appending(path: "Applications")
+        let app = try s.file("home/.Trash/Foo.app/Contents/Info.plist", bytes: 3)
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let real = try #require(ProtectedPaths.realpathString(AdminPath.trimmingTrailingSlashes(s.root.path(percentEncoded: false))))
+        try #require(real != AdminPath.trimmingTrailingSlashes(s.root.path(percentEncoded: false)))
+        let resolved = { (url: URL) in
+            URL(fileURLWithPath: real + String(AdminPath.trimmingTrailingSlashes(url.path(percentEncoded: false))
+                .dropFirst(AdminPath.trimmingTrailingSlashes(s.root.path(percentEncoded: false)).count)))
+        }
+        let original = resolved(apps.appending(path: "Foo.app"))
+        let run = trashedRecord([(resolved(app), original)])
+        let j = journal(s)
+        try j.save(run)
+        FolderMode.lock(apps)
+        defer { FolderMode.unlock(apps) }
+        let shell = UserShell(beforeRun: { FolderMode.unlock(apps) })
+        #expect(try j.restore(runID: run.id, admin: try adminMover(shell, s)) == [.restored(original.path(percentEncoded: false))])
+        #expect(shell.calls.count == 1)
+        #expect(FileManager.default.fileExists(atPath: apps.appending(path: "Foo.app/Contents/Info.plist").path(percentEncoded: false)))
+    }
+
+    @Test func theFolderIsFoundWithoutFollowingLinks() throws {
+        let s = try TestSandbox()
+        let caches = try s.directory("home/Library/Caches")
+        let system = try s.directory("Library/Caches")
+        let environment = s.environment
+        func path(_ url: URL) -> String { AdminPath.trimmingTrailingSlashes(url.path(percentEncoded: false)) }
+        #expect(PasswordPutBack.folderWithoutLinks(path(caches), environment: environment) == ItemIdentity.of(caches))
+        #expect(PasswordPutBack.folderWithoutLinks(path(system), environment: environment) == ItemIdentity.of(system))
+        // Outside home, the system library and the application folders: nothing.
+        let elsewhere = try s.directory("private/etc")
+        #expect(PasswordPutBack.folderWithoutLinks(path(elsewhere), environment: environment) == nil)
+        // A link anywhere below home.
+        let real = try s.directory("home/Real")
+        try s.directory("home/Real/Caches")
+        try FileManager.default.createSymbolicLink(
+            at: s.root.appending(path: "home/Linked"), withDestinationURL: real)
+        #expect(PasswordPutBack.folderWithoutLinks(path(s.root.appending(path: "home/Linked/Caches")), environment: environment) == nil)
+        #expect(PasswordPutBack.folderWithoutLinks(path(s.root.appending(path: "home/Linked")), environment: environment) == nil)
     }
 }

@@ -96,7 +96,8 @@ extension AdminMover {
             // Any other `dependsOn` stays as it is: still not an earlier step, so the script skips it.
             guard canOpenFolders(of: step) else { continue }
             sentIndex[index] = sent.count
-            sent.append(AdminStep(op: step.op, dependsOn: dependsOn, expectedSource: step.expectedSource))
+            sent.append(AdminStep(op: step.op, dependsOn: dependsOn, expectedSource: step.expectedSource,
+                                  expectedFolder: step.expectedFolder))
         }
         let results = sent.isEmpty ? [] : perform(sent, prompt: prompt(sent.count))
         let refusals: Set<String> = [AdminScript.unsafeReason, AdminScript.putBackUnsafeReason]

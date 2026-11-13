@@ -1,5 +1,6 @@
-# Builds Dustling.dmg. A pushed version tag (v1.2.3) also creates a draft GitHub release with it.
-# Pull requests and manual runs only build, so a broken release build shows up before a tag does.
+# Builds Dustling.dmg. A pushed version tag (v1.2.3), or a manual run on one, signs it and creates a
+# draft GitHub release with it. Pull requests and manual runs on a branch only build (ad hoc), so a
+# broken release build shows up before a tag does.
 # docs/RELEASING.md describes the whole process.
 name: Release
 
@@ -58,8 +59,9 @@ jobs:
       - name: Run the tests
         run: swift test
 
-      # Two steps, so the signing key reaches tag builds only: a pull request build never gets the
-      # secrets and stays ad hoc. A tag build refuses to go out unsigned (--require-signing).
+      # Two steps, so the signing key reaches tag builds only (a pushed tag, or a manual run on one): a
+      # pull request build never gets the secrets and stays ad hoc. A tag build refuses to go out
+      # unsigned (--require-signing).
       - name: Build the disk image (signed)
         if: steps.version.outputs.version != ''
         env:

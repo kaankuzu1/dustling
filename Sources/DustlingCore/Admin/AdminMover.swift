@@ -67,8 +67,9 @@ public struct AdminMover: Sendable {
     /// passes through a private root-only bridge folder in `/Library` (see `AdminScript`).
     /// Refused without running: an item or folder on another volume than `/Library`; a folder that
     /// is not a real directory; `bootOutDaemon` when the plist's folder chain isn't root-only; a move
-    /// into a folder the user can't write without the recorded `expectedSource` (Put back's steps
-    /// carry it). The reason is `AdminScript.putBackUnsafeReason` ("Dustling can't safely put this
+    /// with no Trash at either end; a move into a folder the user can't write other than out of a
+    /// Trash with the recorded `expectedSource` (Put back's steps carry it); a move whose destination
+    /// folder isn't its `expectedFolder`; a delete of anything not directly in a Trash. The reason is `AdminScript.putBackUnsafeReason` ("Dustling can't safely put this
     /// back with your password. Use Put Back in Finder.") for a move out of the environment's Trash,
     /// and `AdminScript.unsafeReason` ("Dustling can't safely move this with your password. Move it
     /// to the Trash in Finder.") for a move into the Trash or a delete.

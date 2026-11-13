@@ -49,12 +49,19 @@ struct EmptyTrashSheet: View {
                     .foregroundStyle(Palette.warning)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let shown {
-                Text(Bytes.format(shown))
+                // Items of the system Dustling can't look inside: what they hold isn't counted.
+                Text(Bytes.format(shown) + (trash.unreadableSystemItems > 0 ? " or more" : ""))
                     .font(DustlingTheme.Typography.figure)
                     .foregroundStyle(Palette.danger)
                 Text("Everything in the Trash is deleted for good. It can't be put back.")
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 13))
                     .foregroundStyle(Palette.ink2)
+                if trash.unreadableSystemItems > 0 {
+                    Text("Some items belong to the system and Dustling can't look inside them, so they may hold more. Dustling asks for your Mac password to delete them.")
+                        .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
+                        .foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if trash.externalVolumesSkipped {
                     Text("Trash folders on other disks aren't included without Full Disk Access.")
                         .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))

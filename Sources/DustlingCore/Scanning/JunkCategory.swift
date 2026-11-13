@@ -55,10 +55,15 @@ public struct JunkCategory: Sendable {
         self.measuredFilter = measuredFilter
     }
 
-    /// Cleaned without being asked for: preselected and not needing admin rights. A category of the
-    /// system (System caches and logs) moves only with the Mac password, so it is opt-in in the app
-    /// and in `dustling-cli clean` alike.
-    public var isSelectedByDefault: Bool { selection == .preselected && !requiresAdmin }
+    /// Cleaned without being asked for: preselected, not needing admin rights and not one Dustling
+    /// leaves alone.
+    public var isSelectedByDefault: Bool { selection == .preselected && !requiresAdmin && !isNeverCleaned }
+
+    /// Shown with its size, never cleaned: macOS manages what is in it (System caches and logs). Not
+    /// ticked, not even by choice, never retried, never moved with the Mac password, and refused by
+    /// `dustling-cli clean --include`. The guard every move goes through (`ProtectedPaths`) refuses
+    /// what is in its folders too.
+    public var isNeverCleaned: Bool { id == .systemCachesAndLogs }
 
     /// True when `folder` is one of this category's fixed roots, or one root an expansion produces
     /// (`<expansion.parent>/<one child>/<expansion.subpath>`). Cleaning uses only these folders as the

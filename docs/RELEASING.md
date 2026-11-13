@@ -80,6 +80,22 @@ Copy this into the release pull request and tick each line. Use a build of the b
 - [ ] Full Disk Access off: Home shows limited mode and which places it couldn't read; the Uninstaller waits for access; nothing shows 0 bytes for a place it couldn't read.
 - [ ] Turn Full Disk Access on while Dustling is open: it notices without a restart.
 
+**Password** (on a **signed** build, the release's or one made with `scripts/build-dmg.sh --require-signing`, with Full Disk Access on; never skip it before tagging)
+
+The password box runs Dustling's script as root through `osascript`. Root must be able to `cd -P ~/.Trash`, which macOS allows only because it counts the work as Dustling's (privacy attribution), so an unsigned or ad hoc build can behave differently. Throughout, watch for any outcome that says "needs Full Disk Access" while access is on: that means root couldn't open the Trash.
+
+Before you start, make a cache folder that only an administrator can change: `sudo mkdir -p ~/Library/Caches/com.dustling.qa/data && sudo touch ~/Library/Caches/com.dustling.qa/data/x`.
+
+- [ ] Junk scan: the System caches and logs tile shows its size, can't be ticked and says macOS manages it; `dustling-cli clean --include systemCachesAndLogs` is refused.
+- [ ] Clean App caches with `com.dustling.qa` in it: one password box, it moves to the Trash, still owned by root.
+- [ ] Uninstall an app installed with a `.pkg` that has a launch daemon in `/Library/LaunchDaemons`: one password box, the app and the daemon move to the Trash and the daemon stops (`sudo launchctl print system/<label>` no longer finds it).
+- [ ] Put back both runs from History: one password box per run, and everything is back where it was, still owned by root; the daemon loads again after a restart.
+- [ ] Clean and uninstall again, then Empty Trash with those items in it: the size shows "or more" if Dustling can't look inside them, one password box, and the Trash ends up empty.
+- [ ] Cancel the password box once in each flow (clean, uninstall, Put back, Empty Trash): nothing moves, and each item says it needs your password.
+- [ ] Type a wrong password three times: the step ends with "Your Mac password wasn't accepted." and nothing moves.
+- [ ] Quit (⌘Q) while the password box is open: Dustling says it is waiting for your answer, the box closes when Dustling quits, and History shows what was left as it was.
+- [ ] Repeat all of the above on a standard (non-administrator) account: the box asks for an administrator's name and password.
+
 **Every screen**
 
 - [ ] Home, Junk scan, Uninstaller, Startup items, History, Dustling health and each Settings section open, in light and dark, and switching the appearance while open redraws everything.
@@ -123,7 +139,7 @@ Every pull request that touches the app, the package or these scripts also runs 
 Releases are signed with one self-signed certificate, `Dustling Release Signing`, so that Full Disk Access stays on through updates: macOS keeps that permission by the app's signature, and a certificate that never changes gives every version the same one. It is not an Apple certificate, so macOS still asks people to confirm the first open ([INSTALL.md](INSTALL.md)). [App/Signing/README.md](../App/Signing/README.md) explains the certificate and what rotating it costs.
 
 - **The key** is in the GitHub secrets `DUSTLING_SIGNING_P12_BASE64` and `DUSTLING_SIGNING_P12_PASSWORD`, and in the maintainer's `dustling-signing.p12`. `scripts/make-signing-certificate.sh` makes it once and prints the `gh secret set` commands.
-- **Tag builds** get the secrets and run `scripts/build-dmg.sh --require-signing`, which fails if the app would be ad hoc, or if the key isn't the certificate pinned in `App/Signing/release-certificate.sha1`. Pull request and manual builds never receive the secrets and stay ad hoc.
+- **Tag builds** get the secrets and run `scripts/build-dmg.sh --require-signing`, which fails if the app would be ad hoc, or if the key isn't the certificate pinned in `App/Signing/release-certificate.sha1`. A manual run (**Run workflow**) on a tag counts as a tag build: it gets the secrets, signs, and creates a draft release. Pull request builds, and manual runs on a branch, never receive the secrets and stay ad hoc.
 - **To sign locally**, set `DUSTLING_SIGNING_P12` (path to the key file) and `DUSTLING_SIGNING_P12_PASSWORD` when running `scripts/build-dmg.sh`. The key goes into a temporary keychain that is deleted when the script ends, never into your login keychain.
 - **Never change the certificate** without meaning to: every user would have to turn Full Disk Access on again once.
 

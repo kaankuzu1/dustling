@@ -45,10 +45,12 @@ public struct CleanupRunner: Sendable {
     /// (`FileWork`), so the callbacks arrive on that queue.
     ///
     /// With `admin`, an item that needs admin is held: neither recorded nor reported yet, its identity
-    /// (owner included) taken right after the attempt. After the last item, each held item gets its
-    /// name in the Trash (only now, so a later item of the run that moved the normal way can't take
-    /// it) and one password box moves them all (`AdminMover.movePrompt`); then each is recorded and
-    /// `onItem` fires for it, once, with what happened: moved to the Trash (with that identity, for
+    /// (owner included) taken right after the attempt. After the last item, the held items are
+    /// journaled as needing admin, after the run's other items and in their order (one save, so a
+    /// crash or a quit while the password step runs still lists them), each gets its name in the
+    /// Trash (only now, so a later item of the run that moved the normal way can't take it) and one
+    /// password box moves them all (`AdminMover.movePrompt`); then each entry is updated in place,
+    /// saved and logged, and `onItem` fires for it, once, with what happened: moved to the Trash (with that identity, for
     /// Put back), still needing admin (it can't be renamed into the Trash, the box was closed, or
     /// Dustling can't open a folder the move needs, such as `~/.Trash` without Full Disk Access),
     /// skipped if already gone, or failed with the script's reason. A run stopped before then never
@@ -154,18 +156,26 @@ public struct CleanupRunner: Sendable {
                 })
                 for item in held { onItem(item.url, stopped) }
             } else {
+                // Journaled as needing admin before the password step (one save), so a crash or a
+                // quit while root's script runs still lists them; each is updated in place after.
+                let first = record.entries.count
+                record.entries.append(contentsOf: held.map(\.entry))
+                save()
                 var taken = Set<String>()
                 let moves = held.map { admin.trashMove(for: $0.url, identity: $0.identity, taken: &taken) }
                 var results = admin.performOpenable(moves.compactMap { $0?.step }, prompt: AdminMover.movePrompt)
                     .makeIterator()
-                for (item, move) in zip(held, moves) {
+                for (offset, (item, move)) in zip(held, moves).enumerated() {
                     var entry = item.entry
                     if let move {
                         let result = results.next() ?? nil
                         entry.outcome = AdminMover.trashOutcome(result, destination: move.destination)
                         if result == .done { entry.trashedIdentity = move.identity }
                     }
-                    add(entry)
+                    record.entries[first + offset] = entry
+                    if case .movedToTrash = entry.outcome { record.restorable = true }
+                    save()
+                    log(entry)
                     onItem(item.url, entry.outcome)
                 }
             }

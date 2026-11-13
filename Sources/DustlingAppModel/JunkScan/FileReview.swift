@@ -18,8 +18,7 @@ public struct FileReview: Equatable, Sendable {
     public struct Section: Identifiable, Equatable, Sendable {
         public let id: JunkCategoryID
         public let title: String
-        /// Under the title for a category of the system: "Needs your Mac password" (or, without Full
-        /// Disk Access, "Needs Full Disk Access, then your Mac password"). nil otherwise.
+        /// A line under the title; nil for none.
         public var note: String?
         /// Largest first; files that can't move come last.
         public let rows: [Row]
@@ -87,12 +86,15 @@ public enum Unmovable: Equatable, Sendable {
     case inUse(bundleID: String)
     /// It isn't directly inside one of the category's folders.
     case outsideCleanupArea
+    /// macOS manages it (System caches and logs): Dustling never cleans it.
+    case leftAlone
 
     /// nil when the item can move. `inUseBy`: the running app that owns it right now, if any (the
     /// junk model decides this from a live running set; nil leaves in-use out of the check).
     public static func check(
         _ item: JunkItem, category: JunkCategory, skipping: CleanupSkip, inUseBy: String?
     ) -> Unmovable? {
+        if category.isNeverCleaned { return .leftAlone }
         if skipping.skips(item) { return .locked }
         if let owner = inUseBy { return .inUse(bundleID: owner) }
         if !category.isDeclaredRoot(item.url.deletingLastPathComponent()) { return .outsideCleanupArea }
@@ -105,6 +107,7 @@ public enum Unmovable: Equatable, Sendable {
         case .locked: "Needs Full Disk Access"
         case .inUse(let id): "In use by \(appName(id) ?? id)"
         case .outsideCleanupArea: "Outside the cleanup area"
+        case .leftAlone: "macOS manages it"
         }
     }
 
@@ -114,6 +117,7 @@ public enum Unmovable: Equatable, Sendable {
         case .locked: .skipped(reason: CleanupSkip.reason)
         case .inUse(let id): .skipped(reason: "in use by \(id)")
         case .outsideCleanupArea: .skipped(reason: "outside the cleanup area")
+        case .leftAlone: .skipped(reason: ProtectedPaths.systemManagedReason)
         }
     }
 }

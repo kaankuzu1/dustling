@@ -20,9 +20,9 @@ public struct CategoryTileModel: Identifiable, Equatable, Sendable {
     public let issues: [ScanIssue]
     /// Items belonging to apps that are open right now; a clean leaves them alone.
     public let inUseCount: Int
-    /// Its items belong to the system (System caches and logs): they move with the Mac password, so
-    /// the tile is never ticked for the user, only by choice.
-    public var needsPassword: Bool = false
+    /// macOS manages what is in it (System caches and logs, `JunkCategory.isNeverCleaned`): shown with
+    /// its size for information, never selected, not even by choice, and never cleaned.
+    public var leftAlone: Bool = false
     /// Files the user left out in Review files: never moved, never counted as selected.
     public var excludedCount: Int = 0
     public var excludedBytes: UInt64 = 0
@@ -309,8 +309,8 @@ public final class JunkScanModel {
 
     // MARK: derived
 
-    /// What a clean would move: selected, fully scanned categories (those of the system with the Mac
-    /// password), minus the items of apps that are open right now.
+    /// What a clean would move: selected, fully scanned categories, minus the items of apps that are
+    /// open right now.
     public var selectedBytes: UInt64 {
         selectedBytesByCategory.values.reduce(0, +)
     }
@@ -443,15 +443,15 @@ public final class JunkScanModel {
 
     private func tile(for scan: CategoryScan, selected: Bool?) -> CategoryTileModel {
         let category = scan.category
-        // A category of the system moves with the Mac password: opt-in, never ticked for the user.
+        // What macOS manages (System caches and logs) is shown, never selected and never cleaned.
         let initial = !scan.stopped && category.isSelectedByDefault && preselectSafe
         return CategoryTileModel(
             id: category.id, title: category.title,
             note: category.id == .iosBackups ? "Your data, never selected for you" : nil,
             bytes: scan.bytes, itemCount: scan.items.count, selection: category.selection,
-            isSelected: scan.stopped ? false : (selected ?? initial), stopped: scan.stopped,
+            isSelected: (scan.stopped || category.isNeverCleaned) ? false : (selected ?? initial), stopped: scan.stopped,
             issues: scan.issues, inUseCount: scan.items.filter { inUseOwner($0) != nil }.count,
-            needsPassword: category.requiresAdmin,
+            leftAlone: category.isNeverCleaned,
             excludedCount: scan.items.filter { excludedItems.contains($0.url) }.count,
             excludedBytes: scan.items.filter { excludedItems.contains($0.url) }.reduce(0) { $0 + $1.bytes })
     }
@@ -570,9 +570,8 @@ public final class JunkScanModel {
             }
             let included = rows.filter(\.isIncluded)
             return FileReview.Section(
-                id: tile.id, title: tile.title,
-                note: scan.category.requiresAdmin ? PasswordCopy.reason(fullDiskAccess: canTakeOutOfTrash) : nil,
-                rows: rows, selectedBytes: included.reduce(0) { $0 + $1.bytes }, selectedCount: included.count)
+                id: tile.id, title: tile.title, rows: rows,
+                selectedBytes: included.reduce(0) { $0 + $1.bytes }, selectedCount: included.count)
         }
         return FileReview(sections: sections)
     }
@@ -589,7 +588,7 @@ public final class JunkScanModel {
     public func toggle(_ id: JunkCategoryID) {
         guard case .ready = state, let index = categories.firstIndex(where: { $0.id == id }) else { return }
         let tile = categories[index]
-        guard !tile.stopped, tile.selection != .emptyTrashOnly else { return }
+        guard !tile.stopped, tile.selection != .emptyTrashOnly, !tile.leftAlone else { return }
         categories[index].isSelected.toggle()
         message = nil
     }

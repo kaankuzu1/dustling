@@ -30,7 +30,7 @@ struct RepairTests {
                          outcome: .skipped(reason: "in use by com.apple.mail")),
             JournalEntry(originalPath: caches.appending(path: "com.locked").path, bytes: 5,
                          outcome: .failed(reason: "no access (Full Disk Access may be needed)")),
-            JournalEntry(originalPath: "/Library/Caches/com.apple.iconservices.store", bytes: 5, outcome: .needsAdmin),
+            JournalEntry(originalPath: "/Library/Application Support/com.vendor.data", bytes: 5, outcome: .needsAdmin),
             JournalEntry(originalPath: caches.appending(path: "gone").path, bytes: 0,
                          outcome: .skipped(reason: "already gone")),
             JournalEntry(originalPath: "<history>", bytes: 0, outcome: .failed(reason: "disk full")),
@@ -51,7 +51,7 @@ struct RepairTests {
         #expect(problems[2].fix == .retry)
         #expect(problems[3].reason == "Needs your Mac password")
         #expect(problems[3].fix == .retry)
-        #expect(problems[3].display == "/Library/Caches/com.apple.iconservices.store")
+        #expect(problems[3].display == "/Library/Application Support/com.vendor.data")
         // A history write failure is a problem too, but there is nothing to retry.
         #expect(problems[4].display == "Run history")
         #expect(problems[4].fix == nil)
@@ -69,6 +69,49 @@ struct RepairTests {
         #expect(LastRunReview.retryableCount(in: review, fullDiskAccess: true) == 0)
     }
 
+    @Test func systemCachesAndLogsAreNeverRetried() {
+        // Dustling never cleans what macOS manages. A run from before that may still list System
+        // caches and logs as needing the password: shown, never retried, whatever the catalog says.
+        let system = JunkCategory(
+            id: .systemCachesAndLogs, title: "System", selection: .preselected, requiresAdmin: true,
+            roots: [URL(filePath: "/Library/Caches"), URL(filePath: "/Library/Logs")])
+        let record = run([
+            JournalEntry(originalPath: "/Library/Caches/com.apple.iconservices.store", bytes: 5, outcome: .needsAdmin),
+            JournalEntry(originalPath: "/Library/Logs/install.log", bytes: 5, outcome: .failed(reason: "boom")),
+            JournalEntry(originalPath: "/Library/Caches/com.x", bytes: 5,
+                         outcome: .skipped(reason: ProtectedPaths.systemManagedReason)),
+        ])
+        let problems = LastRunReview.problems(in: record, home: home, fullDiskAccess: true, appName: appName)
+        #expect(problems.map(\.fix) == [nil, nil])
+        #expect(problems.first?.reason == "macOS manages it, so Dustling leaves it alone")
+        #expect(LastRunReview.retryableCount(in: record, fullDiskAccess: true) == 0)
+        #expect(LastRunReview.retryPlan(
+            for: record, catalog: [cachesCategory, system], running: [], fullDiskAccess: true).urls.isEmpty)
+    }
+
+    @Test func whatThePasswordCouldntDoHasNoRetry() {
+        // macOS refused even with the password, the password step can't move it safely, or it is
+        // kept in a hidden folder in /Library: trying again changes nothing, like "protected by macOS".
+        let reasons = [
+            AdminScript.refusedReason, AdminScript.unsafeReason, AdminScript.putBackUnsafeReason,
+            AdminScript.heldReason(bridge: "/Library/.dustling-Ab12Cd34"),
+            AdminScript.partlyDeletedReason(bridge: "/Library/.dustling-Ab12Cd34"),
+        ]
+        let review = run(reasons.enumerated().map { index, reason in
+            JournalEntry(originalPath: "/Library/Caches/x\(index)", bytes: 5, outcome: .failed(reason: reason))
+        })
+        let problems = LastRunReview.problems(in: review, home: home, fullDiskAccess: true, appName: appName)
+        #expect(problems.count == reasons.count)
+        #expect(problems.allSatisfy { $0.result == .failed && $0.fix == nil })
+        #expect(LastRunReview.retryableCount(in: review, fullDiskAccess: true) == 0)
+        #expect(LastRunReview.retryPlan(
+            for: review, catalog: [cachesCategory], running: [], fullDiskAccess: true).urls.isEmpty)
+        // Any other failure can still be tried again.
+        let other = run([JournalEntry(originalPath: caches.appending(path: "y").path, bytes: 5,
+                                      outcome: .failed(reason: "Something else went wrong"))])
+        #expect(LastRunReview.retryableCount(in: other, fullDiskAccess: true) == 1)
+    }
+
     @Test func retryCountCoversInUseFailedAndNeedsAdminItemsOfACleanup() {
         #expect(LastRunReview.retryableCount(in: partialRun, fullDiskAccess: true) == 4)
         // Without Full Disk Access the password step can't run, so the needs-admin item waits.
@@ -78,24 +121,19 @@ struct RepairTests {
     }
 
     @Test func needsAdminProblemsCanBeRetried() {
-        let system = JunkCategory(
-            id: .systemCachesAndLogs, title: "System", selection: .preselected, requiresAdmin: true,
-            roots: [URL(filePath: "/Library/Caches")])
         let rootOwned = caches.appending(path: "com.root.owned").path
-        let systemCache = "/Library/Caches/com.apple.iconservices.store"
+        let alsoRootOwned = caches.appending(path: "com.root.other").path
         let record = run([
             JournalEntry(originalPath: rootOwned, bytes: 5, outcome: .needsAdmin),
-            JournalEntry(originalPath: systemCache, bytes: 5, outcome: .needsAdmin),
+            JournalEntry(originalPath: alsoRootOwned, bytes: 5, outcome: .needsAdmin),
         ])
 
         let problems = LastRunReview.problems(in: record, home: home, fullDiskAccess: true, appName: appName)
         #expect(problems.map(\.reason) == ["Needs your Mac password", "Needs your Mac password"])
         #expect(problems.map(\.fix) == [.retry, .retry])
         #expect(LastRunReview.retryableCount(in: record, fullDiskAccess: true) == 2)
-        // Categories that need admin rights are no longer left out of a retry.
-        let plan = LastRunReview.retryPlan(
-            for: record, catalog: [cachesCategory, system], running: [], fullDiskAccess: true)
-        #expect(plan.urls.map(\.path) == [rootOwned, systemCache])
+        let plan = LastRunReview.retryPlan(for: record, catalog: [cachesCategory], running: [], fullDiskAccess: true)
+        #expect(plan.urls.map(\.path) == [rootOwned, alsoRootOwned])
         #expect(plan.outsideCleanupArea == 0)
 
         // Without Full Disk Access, Dustling can't open the Trash for the password step: access first.
@@ -104,7 +142,7 @@ struct RepairTests {
         #expect(without.map(\.fix) == [nil, nil])
         #expect(LastRunReview.retryableCount(in: record, fullDiskAccess: false) == 0)
         #expect(LastRunReview.retryPlan(
-            for: record, catalog: [cachesCategory, system], running: [], fullDiskAccess: false).urls.isEmpty)
+            for: record, catalog: [cachesCategory], running: [], fullDiskAccess: false).urls.isEmpty)
         #expect(LastRunReview.summary(of: record, fullDiskAccess: true) == "2 need your Mac password")
         #expect(LastRunReview.summary(of: record, fullDiskAccess: false) == "2 need Full Disk Access, then your Mac password")
 
@@ -520,7 +558,7 @@ struct RepairTests {
             TrashMover.protectedReason, AdminScript.refusedReason, AdminScript.unsafeReason,
             AdminScript.putBackUnsafeReason, AdminScript.movedAwayReason, AdminScript.existsReason,
             AdminScript.noResultReason, OsascriptAdminShell.tooManyItemsReason, OsascriptAdminShell.stoppedReason,
-            RunJournal.putBackNeedsPasswordReason,
+            OsascriptAdminShell.passwordNotAcceptedReason, RunJournal.putBackNeedsPasswordReason,
         ]
         let record = run(reasons.enumerated().map { index, reason in
             JournalEntry(originalPath: home.appending(path: "Library/Caches/x\(index)").path, bytes: 1,
@@ -529,6 +567,25 @@ struct RepairTests {
         let report = DiagnosticsReport.make(DiagnosticsReport.Input(
             macOS: "macOS 26.1", appVersion: "0.2.0 (1)", checks: [], lastRun: record, home: home, generatedAt: Date()))
         for reason in reasons { #expect(report.contains("failed: \(reason) (1)")) }
+        #expect(!report.contains("other error"))
+    }
+
+    @Test func diagnosticsReportKnowsItemsKeptInLibraryWhateverTheFolder() {
+        // The hidden folder's name changes with every password step: the reason is known by how it
+        // starts, and reported (and counted) without the folder.
+        let record = run([
+            JournalEntry(originalPath: home.appending(path: "a").path, bytes: 1,
+                         outcome: .failed(reason: AdminScript.heldReason(bridge: "/Library/.dustling-Ab12Cd34"))),
+            JournalEntry(originalPath: home.appending(path: "b").path, bytes: 1,
+                         outcome: .failed(reason: AdminScript.heldReason(bridge: "/Library/.dustling-Zz99Yy88"))),
+            JournalEntry(originalPath: home.appending(path: "c").path, bytes: 1,
+                         outcome: .failed(reason: AdminScript.partlyDeletedReason(bridge: "/Library/.dustling-Ab12Cd34"))),
+        ], kind: .emptyTrash)
+        let report = DiagnosticsReport.make(DiagnosticsReport.Input(
+            macOS: "macOS 26.1", appVersion: "0.2.0 (1)", checks: [], lastRun: record, home: home, generatedAt: Date()))
+        #expect(report.contains("failed: \(AdminScript.heldReason(bridge: nil)) (2)"))
+        #expect(report.contains("failed: \(AdminScript.partlyDeletedReason(bridge: nil)) (1)"))
+        #expect(!report.contains(".dustling-"))
         #expect(!report.contains("other error"))
     }
 

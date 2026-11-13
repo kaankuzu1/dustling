@@ -290,6 +290,74 @@ struct TrashInspectorTests {
         #expect(contents.size.bytes > 0)
     }
 
+    /// An inspector for a user whose uid isn't the test's: everything the test makes belongs to
+    /// "another account", as a System caches folder moved with the password does.
+    private func foreignInspector(_ sandbox: TestSandbox) -> TrashInspector {
+        var environment = sandbox.environment
+        environment.userID = getuid() &+ 1
+        return TrashInspector(
+            environment: environment, journal: RunJournal(directory: environment.historyDirectory),
+            logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: false, inspect: TrashInspector.lstatKind, blocker: { _, _ in nil })
+    }
+
+    @Test func unreadableItemsOfAnotherAccountDontKeepTheTrashFromEmptying() throws {
+        // After a System caches clean: com.apple.iconservices.store (drwx--x--x _iconservices) in the
+        // Trash. Dustling can't list it, but that isn't missing Full Disk Access: it belongs to the
+        // system, and Empty Trash deletes it with the password. The size leaves out what is inside.
+        let sandbox = try TestSandbox()
+        try sandbox.file("home/.Trash/ok.bin", bytes: 4096)
+        let store = try sandbox.directory("home/.Trash/com.apple.iconservices.store")
+        try sandbox.file("home/.Trash/com.apple.iconservices.store/inner.bin", bytes: 4096)
+        // Readable, not searchable: every entry inside can be named but not looked at.
+        let half = try sandbox.directory("home/.Trash/TI App")
+        try sandbox.file("home/.Trash/TI App/a.bin", bytes: 4096)
+        FolderMode.set(store, 0o111)
+        FolderMode.set(half, 0o444)
+        defer { FolderMode.unlock(store); FolderMode.unlock(half) }
+        let contents = foreignInspector(sandbox).contents()
+        #expect(contents.issues.isEmpty)
+        // What the sizer couldn't read: each folder (or what is inside it).
+        let unread = contents.systemUnreadable.compactMap { norm($0.path) }
+        #expect(unread.count == 2)
+        for folder in [half, store].compactMap({ norm($0.path) }) {
+            #expect(unread.contains { $0 == folder || $0.hasPrefix(folder + "/") }, "\(folder)")
+        }
+        #expect(contents.size.unreadable.count == 2)
+        #expect(contents.items.count == 3)
+        #expect(contents.size.bytes > 0)
+        #expect(foreignInspector(sandbox).sizeWithIssues().issues.isEmpty)
+    }
+
+    @Test func theUsersOwnUnreadableItemIsStillAnIssue() throws {
+        // The same folder, but the user's own: still what it was (it may need Full Disk Access).
+        let sandbox = try TestSandbox()
+        let store = try sandbox.directory("home/.Trash/mine")
+        try sandbox.file("home/.Trash/mine/inner.bin", bytes: 4096)
+        FolderMode.set(store, 0o111)
+        defer { FolderMode.unlock(store) }
+        let (inspector, _) = makeInspector(sandbox)
+        let contents = inspector.contents()
+        #expect(contents.systemUnreadable.isEmpty)
+        #expect(contents.issues.map { if case .missingFullDiskAccess(let u) = $0 { norm(u.path) } else { nil } }
+            == [norm(store.path)])
+    }
+
+    @Test func belongingToAnotherAccountLooksAtTheItemAndTheFoldersAboveIt() throws {
+        let sandbox = try TestSandbox()
+        let item = try sandbox.directory("home/.Trash/TI App")
+        let inner = try sandbox.file("home/.Trash/TI App/Contents/x", bytes: 1)
+        let me = getuid()
+        #expect(!TrashInspector.belongsToAnotherAccount(inner, in: item, userID: me))
+        #expect(TrashInspector.belongsToAnotherAccount(inner, in: item, userID: me &+ 1))
+        // Something that can't be looked at: its folder decides.
+        let contents = item.appending(path: "Contents")
+        FolderMode.set(contents, 0o444)
+        defer { FolderMode.unlock(contents) }
+        #expect(TrashInspector.belongsToAnotherAccount(inner, in: item, userID: me &+ 1))
+        #expect(!TrashInspector.belongsToAnotherAccount(inner, in: item, userID: me))
+    }
+
     @Test func contentsListsTopLevelItemsWithSizes() throws {
         let sandbox = try TestSandbox()
         let a = try sandbox.file("home/.Trash/a.bin", bytes: 4096)

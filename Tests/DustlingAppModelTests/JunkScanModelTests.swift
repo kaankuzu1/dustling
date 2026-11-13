@@ -216,7 +216,9 @@ struct JunkScanModelTests {
         #expect(!model.hasItemsToMove)
     }
 
-    @Test func systemCachesStartUncheckedAndMoveWithThePasswordWhenChosen() async throws {
+    @Test func systemCachesAreShownButNeverChosenOrCleaned() async throws {
+        // macOS manages them: the tile shows their size, can't be ticked, and a clean never touches
+        // them or asks for the password, even with access and the password step at hand.
         let rig = try ModelRig()
         let sys = rig.environment.systemLibrary.appending(path: "Caches", directoryHint: .isDirectory)
         let rootOwned = sys.appending(path: "com.root.cache")
@@ -232,31 +234,24 @@ struct JunkScanModelTests {
         model.canTakeOutOfTrash = true
         model.admin = { rig.admin(shell) }
         await scanned(model)
-        // Opt-in: never ticked for the user, even with "Preselect safe categories" on.
         let tile = try #require(model.categories.first)
         #expect(!tile.isSelected)
-        #expect(tile.needsPassword)
-        #expect(tile.note == nil)   // the screen words it, by Full Disk Access
+        #expect(tile.leftAlone)
+        #expect(tile.bytes == 4096)
         #expect(model.selectedBytes == 0)
 
         model.toggle(.systemCachesAndLogs)
-        #expect(model.categories[0].isSelected)
-        #expect(model.selectedBytes == 4096)
-        // Review files lists them as files that move, under a note that the password is asked.
-        let review = model.review(excluding: [])
-        #expect(review.sections.first?.note == "Needs your Mac password")
-        #expect(review.sections.first?.rows.allSatisfy { $0.disabledReason == nil && $0.isIncluded } == true)
-        model.canTakeOutOfTrash = false
-        #expect(model.review(excluding: []).sections.first?.note == "Needs Full Disk Access, then your Mac password")
-        model.canTakeOutOfTrash = true
+        #expect(!model.categories[0].isSelected)
+        #expect(model.selectedBytes == 0)
+        #expect(!model.hasItemsToMove)
+        #expect(Unmovable.check(
+            JunkItem(url: rootOwned, bytes: 4096, category: .systemCachesAndLogs), category: categories[0],
+            skipping: .none, inUseBy: nil) == .leftAlone)
+        #expect(Unmovable.leftAlone.outcome == .skipped(reason: "macOS manages it, so Dustling leaves it alone"))
 
-        try rig.lockFolder(rootOwned)
-        defer { rig.unlockFolder(rootOwned) }
         await model.clean()
-
-        #expect(shell.prompts == [AdminMover.movePrompt(count: 1)])
-        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
-        #expect(record.entries.map(\.outcome) == [.needsAdmin])
+        #expect(shell.prompts.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: rootOwned.appending(path: "blob").path(percentEncoded: false)))
     }
 
     @Test func putEverythingBackRestoresOnlyMovedItems() async throws {

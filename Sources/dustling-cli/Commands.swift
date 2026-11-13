@@ -84,7 +84,7 @@ enum Commands {
                 + "right now and will be skipped")
         }
         print("Review items: \(Format.total(totals.review))  (dustling-cli clean --include <categoryID>)")
-        print("Needs admin: \(Format.total(totals.needsAdmin))  (not touched by this version)")
+        print("Left alone: \(Format.total(totals.needsAdmin))  (macOS manages these; Dustling never cleans them)")
         print("Trash: \(Format.total(totals.trash))  (dustling-cli empty-trash)")
         return 0
     }
@@ -94,7 +94,7 @@ enum Commands {
         print("\(scan.category.title) (\(id))\(Format.tag(for: scan.category.selection)): "
             + Format.categorySummary(scan)
             + (scan.stopped ? " [scan stopped]" : "")
-            + (scan.category.requiresAdmin ? " [needs admin]" : ""))
+            + (scan.category.isNeverCleaned ? " [left alone]" : (scan.category.requiresAdmin ? " [needs admin]" : "")))
         Format.printIssues(scan.issues)
     }
 
@@ -133,6 +133,10 @@ enum Commands {
             Format.printError("The Trash can't be cleaned by moving it. Use: dustling-cli empty-trash")
             return 1
         }
+        if let never = include.first(where: { id in JunkCatalog.standard(env).contains { $0.id == id && $0.isNeverCleaned } }) {
+            Format.printError("\(never.rawValue) is never cleaned: \(JunkCatalog.neverCleanedNote)")
+            return 1
+        }
 
         print("Scanning...")
         let results = await makeScanner().scan(JunkCatalog.standard(env, options: options)) { _ in }
@@ -141,7 +145,7 @@ enum Commands {
             return 1
         }
 
-        // System caches and logs only when named: like the app, the CLI never picks it for you.
+        // The default categories and the ones named; never System caches and logs, as in the app.
         let chosen = JunkCatalog.cleanChoice(results, including: include)
         for scan in results { Format.printIssues(scan.issues) }
 
@@ -590,7 +594,9 @@ enum Commands {
         }
 
         // Show what will be deleted, largest first, before asking.
-        let size = (contents.issues.isEmpty ? "" : "at least ") + Format.bytes(contents.size.bytes)
+        // Items of another account Dustling can't read inside: not an issue, but not measured either.
+        let complete = contents.issues.isEmpty && contents.systemUnreadable.isEmpty
+        let size = (complete ? "" : "at least ") + Format.bytes(contents.size.bytes)
         print("The Trash holds \(Format.plural(contents.items.count, "item")) (\(size)):")
         let sorted = contents.items.sorted {
             $0.size.bytes != $1.size.bytes ? $0.size.bytes > $1.size.bytes : $0.url.path < $1.url.path

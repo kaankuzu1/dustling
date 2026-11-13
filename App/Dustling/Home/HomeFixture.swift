@@ -17,8 +17,7 @@ import Foundation
 /// - `closeapps` is `ready` with the "Close apps to include their files?" sheet for two sample apps
 ///   (its buttons do nothing).
 /// - `emptytrash` and `reviewfiles` are `ready` with the Junk scan's Empty Trash or Review files sheet
-///   open (the sheets list the sample items; Empty Trash refuses to delete anything). `reviewfiles`
-///   also ticks System caches and logs, so its "Needs your Mac password" note shows.
+///   open (the sheets list the sample items; Empty Trash refuses to delete anything).
 ///
 /// Combine with `-DustlingUninstallerFixture list` and `-DustlingStartupFixture normal` for Home's
 /// tool cards; Home stays selected.
@@ -128,6 +127,9 @@ enum HomeFixture {
                        JournalEntry(originalPath: "/sample/old-project.zip", bytes: UInt64(0.82 * gb), outcome: .deleted)]
         entries += (1...5).map { JournalEntry(originalPath: "/sample/TI App \($0)", bytes: 0, outcome: .needsAdmin) }
         entries.append(JournalEntry(originalPath: "/sample/Protected", bytes: 0, outcome: .failed(reason: "protected by macOS")))
+        entries.append(JournalEntry(
+            originalPath: "/sample/com.apple.sample.store", bytes: 0,
+            outcome: .failed(reason: AdminScript.partlyDeletedReason(bridge: "/Library/.dustling-Ab12Cd34"))))
         return RunRecord(startedAt: Date(), kind: .emptyTrash, entries: entries, restorable: false)
     }
 
