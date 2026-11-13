@@ -159,8 +159,8 @@ It uses the Mac app's scan settings when the app has saved them (the `app.dustli
 | Command | What it does |
 | --- | --- |
 | `doctor` | Full Disk Access status, free and purgeable space, snapshot count, problems (exit 1 if any) |
-| `scan` | Categories with size and item count (`couldn't scan` or `at least` when something couldn't be read); `[review]` and `[trash]` mark ones that are not ticked by default; separate totals for what's cleanable by default, review items, admin-only items and the Trash |
-| `clean [--include <categoryID>...]` | Moves the default categories (plus any you include, each item listed first) to the Trash |
+| `scan` | Categories with size and item count (`couldn't scan` or `at least` when something couldn't be read); `[review]`, `[needs admin]` and `[trash]` mark ones that are not ticked by default; separate totals for what's cleanable by default, review items, admin-only items and the Trash |
+| `clean [--include <categoryID>...]` | Moves the default categories (plus any you include, each item listed first) to the Trash. System caches and logs is never a default: `--include systemCachesAndLogs` records its items as needing admin rights without touching them (the app moves them with your Mac password) |
 | `apps` | Numbered list of installed apps with sizes; a symlinked app shows where it points |
 | `uninstall <name\|number> [--all]` | Moves an app and its checked leftovers to the Trash; `--all` also moves unchecked ones |
 | `startup`, `startup disable\|enable <label>` | Lists login items and background agents, or turns one off or on |
@@ -192,7 +192,7 @@ Logs are written to `~/Library/Logs/Dustling/` and run history to `~/Library/App
 | Package manager caches (Homebrew, npm, pip, CocoaPods, Yarn) | `packageManagerCaches` | picked |
 | App caches, including sandboxed apps' caches | `userCaches` | picked |
 | App logs | `userLogs` | picked |
-| System caches and logs | `systemCachesAndLogs` | needs admin (coming with the helper) |
+| System caches and logs | `systemCachesAndLogs` | not picked: the app moves it with your Mac password when you tick it |
 | Old installers (`.dmg` / `.pkg` in Downloads) | `oldInstallers` | review |
 | Large or old downloads (≥ 500 MB, or not opened in 90 days) | `largeOldDownloads` | review |
 | iPhone and iPad backups | `iosBackups` | review |

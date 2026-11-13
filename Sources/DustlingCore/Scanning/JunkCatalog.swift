@@ -1,6 +1,15 @@
 import Foundation
 
 public enum JunkCatalog {
+    /// What `dustling-cli clean` cleans from `scans`, in their order: every category selected by
+    /// default (`isSelectedByDefault`), plus the ones named in `including` (`--include <id>`). Never
+    /// the Trash, which is only ever emptied as a whole.
+    public static func cleanChoice(_ scans: [CategoryScan], including: [JunkCategoryID]) -> [CategoryScan] {
+        scans.filter { scan in
+            scan.category.id != .trash && (scan.category.isSelectedByDefault || including.contains(scan.category.id))
+        }
+    }
+
     /// Logical size at or above which a Downloads item counts as large (500 MB).
     public static let largeDownloadThreshold: UInt64 = 500 * 1024 * 1024
     /// Items in Downloads not accessed for longer than this count as old (90 days).

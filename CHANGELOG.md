@@ -14,6 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 
 - Files that need administrator rights in a cleanup, an uninstall or History now say "Needs your Mac password" instead of "Needs the cleanup helper (coming in a later version)". Retry on the Dustling health page tries them again, asking for your password once. In the Uninstaller such leftovers are marked System instead of Helper and can be unticked like any other, and before an uninstall the confirmation says how many items belong to the system and that Dustling will ask for your Mac password to move them.
+- `dustling-cli clean` no longer picks System caches and logs by default, matching the app. Name it with `--include systemCachesAndLogs`; the command line still only records its items as needing admin rights, without touching them.
 - If you quit while the password box is open, Dustling says it is waiting for your answer, and a box still open closes when Dustling quits, so answering it after Dustling quits can't move anything.
 
 ### Fixed

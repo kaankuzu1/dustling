@@ -141,10 +141,8 @@ enum Commands {
             return 1
         }
 
-        let chosen = results.filter { scan in
-            scan.category.id != .trash
-                && (scan.category.selection == .preselected || include.contains(scan.category.id))
-        }
+        // System caches and logs only when named: like the app, the CLI never picks it for you.
+        let chosen = JunkCatalog.cleanChoice(results, including: include)
         for scan in results { Format.printIssues(scan.issues) }
 
         // Items of apps that are open right now are left alone; admin-only categories are never attempted.

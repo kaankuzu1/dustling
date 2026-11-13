@@ -145,7 +145,7 @@ enum HomeFixture {
     /// is in use. Never run: the paths are the fixture's.
     static func cleanup(of scans: [CategoryScan]) -> RunRecord {
         var entries: [JournalEntry] = []
-        for scan in scans where scan.category.selection == .preselected && !scan.category.requiresAdmin {
+        for scan in scans where scan.category.isSelectedByDefault {
             for item in scan.items {
                 let path = item.url.path(percentEncoded: false)
                 let outcome: DeletionOutcome = item.inUseByBundleID.map { .skipped(reason: "in use by \($0)") }

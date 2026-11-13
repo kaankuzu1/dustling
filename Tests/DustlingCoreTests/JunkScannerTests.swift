@@ -36,6 +36,23 @@ import Testing
         #expect(JunkCatalog.standard(sb.environment).map(\.id) == JunkCategoryID.allCases)
     }
 
+    @Test func systemCachesAreNeverCleanedByDefault() throws {
+        let sb = try TestSandbox()
+        let catalog = JunkCatalog.standard(sb.environment)
+        // What a clean picks without being told: the same in the app (ticked tiles) and the CLI.
+        #expect(catalog.filter(\.isSelectedByDefault).map(\.id)
+            == [.browserCaches, .xcodeJunk, .packageManagerCaches, .userCaches, .userLogs])
+        let scans = catalog.map { CategoryScan(category: $0, items: [], bytes: 0, issues: []) }
+        // `dustling-cli clean`: System caches and logs only when named (`--include systemCachesAndLogs`),
+        // review categories too; the Trash never.
+        #expect(JunkCatalog.cleanChoice(scans, including: []).map(\.category.id)
+            == [.browserCaches, .xcodeJunk, .packageManagerCaches, .userCaches, .userLogs])
+        #expect(JunkCatalog.cleanChoice(scans, including: [.systemCachesAndLogs, .iosBackups, .trash])
+            .map(\.category.id)
+            == [.browserCaches, .xcodeJunk, .packageManagerCaches, .userCaches, .userLogs, .systemCachesAndLogs,
+                .iosBackups])
+    }
+
     @Test func unreadableRootIsReportedNotZero() async throws {
         let sb = try TestSandbox()
         let caches = try sb.directory("home/Library/Caches")

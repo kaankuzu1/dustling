@@ -444,7 +444,7 @@ public final class JunkScanModel {
     private func tile(for scan: CategoryScan, selected: Bool?) -> CategoryTileModel {
         let category = scan.category
         // A category of the system moves with the Mac password: opt-in, never ticked for the user.
-        let initial = !scan.stopped && !category.requiresAdmin && category.selection == .preselected && preselectSafe
+        let initial = !scan.stopped && category.isSelectedByDefault && preselectSafe
         return CategoryTileModel(
             id: category.id, title: category.title,
             note: category.id == .iosBackups ? "Your data, never selected for you" : nil,
