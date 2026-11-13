@@ -140,7 +140,9 @@ struct SummaryView: View {
                 Button(action: putEverythingBack) {
                     HStack(spacing: 6) {
                         PixelIconView(.undo, tint: .foreground)
-                        Text(junk.isRestoring ? "Putting back…" : "Put everything back")
+                        Text(junk.isRestoring
+                             ? (models.isWaitingForPassword ? PasswordCopy.waiting : "Putting back…")
+                             : "Put everything back")
                     }
                 }
                 .disabled(!junk.canPutBack || junk.isRestoring)

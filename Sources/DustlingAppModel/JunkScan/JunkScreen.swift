@@ -45,8 +45,6 @@ public struct JunkTile: Identifiable, Equatable, Sendable {
         case unreadable
         /// Its place opened after the last scan.
         case notScannedYet
-        /// Only the cleanup helper could move it.
-        case needsHelper
         /// Selected for the cleanup in progress, not started yet.
         case queued
         /// Its items are moving right now.
@@ -94,7 +92,6 @@ public struct JunkTile: Identifiable, Equatable, Sendable {
         case .locked: state = "locked"
         case .unreadable: state = "can't be read"
         case .notScannedYet: state = "not scanned yet"
-        case .needsHelper: state = "needs the cleanup helper"
         case .queued: state = "waiting to move"
         case .moving: state = "moving to the Trash"
         case .moved: state = "done"
@@ -158,10 +155,6 @@ public enum JunkScreen {
         }
     }
 
-    /// The System caches and logs tile: cleaning it is still the cleanup helper's job, so it is shown
-    /// with its size and never selected. (Items of the system found in other places move with the
-    /// Mac password.)
-    public static let helperNote = "Needs the cleanup helper (coming in a later version)"
     public static let lockedNote = "Couldn't scan, needs Full Disk Access"
     public static let unreadableNote = "Couldn't scan, Dustling can't open this folder"
     public static let notScannedNote = "Not scanned yet. Scan again to include it"
@@ -234,9 +227,6 @@ public enum JunkScreen {
                 }
                 return make(.stopped, bytes: tile.bytes, lower: true, note: stoppedNote, cells: cells)
             }
-            if tile.needsHelper {
-                return make(.needsHelper, bytes: tile.bytes, note: helperNote, cells: cells)
-            }
             var status = JunkTile.Status.scanned
             if input.phase == .moving, tile.isSelected {
                 if input.progress[entry.id]?.isFinished ?? true {
@@ -247,7 +237,8 @@ public enum JunkScreen {
             }
             return make(
                 status, bytes: shownBytes, lower: partial, selected: tile.isSelected,
-                toggle: input.phase == .ready, note: scannedNote(tile, selection: entry.selection, partial: partial),
+                toggle: input.phase == .ready,
+                note: scannedNote(tile, selection: entry.selection, partial: partial, fullDiskAccess: input.fullDiskAccess),
                 cells: cells, foundNothing: !partial && tile.itemCount == 0 && tile.bytes == 0)
         }
     }
@@ -262,7 +253,9 @@ public enum JunkScreen {
 
     private static func items(_ count: Int) -> String { count == 1 ? "1 item" : "\(count) items" }
 
-    private static func scannedNote(_ tile: CategoryTileModel, selection: Selection, partial: Bool) -> String {
+    private static func scannedNote(
+        _ tile: CategoryTileModel, selection: Selection, partial: Bool, fullDiskAccess: Bool
+    ) -> String {
         let leftOut = tile.excludedCount > 0 ? ", \(tile.excludedCount) left out" : ""
         if let note = tile.note { return note + leftOut }
         if selection == .review {
@@ -274,6 +267,10 @@ public enum JunkScreen {
             return "\(items(tile.itemCount))\(leftOut), \(tile.inUseCount) in use by open apps and left alone"
         }
         if tile.itemCount == 0 && tile.bytes == 0 { return nothingFoundNote }
+        // System caches and logs: cleaning them asks for the Mac password.
+        if tile.needsPassword {
+            return "\(items(tile.itemCount))\(leftOut), " + PasswordCopy.lowercased(fullDiskAccess: fullDiskAccess)
+        }
         return "\(items(tile.itemCount))\(leftOut), rebuilt when needed"
     }
 
@@ -286,14 +283,13 @@ public enum JunkScreen {
     }
 
     /// The scan finished and found nothing a clean could move: every tile was read in full and holds
-    /// nothing (tiles that need the helper don't count). The header then says "All clean".
+    /// nothing. The header then says "All clean".
     public static func isAllClean(_ tiles: [JunkTile]) -> Bool {
         guard !tiles.isEmpty else { return false }
         return tiles.allSatisfy { tile in
             switch tile.status {
             // Files left out in Review files are still there: only a place that held nothing counts.
             case .scanned: return tile.foundNothing
-            case .needsHelper: return true
             default: return false
             }
         }

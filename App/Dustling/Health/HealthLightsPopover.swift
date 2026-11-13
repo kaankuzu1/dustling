@@ -126,7 +126,9 @@ struct HealthPopover: View {
 
     @ViewBuilder private func trailing(for light: HealthLight) -> some View {
         if let fix = light.fix {
-            if case .retryItems = fix, models.retry.isRetrying {
+            if case .retryItems = fix, models.retry.isRetrying, models.isWaitingForPassword {
+                BusyLabel(text: PasswordCopy.waiting)
+            } else if case .retryItems = fix, models.retry.isRetrying {
                 BusyIndicator(label: "Retrying…")
             } else {
                 Button(fix.title) { HealthFix.perform(fix, models: models) }

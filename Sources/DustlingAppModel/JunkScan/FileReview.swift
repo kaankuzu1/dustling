@@ -9,8 +9,7 @@ public struct FileReview: Equatable, Sendable {
         public let url: URL
         public let name: String
         public let bytes: UInt64
-        /// Why this file can't move (in use, needs the helper, locked, outside the cleanup area); nil
-        /// when it can.
+        /// Why this file can't move (in use, locked, outside the cleanup area); nil when it can.
         public let disabledReason: String?
         /// True when it would move: not disabled and not left out.
         public let isIncluded: Bool
@@ -19,6 +18,9 @@ public struct FileReview: Equatable, Sendable {
     public struct Section: Identifiable, Equatable, Sendable {
         public let id: JunkCategoryID
         public let title: String
+        /// Under the title for a category of the system: "Needs your Mac password" (or, without Full
+        /// Disk Access, "Needs Full Disk Access, then your Mac password"). nil otherwise.
+        public var note: String?
         /// Largest first; files that can't move come last.
         public let rows: [Row]
         public let selectedBytes: UInt64
@@ -43,7 +45,7 @@ public struct FileReview: Equatable, Sendable {
             }
             let included = rows.filter(\.isIncluded)
             return Section(
-                id: section.id, title: section.title, rows: rows,
+                id: section.id, title: section.title, note: section.note, rows: rows,
                 selectedBytes: included.reduce(0) { $0 + $1.bytes }, selectedCount: included.count)
         })
     }
@@ -83,8 +85,6 @@ public enum Unmovable: Equatable, Sendable {
     case locked
     /// An app that is open right now owns it.
     case inUse(bundleID: String)
-    /// Only the cleanup helper could move it.
-    case needsHelper
     /// It isn't directly inside one of the category's folders.
     case outsideCleanupArea
 
@@ -95,7 +95,6 @@ public enum Unmovable: Equatable, Sendable {
     ) -> Unmovable? {
         if skipping.skips(item) { return .locked }
         if let owner = inUseBy { return .inUse(bundleID: owner) }
-        if category.requiresAdmin { return .needsHelper }
         if !category.isDeclaredRoot(item.url.deletingLastPathComponent()) { return .outsideCleanupArea }
         return nil
     }
@@ -105,7 +104,6 @@ public enum Unmovable: Equatable, Sendable {
         switch self {
         case .locked: "Needs Full Disk Access"
         case .inUse(let id): "In use by \(appName(id) ?? id)"
-        case .needsHelper: "Needs the cleanup helper"
         case .outsideCleanupArea: "Outside the cleanup area"
         }
     }
@@ -115,7 +113,6 @@ public enum Unmovable: Equatable, Sendable {
         switch self {
         case .locked: .skipped(reason: CleanupSkip.reason)
         case .inUse(let id): .skipped(reason: "in use by \(id)")
-        case .needsHelper: .needsAdmin
         case .outsideCleanupArea: .skipped(reason: "outside the cleanup area")
         }
     }

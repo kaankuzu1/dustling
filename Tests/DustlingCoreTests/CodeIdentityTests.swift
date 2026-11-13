@@ -22,6 +22,12 @@ import Testing
         // A home folder on another disk: its Applications folder is the user's own.
         #expect(location("/Volumes/Home/me/Applications/Dustling.app", home: "/Volumes/Home/me") == .applications)
         #expect(location("/Users/me/Applications/Dustling.app") == .applications)
+        // At any depth, the same for every Applications folder.
+        #expect(location("/Applications/Utilities/Dustling.app") == .applications)
+        #expect(location("/Users/me/Applications/Tools/Dustling.app") == .applications)
+        #expect(location("/Volumes/Home/me/Applications/Tools/Dustling.app", home: "/Volumes/Home/me") == .applications)
+        #expect(location("/Applications") == .elsewhere)
+        #expect(location("/ApplicationsOld/Dustling.app") == .elsewhere)
         // Anything else on a mounted volume is still treated as the disk image.
         #expect(location("/Volumes/Dustling 0.2.0/Dustling.app") == .diskImage)
         #expect(location("/Volumes/External/Downloads/Dustling.app") == .diskImage)

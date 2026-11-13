@@ -209,7 +209,9 @@ private struct LastRunProblems: View {
                     }
                     Spacer()
                     let count = LastRunReview.retryableCount(in: run, fullDiskAccess: access)
-                    if models.retry.isRetrying {
+                    if models.retry.isRetrying && models.isWaitingForPassword {
+                        BusyLabel(text: PasswordCopy.waiting)
+                    } else if models.retry.isRetrying {
                         BusyIndicator(label: "Retrying…")
                     } else if count > 0 {
                         Button(RepairCase.itemsDidNotMove(count: count).copy.fix) {

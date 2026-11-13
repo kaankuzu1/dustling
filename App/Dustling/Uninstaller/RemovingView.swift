@@ -157,6 +157,8 @@ struct UninstallSummaryView: View {
 
     @Environment(AppModels.self) private var models
     @State private var problem: String?
+    /// The run whose Put back is running, so its line can say it waits for the Mac password.
+    @State private var puttingBack: UUID?
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -278,7 +280,8 @@ struct UninstallSummaryView: View {
     @ViewBuilder private func undoButton(_ line: UninstallSummary.AppLine) -> some View {
         let model = models.uninstaller
         if model.canTakeOutOfTrash {
-            Button("Put back") { putBack(line.record) }
+            let waiting = puttingBack == line.record.id && models.isWaitingForPassword
+            Button(waiting ? PasswordCopy.waiting : "Put back") { putBack(line.record) }
                 .disabled(model.isRestoring || model.isUninstalling)
                 .help("Moves \(line.name) and its leftovers back where they were")
         } else {
@@ -289,7 +292,9 @@ struct UninstallSummaryView: View {
 
     private func putBack(_ record: RunRecord) {
         problem = nil
+        puttingBack = record.id
         Task {
+            defer { puttingBack = nil }
             do {
                 _ = try await models.uninstaller.putBack(record)
             } catch {

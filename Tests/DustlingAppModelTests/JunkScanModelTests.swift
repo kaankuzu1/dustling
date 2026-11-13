@@ -216,24 +216,47 @@ struct JunkScanModelTests {
         #expect(!model.hasItemsToMove)
     }
 
-    @Test func adminCategoriesStartUncheckedAndCantBeToggled() async throws {
+    @Test func systemCachesStartUncheckedAndMoveWithThePasswordWhenChosen() async throws {
         let rig = try ModelRig()
-        let sys = rig.root.appending(path: "Library/Caches", directoryHint: .isDirectory)
-        try rig.file(sys.appending(path: "x/blob"), bytes: 4096)
+        let sys = rig.environment.systemLibrary.appending(path: "Caches", directoryHint: .isDirectory)
+        let rootOwned = sys.appending(path: "com.root.cache")
+        try rig.file(rootOwned.appending(path: "blob"), bytes: 4096)
+        try FileManager.default.createDirectory(at: rig.environment.userTrash, withIntermediateDirectories: true)
         let categories = [JunkCategory(
             id: .systemCachesAndLogs, title: "System caches and logs", selection: .preselected,
             requiresAdmin: true, roots: [sys])]
+        let shell = FakeAdminShell(.cancelled)
         let model = JunkScanModel(
             scanner: rig.scanner(), runner: rig.runner(), journal: rig.journal,
             environment: rig.environment, options: rig.options, categories: { categories })
+        model.canTakeOutOfTrash = true
+        model.admin = { rig.admin(shell) }
         await scanned(model)
+        // Opt-in: never ticked for the user, even with "Preselect safe categories" on.
         let tile = try #require(model.categories.first)
         #expect(!tile.isSelected)
-        #expect(tile.bytes > 0)
-        #expect(tile.note == "Needs the cleanup helper")
-        model.toggle(.systemCachesAndLogs)
-        #expect(!model.categories[0].isSelected)
+        #expect(tile.needsPassword)
+        #expect(tile.note == nil)   // the screen words it, by Full Disk Access
         #expect(model.selectedBytes == 0)
+
+        model.toggle(.systemCachesAndLogs)
+        #expect(model.categories[0].isSelected)
+        #expect(model.selectedBytes == 4096)
+        // Review files lists them as files that move, under a note that the password is asked.
+        let review = model.review(excluding: [])
+        #expect(review.sections.first?.note == "Needs your Mac password")
+        #expect(review.sections.first?.rows.allSatisfy { $0.disabledReason == nil && $0.isIncluded } == true)
+        model.canTakeOutOfTrash = false
+        #expect(model.review(excluding: []).sections.first?.note == "Needs Full Disk Access, then your Mac password")
+        model.canTakeOutOfTrash = true
+
+        try rig.lockFolder(rootOwned)
+        defer { rig.unlockFolder(rootOwned) }
+        await model.clean()
+
+        #expect(shell.prompts == [AdminMover.movePrompt(count: 1)])
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+        #expect(record.entries.map(\.outcome) == [.needsAdmin])
     }
 
     @Test func putEverythingBackRestoresOnlyMovedItems() async throws {

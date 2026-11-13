@@ -533,12 +533,12 @@ struct RepairTests {
     }
 
     @Test func helperCheckNoLongerSaysLaunchDaemonsStay() {
-        // Uninstalling an app's launch daemon now moves it with the password; switching system
-        // startup items and cleaning system caches still wait for the helper.
+        // Uninstalling an app's launch daemon and cleaning system caches now move them with the
+        // password; only switching system startup items waits for the helper.
         let checks = Diagnostics.checks(Diagnostics.Input(
             fullDiskAccess: .granted, published: true, checkedAt: nil, now: Date(), helper: .notAvailable,
             logFolder: .notCreatedYet, logFolderDisplay: "~/Library/Logs/Dustling"))
         #expect(checks.first { $0.kind == .helper }?.detail
-            == "Coming in a later version. System caches and system startup items stay as they are.")
+            == "Coming in a later version. Until then, system startup items can't be turned on or off.")
     }
 }

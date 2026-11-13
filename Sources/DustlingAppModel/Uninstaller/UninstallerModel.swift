@@ -553,7 +553,8 @@ public final class UninstallerModel {
     // MARK: review all files
 
     /// Every file of the selected apps: the app first, then its leftovers, each with whether it moves
-    /// and, when it can't, why.
+    /// and, when it can't, why. An item of the system reads as in the detail list: ticked or not, and
+    /// toggleable, with "Needs your Mac password" under it; it is counted apart.
     public func review() -> UninstallReview {
         UninstallReview(sections: selectedApps.map { row in
             let isLink = row.app.linkTarget != nil
@@ -563,11 +564,13 @@ public final class UninstallerModel {
                 dataWarning: nil)]
             for leftover in leftovers(for: row.app) {
                 let block = block(for: leftover)
+                let password = block == .needsPassword
                 rows.append(.init(
                     url: leftover.id, title: UninstallerScreen.kindName(leftover.leftover.kind), isApp: false,
-                    bytes: leftover.leftover.bytes, badges: leftover.badges, disabledReason: block?.text,
-                    isIncluded: block == nil && leftover.checked,
-                    dataWarning: leftover.leftover.mayContainUserData ? Self.dataWarning(for: leftover.leftover) : nil))
+                    bytes: leftover.leftover.bytes, badges: leftover.badges, disabledReason: password ? nil : block?.text,
+                    isIncluded: (block == nil || password) && leftover.checked,
+                    dataWarning: leftover.leftover.mayContainUserData ? Self.dataWarning(for: leftover.leftover) : nil,
+                    note: password ? UninstallerScreen.passwordNote : nil, countsApart: password))
             }
             return UninstallReview.Section(app: row.app, rows: rows)
         })
@@ -582,8 +585,8 @@ public final class UninstallerModel {
     }
 
     /// Done in Review all files: an unticked app is deselected; every other row that can be ticked
-    /// takes the draft's state. Only `rows` (what the sheet showed) change; rows that can't move, or
-    /// that appeared since the sheet opened, stay as they are.
+    /// (items of the system too) takes the draft's state. Only `rows` (what the sheet showed) change;
+    /// rows that can't move, or that appeared since the sheet opened, stay as they are.
     public func applyReview(excluding: Set<URL>, rows shown: Set<URL>) {
         guard !isUninstalling, !isRestoring else { return }
         for row in selectedApps where shown.contains(row.app.url) {
@@ -592,7 +595,8 @@ public final class UninstallerModel {
                 continue
             }
             for leftover in leftovers(for: row.app)
-            where shown.contains(leftover.id) && !leftover.isDisabled && block(for: leftover.leftover) == nil {
+            where shown.contains(leftover.id) && !leftover.isDisabled
+                && [nil, .needsPassword].contains(block(for: leftover.leftover)) {
                 let on = !excluding.contains(leftover.id)
                 if on != leftover.checked { setChecked(on, leftover: leftover.leftover, in: row.app) }
             }

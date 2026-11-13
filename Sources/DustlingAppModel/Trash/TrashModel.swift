@@ -209,6 +209,12 @@ public final class TrashModel {
         inTrashBytesSinceLastEmpty = inTrashBytes
         historyProblem = nil
     }
+
+    /// Screenshot fixture: Empty Trash is running (it never finishes; nothing is deleted).
+    public func showFixtureEmptying() {
+        guard isFixture else { return }
+        isEmptying = true
+    }
     #endif
 
     private struct Snapshot: Sendable {

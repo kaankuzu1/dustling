@@ -83,7 +83,7 @@ public enum Diagnostics {
         switch status {
         case .notAvailable:
             return Check(kind: .helper, title: title,
-                         detail: "Coming in a later version. System caches and system startup items stay as they are.",
+                         detail: "Coming in a later version. Until then, system startup items can't be turned on or off.",
                          state: .info, chip: "Not available yet", repair: nil)
         case .ok:
             return Check(kind: .helper, title: title, detail: "Registered and responding", state: .ok, chip: "OK", repair: nil)

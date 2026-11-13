@@ -301,8 +301,9 @@ struct UninstallerView: View {
             let place = min(total, progress.appsDone + (progress.current == nil ? 0 : 1))
             let items = progress.apps.reduce(0) { $0 + $1.items.count }
             let done = progress.apps.reduce(0) { $0 + $1.doneCount }
+            let waiting = model.isWaitingForPassword || models.isWaitingForPassword
             let title: String = {
-                if model.isWaitingForPassword { return "Waiting for your Mac password" }
+                if waiting { return PasswordCopy.waiting }
                 guard let current = progress.current else { return "Finishing" }
                 return current.state == .quitting
                     ? "Quitting \(current.app.displayName)" : "Removing \(current.app.displayName)"
@@ -315,10 +316,8 @@ struct UninstallerView: View {
                     .frame(width: 220)
                 // The password box can't be stopped from here; answering or cancelling it ends the step.
                 Button("Stop", action: model.stop)
-                    .disabled(model.stopRequested || model.isWaitingForPassword)
-                    .help(model.isWaitingForPassword
-                        ? "Answer or cancel the password box to finish"
-                        : "Finishes the app being removed now and leaves the rest alone")
+                    .disabled(model.stopRequested || waiting)
+                    .help(waiting ? PasswordCopy.answerToFinish : "Finishes the app being removed now and leaves the rest alone")
             }
         }
     }

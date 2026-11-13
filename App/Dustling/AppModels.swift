@@ -72,6 +72,9 @@ final class AppModels {
     /// cleanup, uninstall, retry, Empty Trash and Put back reads it when it starts, so it follows the
     /// access the last probe found, never an older one.
     var admin: AdminMover? { health.fullDiskAccess == .granted ? adminMover : nil }
+    /// True while a password step runs: the macOS password box is up, or its script runs as root. The
+    /// work it belongs to says "Waiting for your Mac password" and turns Stop off meanwhile.
+    private(set) var isWaitingForPassword = false
     @ObservationIgnored private let logger: RunLogger
     /// The run history; interrupted runs are finished off at launch (`start()`).
     @ObservationIgnored private let journal: RunJournal
@@ -165,6 +168,9 @@ final class AppModels {
         // retry reads the gate, the places check and the busy state, and every finished run
         // refreshes History so its chips never go stale.
         let owner = WeakModels()
+        // Each start and end of a password step re-reads the count on the main actor, so the last
+        // update to run always shows the state as it is then.
+        steps.onChange = { Task { @MainActor in owner.models?.syncPasswordWait() } }
         let trash = TrashModel(
             makeInspector: { external in
                 TrashInspector(
@@ -287,6 +293,11 @@ final class AppModels {
         applyStartupHistoryFixtureFromLaunchArguments()
         applyRepairFixtureFromLaunchArguments()
         applyHomeFixtureFromLaunchArguments()
+        // `-DustlingPasswordFixture YES`: the work the other fixtures show waits for the password.
+        if Self.passwordFixture {
+            isWaitingForPassword = true
+            retry.showFixtureRetrying()
+        }
         // QA: `-DustlingScreen junkScan` opens a screen at launch (see docs/RELEASING.md, "QA pass").
         if let raw = UserDefaults.standard.string(forKey: "DustlingScreen"), let screen = Destination(rawValue: raw) {
             selection = screen
@@ -302,8 +313,14 @@ final class AppModels {
         HomeFixture.argument, fixtureArgument, "DustlingStartupFixture",
         "DustlingHistoryFixture", "DustlingRepairFixture", "DustlingQuitBusyFixture", "DustlingScreen",
         LayoutCheck.argument, "DustlingQAAssumeFullDiskAccess", "DustlingOnboardingStep",
-        "DustlingSettingsSection", "DustlingDebugGoalBytes",
+        "DustlingSettingsSection", "DustlingDebugGoalBytes", "DustlingPasswordFixture",
     ]
+
+    /// `-DustlingPasswordFixture YES` (screenshots of the waiting states): Dustling reads as waiting for
+    /// the Mac password, and the work the other fixtures show is running (Home's `moving`, `done` with
+    /// Put everything back, `emptytrash`; the Uninstaller's `removing`; History's `restoring`; the
+    /// Repair fixture's `results` with Retry). No password box is ever shown and nothing runs.
+    static var passwordFixture: Bool { UserDefaults.standard.object(forKey: "DustlingPasswordFixture") != nil }
 
     /// True when this is the QA copy (or a screenshot run): any QA switch is set, or any `-Dustling…`
     /// launch argument was passed.
@@ -323,7 +340,8 @@ final class AppModels {
         // too, never the real history.
         if !history.isFixture { showHistoryFixture("runs") }
         uninstallerCounted = uninstallerFixture
-        selection = ["emptytrash", "emptytrashproblems", "reviewfiles", "closeapps", "scanning", "done"].contains(HomeFixture.state) ? .junkScan : .home
+        selection = ["emptytrash", "emptytrashproblems", "reviewfiles", "closeapps", "scanning", "moving", "done"]
+            .contains(HomeFixture.state) ? .junkScan : .home
     }
 
     /// The fixture's scan: the sample results instead of reading the disk.
@@ -353,15 +371,21 @@ final class AppModels {
                 url: environment.home.appending(path: ".Trash/Dustling cleanup"),
                 size: SizeResult(bytes: moved, fileCount: record.entries.count)))
             trash.showFixture(items: trashItems, inTrashBytes: moved)
+            if Self.passwordFixture { junk.showFixtureRestoring() }
             return
+        case "moving":
+            junk.showFixture(scans, phase: .moving(done: 12))
         default:
             junk.showFixture(scans, phase: .ready)
+            // Review files with System caches and logs ticked too, so its password note is in the picture.
+            if state == "reviewfiles" { junk.toggle(.systemCachesAndLogs) }
         }
         if HomeFixture.isLimited {
             trash.showFixture(items: [], inTrashBytes: 0, unreadableAt: environment.home.appending(path: ".Trash"))
         } else {
             trash.showFixture(items: trashItems, inTrashBytes: 0)
         }
+        if Self.passwordFixture && state == "emptytrash" { trash.showFixtureEmptying() }
     }
     #endif
 
@@ -731,6 +755,11 @@ final class AppModels {
         // Each of these keeps its own flag through its password step too; this says why it waits.
         if passwordSteps.isRunning { work.append(.passwordStep) }
         return work
+    }
+
+    /// Follows `PasswordSteps` (see `isWaitingForPassword`).
+    func syncPasswordWait() {
+        isWaitingForPassword = passwordSteps.isRunning
     }
 
     /// When Dustling terminates: closes a password box still open (Quit waited for it as long as it

@@ -378,12 +378,16 @@ private struct JunkActionBar: View {
             .sheet(item: $closingApps) { run in CloseAppsSheet(run: run) }
             .dismissedOnQuit($closingApps)
         case .moving(let done, let total, let bytes):
+            // The items of the system move last, after one password box: say so, or the bar looks stalled.
+            let waiting = models.isWaitingForPassword
             ActionBar(
-                title: "Moving to the Trash",
+                title: waiting ? PasswordCopy.waiting : "Moving to the Trash",
                 caption: "\(done) of \(total) \(total == 1 ? "item" : "items"), \(Bytes.format(bytes)) moved",
-                busyLabel: "Moving…"
+                busyLabel: waiting ? "Waiting…" : "Moving…"
             ) {
                 Button("Stop", action: junk.stop)
+                    .disabled(waiting)
+                    .help(waiting ? PasswordCopy.answerToFinish : "")
             }
         case .done(let record):
             ActionBar(

@@ -307,6 +307,20 @@ struct PasswordStepTests {
         #expect(!steps.isRunning)
     }
 
+    @Test func passwordStepsSayWhenTheyStartAndEnd() async throws {
+        let seen = Counter()
+        let steps = PasswordSteps()
+        steps.onChange = { [steps] in seen.record(steps.isRunning ? 1 : 0) }
+        let held = HeldShell()
+        let shell = WatchedAdminShell(held, steps: steps)
+        let work = Task.detached { shell.run(script: "true", prompt: "p") }
+        #expect(await soon { held.gate.hasEntered })
+        #expect(seen.totals == [1])
+        held.gate.open()
+        _ = await work.value
+        #expect(seen.totals == [1, 0])
+    }
+
     @Test func quitWaitsForThePasswordBoxAndSaysSo() {
         let work = BusyWork.passwordStep
         #expect(!work.stopsEarly)

@@ -70,6 +70,9 @@ struct EmptyTrashSheet: View {
             }
             }
             HStack(spacing: 8) {
+                if leftBehind == nil && trash.isEmptying && models.isWaitingForPassword {
+                    BusyLabel(text: PasswordCopy.waiting)
+                }
                 Spacer()
                 if let leftBehind {
                     if leftBehind.problems.needsAdmin > 0 {
@@ -92,6 +95,7 @@ struct EmptyTrashSheet: View {
                     Button("Cancel", role: .cancel) { dismiss() }
                         .keyboardShortcut(.cancelAction)
                         .disabled(trash.isEmptying)
+                        .help(trash.isEmptying && models.isWaitingForPassword ? PasswordCopy.answerToFinish : "")
                     Button("Empty Trash", role: .destructive) { if let shown { empty(confirmed: shown) } }
                         .buttonStyle(.borderedProminent)
                         .tint(Palette.danger)

@@ -24,17 +24,18 @@ public enum CodeIdentity {
         return text as String
     }
 
-    /// An Applications folder is `/Applications`, `~/Applications` (`home`'s), or one on another disk
-    /// (`/Volumes/<disk>/Applications`, at any depth there). Anything else under `/Volumes` is taken
-    /// for the disk image Dustling came on.
+    /// Inside an Applications folder, at any depth (`/Applications/Utilities/A.app` too): `/Applications`,
+    /// `~/Applications` (`home`'s), or one on another disk (`/Volumes/<disk>/Applications`). Anything
+    /// else under `/Volumes` is taken for the disk image Dustling came on.
     public static func runningLocation(
         bundleURL: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> RunningLocation {
         let path = bundleURL.standardizedFileURL.path
         if path.contains("/AppTranslocation/") { return .translocated }
-        let parent = bundleURL.standardizedFileURL.deletingLastPathComponent().path
-        let userApplications = home.standardizedFileURL.appending(path: "Applications").path
-        if parent == "/Applications" || parent == userApplications { return .applications }
+        func isInside(_ folder: String) -> Bool { path.hasPrefix(folder + "/") }
+        if isInside("/Applications") || isInside(home.standardizedFileURL.appending(path: "Applications").path) {
+            return .applications
+        }
         if path.hasPrefix("/Volumes/") {
             let parts = path.dropFirst("/Volumes/".count).split(separator: "/", omittingEmptySubsequences: true)
             return parts.count > 2 && parts[1] == "Applications" ? .applications : .diskImage

@@ -3,7 +3,7 @@ import DustlingAppModel
 import DustlingCore
 import Foundation
 
-/// DEBUG only. `-DustlingHomeFixture ready|scanning|done|limited|emptytrash|emptytrashproblems|reviewfiles|closeapps` shows Home and the Junk scan with
+/// DEBUG only. `-DustlingHomeFixture ready|scanning|moving|done|limited|emptytrash|emptytrashproblems|reviewfiles|closeapps` shows Home and the Junk scan with
 /// the approved mockup's sample numbers (`DISK`, `CATS` and `TRASH` in screens.html), for screenshots
 /// without anyone's real files:
 /// - Full Disk Access reads as on (`limited`: off, with the consent places locked), in memory only.
@@ -13,10 +13,12 @@ import Foundation
 ///   count) stay in their loading skeletons. `loadingscan`: the disk is read but the scan has
 ///   finished no place yet, so Home shows the hero with the scan's skeletons.
 /// - `done` shows the summary of a sample cleanup that was never run.
+/// - `moving` shows a cleanup of the selected tiles part way through (it never moves anything).
 /// - `closeapps` is `ready` with the "Close apps to include their files?" sheet for two sample apps
 ///   (its buttons do nothing).
 /// - `emptytrash` and `reviewfiles` are `ready` with the Junk scan's Empty Trash or Review files sheet
-///   open (the sheets list the sample items; Empty Trash refuses to delete anything).
+///   open (the sheets list the sample items; Empty Trash refuses to delete anything). `reviewfiles`
+///   also ticks System caches and logs, so its "Needs your Mac password" note shows.
 ///
 /// Combine with `-DustlingUninstallerFixture list` and `-DustlingStartupFixture normal` for Home's
 /// tool cards; Home stays selected.

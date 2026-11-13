@@ -20,6 +20,11 @@ public enum PasswordCopy {
         return text.prefix(1).lowercased() + text.dropFirst()
     }
 
+    /// While a password step runs: the title of the work's bar or its busy label.
+    public static let waiting = "Waiting for your Mac password"
+    /// Why Stop is off then (a password step can't be stopped from Dustling's window).
+    public static let answerToFinish = "Answer or cancel the password box to finish"
+
     /// "1 needs your Mac password", "3 need Full Disk Access, then your Mac password".
     public static func count(_ count: Int, fullDiskAccess: Bool) -> String {
         let what = fullDiskAccess ? "your Mac password" : "Full Disk Access, then your Mac password"

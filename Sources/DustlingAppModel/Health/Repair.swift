@@ -297,6 +297,12 @@ public final class LastRunRetry {
     #if DEBUG
     /// DEBUG screenshot fixtures show sample runs; retrying them would write to the real history.
     public var refusesSampleData = false
+
+    /// Screenshot fixture: a retry is running (it never finishes; nothing is retried).
+    public func showFixtureRetrying() {
+        guard refusesSampleData else { return }
+        isRetrying = true
+    }
     #endif
 
     @ObservationIgnored private let catalog: () -> [JunkCategory]

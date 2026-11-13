@@ -8,12 +8,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
-- Apps and files that belong to the system, such as an app an installer put in Applications with an administrator's rights, a launch daemon an app left behind, or a cache folder only an administrator can change, no longer stay where they are. Dustling asks for your Mac password once per cleanup, uninstall, Empty Trash or Put back, with the standard macOS password box, and moves them to the Trash (or deletes them, or puts them back) together. This needs Full Disk Access; without it, Dustling says those items need Full Disk Access, then your Mac password. Switching system startup items on or off, and cleaning System caches and logs, still wait for the cleanup helper.
+- Apps and files that belong to the system, such as an app an installer put in Applications with an administrator's rights, a launch daemon an app left behind, or a cache folder only an administrator can change, no longer stay where they are. Dustling asks for your Mac password once per cleanup, uninstall, retry or Empty Trash, with the standard macOS password box, and moves them to the Trash (or deletes them) together. Put back asks once too; putting back items from several runs in History asks once per run. This needs Full Disk Access; without it, Dustling says those items need Full Disk Access, then your Mac password. While the password box is open, the screen says Dustling is waiting for your Mac password.
+- System caches and logs can now be cleaned. The place is never ticked for you: tick it on the Junk scan screen, and Dustling asks for your Mac password once to move what belongs to the system. Before, it waited for the cleanup helper. Switching system startup items on or off still waits for the helper.
 
 ### Changed
 
-- Items that need administrator rights now say "Needs your Mac password" instead of "Needs the cleanup helper (coming in a later version)", and Retry on the Dustling health page tries them again, asking for your password once. In the Uninstaller such leftovers are marked System instead of Helper, and before an uninstall the confirmation says how many items belong to the system and that Dustling will ask for your Mac password to move them.
-- If you quit while the password box is open, Dustling says it is waiting for your answer, and a box still open closes when Dustling quits, so nothing can move after Dustling is gone.
+- Files that need administrator rights in a cleanup, an uninstall or History now say "Needs your Mac password" instead of "Needs the cleanup helper (coming in a later version)". Retry on the Dustling health page tries them again, asking for your password once. In the Uninstaller such leftovers are marked System instead of Helper and can be unticked like any other, and before an uninstall the confirmation says how many items belong to the system and that Dustling will ask for your Mac password to move them.
+- If you quit while the password box is open, Dustling says it is waiting for your answer, and a box still open closes when Dustling quits, so answering it after Dustling quits can't move anything.
 
 ### Fixed
 
