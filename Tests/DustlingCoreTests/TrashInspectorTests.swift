@@ -378,5 +378,98 @@ struct TrashInspectorTests {
         #expect(TrashInspector.isPermissionDenied(outer))
         #expect(!TrashInspector.isPermissionDenied(NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT))))
     }
-}
 
+    // MARK: - What belongs to another account: deleted with the password, in one batch
+
+    /// An inspector for a user whose uid isn't the test's (so a locked folder in the Trash stays
+    /// locked and can't be deleted), with `admin` behind it. `stuck` items count as another account's.
+    private func adminInspector(
+        _ sandbox: TestSandbox, admin: AdminMover?, stuck: Set<String>
+    ) -> TrashInspector {
+        var environment = sandbox.environment
+        environment.userID = getuid() &+ 1
+        return TrashInspector(
+            environment: environment, journal: RunJournal(directory: environment.historyDirectory),
+            logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: false, inspect: TrashInspector.lstatKind,
+            blocker: { url, _ in stuck.contains(url.lastPathComponent) ? .otherOwner(count: 1) : nil },
+            admin: admin)
+    }
+
+    private func outcome(_ record: RunRecord, _ name: String) -> DeletionOutcome? {
+        record.entries.first { $0.originalPath.hasSuffix("/" + name) }?.outcome
+    }
+
+    @Test func emptyTrashDeletesSystemItemsWithPassword() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.file("home/.Trash/ok.bin", bytes: 8)
+        let one = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8).deletingLastPathComponent()
+        let two = try sandbox.file("home/.Trash/TI Tool/inner.bin", bytes: 8).deletingLastPathComponent()
+        FolderMode.lock(one)
+        FolderMode.lock(two)
+        defer { FolderMode.unlock(one); FolderMode.unlock(two) }
+        // The script runs as the user: the folders open again only after planning.
+        let shell = UserShell(beforeRun: { FolderMode.unlock(one); FolderMode.unlock(two) })
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let record = adminInspector(sandbox, admin: admin, stuck: ["TI App", "TI Tool"]).emptyTrash()
+        #expect(shell.calls.count == 1)
+        #expect(shell.calls.first?.prompt == AdminMover.deletePrompt(count: 2))
+        #expect(record.entries.count == 3)
+        #expect(record.entries.allSatisfy { $0.outcome == .deleted })
+        #expect(try FileManager.default.contentsOfDirectory(atPath: sandbox.environment.userTrash.path).isEmpty)
+        let saved = try #require(try RunJournal(directory: sandbox.environment.historyDirectory).all().first)
+        #expect(saved.entries == record.entries)
+    }
+
+    @Test func emptyTrashKeepsSystemItemsWhenPasswordCancelled() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.file("home/.Trash/ok.bin", bytes: 8)
+        let stuck = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8).deletingLastPathComponent()
+        FolderMode.lock(stuck)
+        defer { FolderMode.unlock(stuck) }
+        let shell = CannedShell(.cancelled)
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let record = adminInspector(sandbox, admin: admin, stuck: ["TI App"]).emptyTrash()
+        #expect(shell.calls.count == 1)
+        #expect(outcome(record, "ok.bin") == .deleted)
+        #expect(outcome(record, "TI App") == .needsAdmin)
+        #expect(FileManager.default.fileExists(atPath: stuck.appending(path: "inner.bin").path))
+    }
+
+    @Test func emptyTrashWithoutAdminNeverAsks() throws {
+        let sandbox = try TestSandbox()
+        let stuck = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8).deletingLastPathComponent()
+        FolderMode.lock(stuck)
+        defer { FolderMode.unlock(stuck) }
+        let record = adminInspector(sandbox, admin: nil, stuck: ["TI App"]).emptyTrash()
+        #expect(outcome(record, "TI App") == .needsAdmin)
+    }
+
+    @Test func emptyTrashNeverDeletesOutsideTrashWithPassword() throws {
+        // Only a child of a Trash location the inspector found goes into the script, even if
+        // something hands it a needs-admin item somewhere else.
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        let inside = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8).deletingLastPathComponent()
+        let outsideFolder = try sandbox.directory("Library/Extensions")
+        let outside = try sandbox.file("Library/Extensions/system.kext", bytes: 5)
+        let shell = CannedShell(.cancelled)
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let inspector = adminInspector(sandbox, admin: admin, stuck: [])
+        var entries = [
+            JournalEntry(originalPath: outside.path, bytes: 5, outcome: .needsAdmin),
+            JournalEntry(originalPath: inside.path, bytes: 8, outcome: .needsAdmin),
+        ]
+        inspector.deleteWithPassword([
+            TrashInspector.SystemChild(entry: 0, location: outsideFolder, name: "system.kext", identity: ItemIdentity.of(outside)),
+            TrashInspector.SystemChild(entry: 1, location: trash, name: "TI App", identity: ItemIdentity.of(inside)),
+        ], into: &entries)
+        let script = try #require(shell.calls.first?.script)
+        #expect(shell.calls.count == 1)
+        #expect(shell.calls.first?.prompt == AdminMover.deletePrompt(count: 1))
+        #expect(!script.contains("system.kext") && !script.contains("Extensions"))
+        #expect(script.contains("'TI App'"))
+        #expect(entries.map(\.outcome) == [.needsAdmin, .needsAdmin])
+        #expect(FileManager.default.fileExists(atPath: outside.path))
+    }
+}

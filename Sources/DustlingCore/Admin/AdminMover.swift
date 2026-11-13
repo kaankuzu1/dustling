@@ -5,7 +5,7 @@ import Foundation
 /// Trash (no chown), so Put back can restore them exactly as they were.
 public struct AdminMover: Sendable {
     private let shell: any AdminShell
-    private let environment: SystemEnvironment
+    let environment: SystemEnvironment
     private let planning: AdminPlanning
 
     public init(shell: AdminShell, environment: SystemEnvironment) {

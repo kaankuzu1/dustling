@@ -415,5 +415,136 @@ struct RunJournalTests {
             #expect(!FileManager.default.fileExists(atPath: b.path))
         }
     }
-}
 
+    // MARK: - Put back into system folders with the password
+
+    /// A run that moved `items` (trashed path → original path) to the Trash, with the identity each
+    /// trashed item has now (`owner: false` drops the owner, as journals written before it had).
+    private func trashedRecord(_ items: [(URL, URL)], owner: Bool = true) -> RunRecord {
+        RunRecord(startedAt: Date(timeIntervalSince1970: 1_000), kind: .uninstall(appName: "Foo"), entries: items.map {
+            var identity = TrashedIdentity.of(path: $0.0.path(percentEncoded: false))
+            if !owner { identity?.owner = nil }
+            return JournalEntry(originalPath: $0.1.path(percentEncoded: false), bytes: 1,
+                                outcome: .movedToTrash(trashedPath: $0.0.path(percentEncoded: false)),
+                                trashedIdentity: identity)
+        }, restorable: true)
+    }
+
+    private func adminMover(_ shell: any AdminShell, _ s: TestSandbox) throws -> AdminMover {
+        AdminMover(shell: shell, environment: s.environment, planning: try s.adminPlanning())
+    }
+
+    @Test func restoreUsesPasswordForSystemFolders() throws {
+        let s = try TestSandbox()
+        let tools = try s.directory("Library/PrivilegedHelperTools")
+        let helper = try s.file("home/.Trash/com.example.helper", bytes: 4)
+        let mine = try s.file("home/.Trash/a.log", bytes: 2)
+        try s.directory("home/Library/Caches")
+        let original = tools.appending(path: "com.example.helper")
+        let myOriginal = s.root.appending(path: "home/Library/Caches/a.log")
+        let run = trashedRecord([(helper, original), (mine, myOriginal)])
+        let j = journal(s)
+        try j.save(run)
+        FolderMode.lock(tools)
+        defer { FolderMode.unlock(tools) }
+        // The script runs as the user: the folder opens again only after planning.
+        let shell = UserShell(beforeRun: { FolderMode.unlock(tools) })
+        let out = try j.restore(runID: run.id, admin: try adminMover(shell, s))
+        #expect(out == [.restored(original.path(percentEncoded: false)), .restored(myOriginal.path(percentEncoded: false))])
+        #expect(shell.calls.count == 1)
+        #expect(shell.calls.first?.prompt == AdminMover.restorePrompt(count: 1))
+        // The recorded item (owner included) is what the script must find in the Trash.
+        let recorded = try #require(run.entries[0].trashedIdentity)
+        #expect(shell.calls.first?.script.contains(" \(recorded.dev):\(recorded.ino):\(getuid()) ") == true)
+        #expect(FileManager.default.fileExists(atPath: original.path(percentEncoded: false)))
+        let saved = try #require(try j.all().first)
+        #expect(saved.entries.allSatisfy { $0.restored })
+        #expect(!saved.restorable)
+    }
+
+    @Test func restoreUsesPasswordForAFolderTheUserCantWrite() throws {
+        // Moving a folder to another folder changes its "..": without write access to the folder
+        // itself (an app root installed), only the password can put it back.
+        let s = try TestSandbox()
+        let apps = try s.directory("home/Applications")
+        let app = try s.file("home/.Trash/Foo.app/Contents/Info.plist", bytes: 3)
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let original = apps.appending(path: "Foo.app")
+        let run = trashedRecord([(app, original)])
+        let j = journal(s)
+        try j.save(run)
+        FolderMode.lock(app)
+        defer { FolderMode.unlock(app); FolderMode.unlock(original) }
+        let shell = UserShell(beforeRun: { FolderMode.unlock(app) })
+        #expect(try j.restore(runID: run.id, admin: try adminMover(shell, s)) == [.restored(original.path(percentEncoded: false))])
+        #expect(shell.calls.count == 1)
+        #expect(FileManager.default.fileExists(atPath: original.appending(path: "Contents/Info.plist").path))
+    }
+
+    @Test func restoreKeepsTheItemInTheTrashWhenPasswordCancelled() throws {
+        let s = try TestSandbox()
+        let tools = try s.directory("Library/PrivilegedHelperTools")
+        let helper = try s.file("home/.Trash/com.example.helper", bytes: 4)
+        let original = tools.appending(path: "com.example.helper")
+        let run = trashedRecord([(helper, original)])
+        let j = journal(s)
+        try j.save(run)
+        FolderMode.lock(tools)
+        defer { FolderMode.unlock(tools) }
+        let shell = CannedShell(.cancelled)
+        let out = try j.restore(runID: run.id, admin: try adminMover(shell, s))
+        #expect(out == [.failed(original.path(percentEncoded: false), reason: "Put back needs your password")])
+        #expect(RunJournal.putBackNeedsPasswordReason == "Put back needs your password")
+        #expect(shell.calls.count == 1)
+        #expect(FileManager.default.fileExists(atPath: helper.path(percentEncoded: false)))
+        let saved = try #require(try j.all().first)
+        #expect(!saved.entries[0].restored && saved.restorable)
+    }
+
+    @Test func restoreWithoutRecordedOwnerSaysUsePutBackInFinder() throws {
+        let s = try TestSandbox()
+        let tools = try s.directory("Library/PrivilegedHelperTools")
+        let helper = try s.file("home/.Trash/com.example.helper", bytes: 4)
+        let original = tools.appending(path: "com.example.helper")
+        let run = trashedRecord([(helper, original)], owner: false)
+        let j = journal(s)
+        try j.save(run)
+        FolderMode.lock(tools)
+        defer { FolderMode.unlock(tools) }
+        let shell = CannedShell(.finished(output: "R\t0\tok\n"))
+        let out = try j.restore(runID: run.id, admin: try adminMover(shell, s))
+        guard case .failed(let p, let reason) = out.first else { Issue.record("expected failed, got \(out)"); return }
+        #expect(p == original.path(percentEncoded: false))
+        #expect(reason.hasSuffix(" Use Put Back in Finder."))
+        #expect(shell.calls.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: helper.path(percentEncoded: false)))
+    }
+
+    @Test func restoreWithoutAdminNeverAsks() throws {
+        let s = try TestSandbox()
+        let tools = try s.directory("Library/PrivilegedHelperTools")
+        let helper = try s.file("home/.Trash/com.example.helper", bytes: 4)
+        let original = tools.appending(path: "com.example.helper")
+        let run = trashedRecord([(helper, original)])
+        let j = journal(s)
+        try j.save(run)
+        FolderMode.lock(tools)
+        defer { FolderMode.unlock(tools) }
+        let out = try j.restore(runID: run.id)
+        guard case .failed(_, let reason) = out.first else { Issue.record("expected failed, got \(out)"); return }
+        #expect(!reason.contains("Finder") && !reason.contains("password"))
+        #expect(FileManager.default.fileExists(atPath: helper.path(percentEncoded: false)))
+    }
+
+    @Test func trashedIdentityRecordsTheOwnerAndOlderJournalsStillDecode() throws {
+        let s = try TestSandbox()
+        let file = try s.file("home/.Trash/a.log")
+        #expect(TrashedIdentity.of(path: file.path(percentEncoded: false))?.owner == getuid())
+        let json = #"{"dev":1,"ino":2,"birthtime":3.5}"#
+        let old = try JSONDecoder().decode(TrashedIdentity.self, from: Data(json.utf8))
+        #expect(old == TrashedIdentity(dev: 1, ino: 2, birthtime: 3.5))
+        #expect(old.owner == nil)
+        let encoded = try JSONEncoder().encode(TrashedIdentity(dev: 1, ino: 2, birthtime: 3.5, owner: 0))
+        #expect(try JSONDecoder().decode(TrashedIdentity.self, from: encoded).owner == 0)
+    }
+}

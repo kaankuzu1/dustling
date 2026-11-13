@@ -192,6 +192,33 @@ public struct RunJournal: Sendable {
         return "Dustling can't take it out of the Trash (\(shown)) without Full Disk Access"
     }
 
+    /// Why an item stayed in the Trash when the password box was closed.
+    public static let putBackNeedsPasswordReason = "Put back needs your password"
+
+    /// Added to the reason when the password can't put an item back because its record is older
+    /// than Put back with the password (it has no owner).
+    public static let putBackInFinderNote = "Use Put Back in Finder."
+
+    /// `reason`, then `note` as its own sentence.
+    static func withNote(_ reason: String, _ note: String) -> String {
+        let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return note }
+        return trimmed + (trimmed.hasSuffix(".") ? " " : ". ") + note
+    }
+
+    /// Whether only the password can put the item back: the move failed for lack of permission and
+    /// the destination folder exists but isn't writable, or the item is a folder Dustling's user
+    /// can't write (moving it to another folder changes its `..`).
+    private static func needsPassword(_ error: Error, trashed: String, folder: URL, folderWritable: Bool) -> Bool {
+        guard isPermissionError(error) else { return false }
+        var info = stat()
+        guard stat(folder.path(percentEncoded: false), &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return false }
+        if !folderWritable { return true }
+        let item = AdminPath.trimmingTrailingSlashes(trashed)
+        guard lstat(item, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return false }
+        return access(item, W_OK) != 0
+    }
+
     private static func isPermissionError(_ error: Error) -> Bool {
         let ns = error as NSError
         if ns.domain == NSCocoaErrorDomain,
@@ -205,7 +232,18 @@ public struct RunJournal: Sendable {
     /// the item that was trashed is ever moved: if something else now sits at its Trash path, the
     /// entry is `.missingFromTrash` and permanently gone. Throws `.notRestorable` when nothing in the
     /// run can be put back.
-    public func restore(runID: UUID, paths: Set<String>? = nil) throws -> [RestoreOutcome] {
+    ///
+    /// With `admin` (pass one only when Dustling has Full Disk Access), an entry whose move back
+    /// failed for lack of permission into a folder that exists but isn't writable, or that is a
+    /// folder the user can't write, goes back with the Mac password: all such entries in one script
+    /// (`AdminMover.restorePrompt`), each only if the item in the Trash is still the recorded one,
+    /// owner included. Put back: `.restored`. The password box closed: `.failed` with
+    /// `putBackNeedsPasswordReason`. The name taken meanwhile: `.conflict`; the item gone:
+    /// `.missingFromTrash`; otherwise `.failed` with the script's reason. An entry recorded without
+    /// an owner (older records) isn't sent: it fails with the move's reason and
+    /// `putBackInFinderNote`. One whose folders Dustling can't open fails with the move's reason.
+    /// The journal is saved once after the password step.
+    public func restore(runID: UUID, paths: Set<String>? = nil, admin: AdminMover? = nil) throws -> [RestoreOutcome] {
         guard var run = try all().first(where: { $0.id == runID }) else {
             throw RunJournalError.runNotFound(runID)
         }
@@ -217,6 +255,8 @@ public struct RunJournal: Sendable {
         let fm = FileManager.default
         var results: [RestoreOutcome] = []
         var unsaved = false
+        /// Entries for the password step: their entry, their slot in `results`, and the step.
+        var withPassword: [(entry: Int, result: Int, step: AdminStep)] = []
         for index in run.entries.indices {
             let entry = run.entries[index]
             guard !entry.restored, case .movedToTrash(let trashed) = entry.outcome else { continue }
@@ -245,9 +285,24 @@ public struct RunJournal: Sendable {
                 try fm.createDirectory(at: original.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fm.moveItem(at: URL(fileURLWithPath: trashed), to: original)
             } catch {
+                let folder = original.deletingLastPathComponent()
+                let folderWritable = fm.isWritableFile(atPath: folder.path)
+                if admin != nil, Self.needsPassword(error, trashed: trashed, folder: folder, folderWritable: folderWritable) {
+                    // Not Full Disk Access (it's on when there is `admin`): the folder or the item itself.
+                    let reason = Self.restoreFailureReason(error, trashedPath: trashed, destinationWritable: false)
+                    if let expected = entry.trashedIdentity?.itemIdentity {
+                        let step = AdminStep(
+                            op: .move(from: URL(fileURLWithPath: trashed), to: original, bootOutDaemon: false),
+                            expectedSource: expected)
+                        withPassword.append((index, results.count, step))
+                        results.append(.failed(entry.originalPath, reason: reason))   // until the password step
+                    } else {
+                        results.append(.failed(entry.originalPath, reason: Self.withNote(reason, Self.putBackInFinderNote)))
+                    }
+                    continue
+                }
                 results.append(.failed(entry.originalPath, reason: Self.restoreFailureReason(
-                    error, trashedPath: trashed,
-                    destinationWritable: fm.isWritableFile(atPath: original.deletingLastPathComponent().path))))
+                    error, trashedPath: trashed, destinationWritable: folderWritable)))
                 continue
             }
             run.entries[index].restored = true
@@ -258,6 +313,28 @@ public struct RunJournal: Sendable {
                 throw RunJournalError.saveFailed(outcomes: results, underlying: error)
             }
             unsaved = false
+        }
+        if let admin, !withPassword.isEmpty {
+            let outcomes = admin.performOpenable(withPassword.map(\.step), prompt: AdminMover.restorePrompt)
+            for (item, outcome) in zip(withPassword, outcomes) {
+                let path = run.entries[item.entry].originalPath
+                switch outcome {
+                case nil:
+                    break   // Dustling can't open a folder the move needs: the move's own failure stands.
+                case .done?:
+                    run.entries[item.entry].restored = true
+                    results[item.result] = .restored(path)
+                    unsaved = true
+                case .cancelled?:
+                    results[item.result] = .failed(path, reason: Self.putBackNeedsPasswordReason)
+                case .notDone(let reason)?:
+                    switch reason {
+                    case AdminScript.existsReason: results[item.result] = .conflict(path)
+                    case AdminScript.goneReason: results[item.result] = .missingFromTrash(path)
+                    default: results[item.result] = .failed(path, reason: reason)
+                    }
+                }
+            }
         }
         let restorable = Self.hasRestorableEntries(run)
         if restorable != run.restorable || unsaved {

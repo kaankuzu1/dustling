@@ -26,6 +26,8 @@ public struct TrashContents: Sendable {
 
 /// Sizes the Trash and empties it. Emptying is the one permanent delete in Dustling; callers must
 /// confirm with the user first. Every child is reported as `.deleted`, `.needsAdmin` (belongs to another account) or `.failed`.
+/// With an `AdminMover`, what belongs to another account is deleted with the Mac password, once per
+/// Empty Trash.
 public struct TrashInspector: Sendable {
     private let environment: SystemEnvironment
     private let journal: RunJournal
@@ -34,19 +36,22 @@ public struct TrashInspector: Sendable {
     private let inspect: @Sendable (URL) -> Kind
     private let includeExternalVolumes: Bool
     private let blocker: @Sendable (URL, uid_t) -> TrashBlocker?
+    private let admin: AdminMover?
 
     static let noAccessReason = "no access, grant Full Disk Access"
     static let symlinkReason = "trash location is a symbolic link, not emptied"
 
-    /// `includeExternalVolumes: false` limits sizing and emptying to `~/.Trash`.
+    /// `includeExternalVolumes: false` limits sizing and emptying to `~/.Trash`. `admin`: pass one
+    /// only when Dustling has Full Disk Access; without it, what belongs to another account stays
+    /// `.needsAdmin` and nothing asks for the password.
     public init(
         environment: SystemEnvironment, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer,
-        includeExternalVolumes: Bool = true
+        includeExternalVolumes: Bool = true, admin: AdminMover? = nil
     ) {
         self.init(
             environment: environment, journal: journal, logger: logger, sizer: sizer,
             includeExternalVolumes: includeExternalVolumes, inspect: Self.lstatKind,
-            blocker: { TrashUnlocker.blocker(of: $0, userID: $1) })
+            blocker: { TrashUnlocker.blocker(of: $0, userID: $1) }, admin: admin)
     }
 
     /// Test seam: replaces the `lstat` classification so error branches can be exercised.
@@ -54,8 +59,10 @@ public struct TrashInspector: Sendable {
         environment: SystemEnvironment, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer,
         includeExternalVolumes: Bool = true,
         inspect: @escaping @Sendable (URL) -> Kind,
-        blocker: @escaping @Sendable (URL, uid_t) -> TrashBlocker? = { TrashUnlocker.blocker(of: $0, userID: $1) }
+        blocker: @escaping @Sendable (URL, uid_t) -> TrashBlocker? = { TrashUnlocker.blocker(of: $0, userID: $1) },
+        admin: AdminMover? = nil
     ) {
+        self.admin = admin
         self.blocker = blocker
         self.includeExternalVolumes = includeExternalVolumes
         self.inspect = inspect
@@ -122,10 +129,12 @@ public struct TrashInspector: Sendable {
     }
 
     /// Permanently deletes everything in the Trash. Journal/log failures are appended to the
-    /// returned record as `<history>` / `<log>` entries.
+    /// returned record as `<history>` / `<log>` entries. With `admin`, the children that belong to
+    /// another account (`.needsAdmin`) are then deleted in one password step (`deleteWithPassword`).
     public func emptyTrash() -> RunRecord {
         let startedAt = Date()
         var entries: [JournalEntry] = []
+        var system: [SystemChild] = []
 
         for item in discover() {
             switch item {
@@ -144,12 +153,19 @@ public struct TrashInspector: Sendable {
                         let bytes = sizer.measure(child).bytes
                         let outcome: DeletionOutcome
                         outcome = remove(child)
+                        if outcome == .needsAdmin, admin != nil {
+                            // Who it is now, after the failed delete: root deletes this very item or nothing.
+                            system.append(SystemChild(
+                                entry: entries.count, location: location, name: child.lastPathComponent,
+                                identity: ItemIdentity.of(child)))
+                        }
                         entries.append(JournalEntry(
                             originalPath: child.path, bytes: bytes, outcome: outcome))
                     }
                 }
             }
         }
+        deleteWithPassword(system, into: &entries)
 
         var record = RunRecord(startedAt: startedAt, kind: .emptyTrash, entries: entries, restorable: false)
 
@@ -170,6 +186,44 @@ public struct TrashInspector: Sendable {
             record.entries.append(Self.marker("<history>", error))
         }
         return record
+    }
+
+    /// A child of a Trash location that belongs to another account: `entries[entry]` is its
+    /// `.needsAdmin` entry, `name` its name in `location`, `identity` the item seen after the
+    /// failed delete.
+    struct SystemChild: Sendable {
+        let entry: Int
+        let location: URL
+        let name: String
+        let identity: ItemIdentity?
+    }
+
+    /// Deletes `children` with the Mac password, all in one script (`AdminMover.deletePrompt`), and
+    /// writes what happened into their entries. Only `<location>/<name>` of a Trash location this
+    /// inspector finds now (looked up again, so every folder on the way is still a real directory)
+    /// is ever in the script, and only the item seen after the failed delete (`identity`, the step's
+    /// `expectedSource`). Any other child, one whose identity couldn't be read, and one in a folder
+    /// Dustling can't open stays `.needsAdmin`. Deleted: `.deleted`; the password box closed:
+    /// `.needsAdmin`; otherwise `.failed` with the script's reason. Without `admin` nothing changes.
+    func deleteWithPassword(_ children: [SystemChild], into entries: inout [JournalEntry]) {
+        guard let admin, !children.isEmpty else { return }
+        func key(_ url: URL) -> String { AdminPath.trimmingTrailingSlashes(url.path(percentEncoded: false)) }
+        let locations = Set(trashLocations().map(key))
+        let sent = children.filter { child in
+            entries.indices.contains(child.entry) && child.identity != nil && locations.contains(key(child.location))
+                && !child.name.isEmpty && !child.name.contains("/") && child.name != "." && child.name != ".."
+        }
+        let steps = sent.map {
+            AdminStep(op: .delete($0.location.appending(path: $0.name)), expectedSource: $0.identity)
+        }
+        let results = admin.performOpenable(steps, prompt: AdminMover.deletePrompt)
+        for (child, result) in zip(sent, results) {
+            switch result {
+            case .done?: entries[child.entry].outcome = .deleted
+            case .cancelled?, nil: entries[child.entry].outcome = .needsAdmin
+            case .notDone(let reason)?: entries[child.entry].outcome = .failed(reason: reason)
+            }
+        }
     }
 
     /// Deletes one Trash child. When that fails, unlocks the user's own locked items (the user
