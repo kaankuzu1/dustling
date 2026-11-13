@@ -3,8 +3,7 @@ import Foundation
 /// One thing the root script does.
 public enum AdminOp: Equatable, Sendable {
     /// Renames `from` to `to`, never overwriting. With `bootOutDaemon`, the system launch daemon whose
-    /// plist is `from` is stopped first. Only planned when one side's folder chain is root-only (see
-    /// `AdminScript`).
+    /// plist is `from` is stopped first.
     case move(from: URL, to: URL, bootOutDaemon: Bool)
     /// Deletes the item and everything inside it, never following symlinks or crossing mount points.
     case delete(URL)
@@ -34,85 +33,97 @@ public enum AdminStepResult: Equatable, Sendable {
     case cancelled
 }
 
+/// Where planning looks and what it trusts. The defaults are the real system; tests point the
+/// bridge at a sandbox folder and the owner at themselves (they can't make root-owned folders).
+struct AdminPlanning: Sendable {
+    /// The folder each batch's bridge is made in. `/Library`: root-only, on the data volume.
+    var bridgeParent = "/Library"
+    /// The owner the bridge must have: root, who runs the script.
+    var bridgeOwner: uid_t = 0
+    /// Whether a folder's whole chain is root-only (`RootOnlyChain`). Required of the bridge's
+    /// parent, and of the plist's folder for `bootOutDaemon` (launchctl reads the plist by path).
+    var rootOnlyChain: @Sendable (String) -> Bool = { RootOnlyChain.contains($0) }
+    /// Whether Dustling's user can write a folder; a move into one they can't (Put back into a
+    /// system folder) needs `expectedSource`.
+    var userCanWrite: @Sendable (String) -> Bool = { access($0, W_OK) == 0 }
+}
+
 /// Builds the one POSIX sh script that does every step of a user action as root, and reads back
 /// what happened. The script prints exactly one line per step, `R<TAB><index><TAB><status>`,
 /// with status `ok`, `gone`, `skip`, `exists`, `err` or `unsafe`.
 ///
-/// The rule everything follows: as root, a path is only ever resolved by name through folders
-/// whose whole chain, from `/` down, is root-only — folders Dustling's user can't add, rename or
-/// remove entries in, nor change the permissions or owner of (`RootOnlyChain`, checked when the
-/// script is made, as the user). Any other folder is only entered (`cd -P <path>`), and what that
-/// lands in must be the very directory planning saw (`stat -f '%d:%i:%u' .`: volume, inode,
-/// owner); from there the script only names `.`, `..` and single entries (`./name`).
+/// Every step goes between a pinned folder and a root-only bridge on the same volume:
+/// - The bridge: once per script, root makes `/Library/.dustling-XXXXXXXX` with `mktemp -d`
+///   (`umask 077`), removes any inherited ACL (`chmod -N`) and requires a real directory, not a
+///   link, owned by root, mode 700, empty, on the volume planning saw. Otherwise every step is
+///   `err`. Planning requires `/Library`'s whole chain to be root-only. Each step gets its own
+///   subfolder `<bridge>/<index>` (`mkdir -m 700`). At the end the bridge is removed if it is empty;
+///   one that still holds something is left alone, never `rm -rf`ed.
+/// - A folder is pinned: `cd -P <folder>`, then `stat -f '%d:%i:%u' .` must be the identity
+///   planning saw (volume, inode, owner). From a pinned folder the script names only `.` and
+///   `./<name>`.
+/// - Out of a folder: pin it, `mv -n -h -- ./<name> <bridge>/<index>/`. In the bridge the item must
+///   have the identity planning recorded for it and, when given, `expectedSource`. Otherwise it is
+///   given back: the folder is pinned again and `mv -n -h -- <bridge>/<index>/<name> .`; if that
+///   doesn't happen (the name was taken again), it stays in the bridge. Either way the step is
+///   `err`.
+/// - Into a folder: inside the bridge the item gets its final name ("name 2"); the destination is
+///   pinned and `mv -n -h -- <bridge>/<index>/<final> .`; `ok` only if `./<final>` then has the
+///   item's identity. If it couldn't be published (the name was taken in the meantime, or the
+///   destination changed) it is given back to the folder it came from as above, and the step is
+///   `err`.
+/// - A move (to the Trash, or Put back) is out of the source folder and into the destination, with
+///   the destination's name checked free first (`exists`). A delete (Empty Trash) is out of the
+///   folder, then `rm -rfx` on the verified item inside the bridge (never following links, never
+///   crossing mount points). `bootOutDaemon` stops the daemon (`launchctl bootout system <plist>`)
+///   after the destination check and before the item is taken, and only if the plist is still the
+///   planned item, a regular file and not a link.
 ///
-/// - Quoting: each step is one call line. Paths and names are single-quoted with `'` → `'\''`, done
+/// Planning (when the script is made, as the user) reads each folder a step touches with lstat
+/// (a real directory; its identity is recorded) and the item itself (its identity, or that it is
+/// missing). It refuses a step as `unsafe` ("Dustling can't safely move this with your password.
+/// Move it to the Trash in Finder.") when the item or a folder is on another volume than the bridge
+/// (or no bridge can be made), a folder is not a real directory, `bootOutDaemon` is asked for a
+/// plist whose folder chain isn't root-only, or a move goes into a folder the user can't write
+/// without `expectedSource`. A move whose item (or source folder) is missing reports `gone`; a
+/// delete whose item is missing reports `ok` if it is still missing (and `err` if something
+/// appeared). An `expectedSource` that isn't the item planning saw is `err`.
+///
+/// What this guarantees, against a program running as Dustling's user (even with Full Disk Access)
+/// that renames, replaces or mounts things in any folder the user can write, at any moment:
+/// - The only paths root names through folders are the bridge's (`/Library` is root-only and the
+///   bridge is root's own 700 folder), the plist path for `launchctl bootout` (only through a
+///   root-only chain), and the folders it pins, each followed by the identity check before
+///   anything is done in it. Everything else is `.` or `./<name>` of a pinned folder. Paths are
+///   also read (`stat`, existence tests), which changes nothing.
+/// - Out of a folder root takes only `./<name>` of the very folder planning saw. Into a folder it
+///   puts only an item that sat in its private bridge folder and had the planned identity there:
+///   the requested item, at its destination, or an item it took from that same folder a moment
+///   before, given back. It deletes only the planned item, inside the bridge.
+/// - Such a program can make a step fail (`err`). It can make the requested item end up in a
+///   folder it can write other than the one asked for (by moving the pinned destination folder, or
+///   renaming the item once published). An item swapped in that can't be given back stays in the
+///   bridge, unpublished, and the step is `err`.
+///
+/// What it doesn't:
+/// - The plan is what was there at planning time. An item swapped before planning is what gets
+///   planned; Put back's `expectedSource` (from the journal) covers that.
+/// - Identities compare the item itself, not what is inside a folder item. A program holding an
+///   open descriptor on a folder inside a user-owned item can still add or remove entries in it
+///   while it sits in the bridge. It can only add something it could move there anyway (moving a
+///   folder between folders takes write permission on that folder, so never a root-owned one), and
+///   on Empty Trash that is then deleted with the item.
+/// - A batch interrupted halfway (the Mac shuts down) leaves its hidden bridge in `/Library`.
+///
+/// Quoting and input checks:
+/// - Each step is one call line. Paths and names are single-quoted with `'` → `'\''`, done
 ///   on unicode scalars (a `'` followed by a combining mark is one Swift Character, so
 ///   Character-based replacing would miss it). Inside the functions every value is used
 ///   double-quoted, so the shell never expands, splits or globs anything from a name. Tools have
 ///   absolute paths and get `--` (except `chmod -N`, which takes `--` for a file name; it only
-///   gets `.` or an absolute path); nothing is evaluated; paths never appear in comments or output.
-/// - Planning (when the script is made) reads each folder a step touches with lstat: it must be a
-///   real directory (its identity is recorded) and its chain is checked. A move runs only if
-///   both folders are on one volume (a rename never turns into a copy) and one side is root-only:
-///   - Out of a root-only folder (an item going to the Trash): `move_out_`, below.
-///   - Into a root-only folder (Put back): `move_in_`, below. Unless the source folder is
-///     root-only too, the step must carry `expectedSource`, or it is refused (`err`).
-///   - Neither (a root-owned item in `~/Library`, `/Library/Caches` (sticky but anyone can add to
-///     it), or `/Applications` for an admin; a Put back into such a folder): refused as `unsafe`
-///     ("Dustling can't safely move this with your password. Move it to the Trash in Finder.").
-///     So is `bootOutDaemon` unless the plist's folder chain is root-only. Nothing is ever chowned.
-/// - `move_out_`: the source folder must still be the planned one (by its root-only path) and the
-///   item must be on its volume and, when given, be `expectedSource`. The destination folder is
-///   pinned and `./<new name>` must not exist. Root makes `./.dustling-<token>-<index>` there with
-///   `mkdir -m 700`, enters it with `cd -P` and requires it to be what `mkdir` made: not a link, a
-///   real directory owned by root, on the same volume, whose `..` is the pinned destination; it
-///   removes any ACL the folder inherited (`chmod -N .`; a user can put inheritable entries on a
-///   folder they own) and then requires mode 700, owner root and no entries. From then on only
-///   root can change what is inside it, and it can't be moved to another folder (that takes write
-///   permission on the folder itself). A daemon is booted out only now (and only a regular file,
-///   not a link). Then `mv -n -h -- <source folder>/<name> .`; the staged `./<name>` must have the
-///   identity read before; it is renamed inside if needed and published with `mv -n -h --
-///   ./<new name> ..`; `ok` only if `../<new name>` has that identity and the staging folder was
-///   removed from the re-pinned destination. If publishing fails, the item goes back to its root-only
-///   source path. A staged item that is not the one read (only root could cause that) stays
-///   parked in the staging folder. If nothing was staged, the empty staging folder is removed.
-/// - `move_in_`: the source folder is pinned and the item named `./<name>`; it must be on the
-///   folder's volume and, when given, be `expectedSource`. The destination folder (by its
-///   root-only path) must be the planned one and `<destination>/<new name>` must not exist. Root
-///   makes the staging folder inside the destination (`mkdir -m 700`, `chmod -N`, then mode 700,
-///   owner root, no entries), boots out a daemon if asked, then `mv -n -h -- ./<name>
-///   <destination>/<staging>/<name>`. The staged item must be the one read (so `expectedSource`);
-///   only then is it renamed inside the staging folder if needed and published with `mv -n -h --
-///   <staging>/<new name> <destination>`. Anything else is never published: it is moved back into
-///   the pinned source folder under its name; if that name was taken again it is deleted when
-///   Dustling's user owns it (only they could have made it), or else left in the locked staging
-///   folder.
-/// - `delete_`: the folder is pinned; `./<name>`, when there, must be on the folder's volume (not a
-///   mount point) and, when given, be `expectedSource`; then `rm -rfx -- ./<name>` (never follows
-///   links, never crosses mount points); `ok` iff it is gone.
-///
-/// What this guarantees, against a program running as Dustling's user (even with Full Disk
-/// Access) that renames, replaces or mounts things in any folder the user can write, at any
-/// moment: root names a path through such a folder only to enter it with `cd -P` (then checked by
-/// identity) or to read (`stat`, an existence test); every change it makes is to an entry of a
-/// pinned folder, of the staging folder it is in, of that folder's `..`, or of a root-only folder
-/// named by its path. Into a root-only folder root puts only the item read at the
-/// source (on Put back, the recorded `expectedSource`); the only other things root puts into a
-/// root-only folder are an item moving back to the root-only folder it came from and, on Put back,
-/// a swapped-in item that is not the user's own and couldn't be moved back, which stays unpublished
-/// in the hidden 700 staging folder. Out of a root-only folder root moves only the requested
-/// entry. Such a program can make a step fail (`err`), or make the requested item end up in a
-/// folder the user can write other than the one asked for (it can move the Trash, or rename the
-/// published item away).
-///
-/// What it doesn't: between `delete_`'s identity check and `rm`, `./<name>` can be swapped for
-/// something else, which is then deleted instead: something already in that folder, or something
-/// on the same volume the user could move there (moving a folder out of another folder takes
-/// write permission on it, so never a root-owned one); `rm` stays inside it. A staging folder the
-/// program renamed is not found again: the step reports `err` and that (then empty) folder stays
-/// where it was put. The chains are checked once, at planning.
+///   gets an absolute path); nothing is evaluated; paths never appear in comments or output.
 /// - A path that is not absolute, is `/`, has a `.` or `..` component or a NUL byte (checked on
-///   UTF-8 bytes), or whose folder is not a real directory, never reaches a tool: `err`.
+///   UTF-8 bytes) never reaches a tool: `err`.
 public enum AdminScript {
     public static let goneReason = "already gone"
     public static let skippedReason = "kept because the app itself was not removed"
@@ -121,81 +132,104 @@ public enum AdminScript {
     public static let unsafeReason = "Dustling can't safely move this with your password. Move it to the Trash in Finder."
     public static let noResultReason = "no result"
 
-    /// Reads each step's folders now (planning time) and builds the script.
+    /// Reads each step's folders and item now (planning time) and builds the script.
     public static func make(_ steps: [AdminStep]) -> String {
-        make(steps, rootOnly: RootOnlyChain.contains)
+        make(steps, planning: AdminPlanning())
     }
 
-    /// `rootOnly` says whether a folder's whole chain is root-only. Tests choose it: they can't
-    /// make root-owned folders.
-    static func make(_ steps: [AdminStep], rootOnly: (String) -> Bool) -> String {
-        make(steps, plans: steps.map { plan(of: $0, rootOnly: rootOnly) })
+    static func make(_ steps: [AdminStep], planning: AdminPlanning) -> String {
+        make(steps, plans: steps.map { plan(of: $0, planning: planning) }, bridge: PlannedBridge(planning))
     }
 
     /// What planning learned about a folder a step acts in.
     struct PlannedFolder: Equatable {
         let identity: ItemIdentity
-        /// Whether the folder's whole chain is root-only (`RootOnlyChain`), so root may name paths
-        /// through it.
-        let rootOnly: Bool
+        /// Whether Dustling's user can write the folder.
+        let userCanWrite: Bool
+        /// Whether the folder's whole chain is root-only, so root may name a path through it.
+        let rootOnlyChain: Bool
 
-        init(identity: ItemIdentity, rootOnly: Bool) {
+        init(identity: ItemIdentity, userCanWrite: Bool, rootOnlyChain: Bool) {
             self.identity = identity
-            self.rootOnly = rootOnly
+            self.userCanWrite = userCanWrite
+            self.rootOnlyChain = rootOnlyChain
         }
 
         /// The folder at `path` if it is a real directory right now (lstat).
-        init?(path: String, rootOnly: (String) -> Bool) {
+        init?(path: String, planning: AdminPlanning) {
             guard let identity = ItemIdentity.of(path: path, directoryOnly: true) else { return nil }
-            self.init(identity: identity, rootOnly: rootOnly(path))
+            self.init(identity: identity, userCanWrite: planning.userCanWrite(path),
+                      rootOnlyChain: planning.rootOnlyChain(path))
         }
     }
 
-    /// The folders a step acts in: a move's destination and source folders, a delete's item folder.
-    /// `source` is nil for a delete, or for a move whose source folder no longer exists
-    /// (`sourceGone`: the item is already gone).
+    /// Where the script makes its bridge, and what it must find there.
+    struct PlannedBridge: Equatable {
+        let parent: String
+        let device: UInt64
+        let owner: uid_t
+
+        init(parent: String, device: UInt64, owner: uid_t) {
+            self.parent = parent
+            self.device = device
+            self.owner = owner
+        }
+
+        /// nil when the parent is not a real directory with a root-only chain.
+        init?(_ planning: AdminPlanning) {
+            guard let parent = ItemIdentity.of(path: planning.bridgeParent, directoryOnly: true),
+                  planning.rootOnlyChain(planning.bridgeParent)
+            else { return nil }
+            self.init(parent: planning.bridgeParent, device: parent.device, owner: planning.bridgeOwner)
+        }
+    }
+
+    /// What planning learned for a step: a move's destination (`folder`) and source folders, or a
+    /// delete's item folder (`folder`); and the item itself (nil: nothing there). `source` is nil
+    /// for a delete, or for a move whose source folder no longer exists (`sourceGone`).
     struct StepPlan: Equatable {
         let folder: PlannedFolder
         let source: PlannedFolder?
+        let item: ItemIdentity?
         var sourceGone = false
     }
 
-    static func plan(of step: AdminStep, rootOnly: (String) -> Bool = RootOnlyChain.contains) -> StepPlan? {
+    static func plan(of step: AdminStep, planning: AdminPlanning) -> StepPlan? {
         switch step.op {
         case .move(let from, let to, _):
             guard let source = AdminPath(from), let destination = AdminPath(to),
-                  let folder = PlannedFolder(path: destination.folder, rootOnly: rootOnly)
+                  let folder = PlannedFolder(path: destination.folder, planning: planning)
             else { return nil }
-            if let sourceFolder = PlannedFolder(path: source.folder, rootOnly: rootOnly) {
-                return StepPlan(folder: folder, source: sourceFolder)
+            let item = ItemIdentity.of(path: source.full)
+            if let sourceFolder = PlannedFolder(path: source.folder, planning: planning) {
+                return StepPlan(folder: folder, source: sourceFolder, item: item)
             }
             var info = stat()
             let missing = lstat(source.folder, &info) != 0 && errno == ENOENT
-            return missing ? StepPlan(folder: folder, source: nil, sourceGone: true) : nil
+            return missing ? StepPlan(folder: folder, source: nil, item: nil, sourceGone: true) : nil
         case .delete(let url):
-            guard let item = AdminPath(url), let folder = PlannedFolder(path: item.folder, rootOnly: rootOnly)
+            guard let item = AdminPath(url), let folder = PlannedFolder(path: item.folder, planning: planning)
             else { return nil }
-            return StepPlan(folder: folder, source: nil)
+            return StepPlan(folder: folder, source: nil, item: ItemIdentity.of(path: item.full))
         }
     }
 
-    /// `plans[i]` is what planning found for step i (nil: a folder is not a real directory).
-    /// `user` is the account Dustling runs as: only its own items may be deleted when staged by
-    /// mistake. `token` makes the staging folders' names unique to this script.
-    static func make(
-        _ steps: [AdminStep], plans: [StepPlan?], user: uid_t = getuid(), token: String = newToken()
-    ) -> String {
-        var lines = [prelude, "me_=\(user)", "tok_=\(token)"]
-        for (index, step) in steps.enumerated() {
-            lines.append(call(for: step, at: index, plan: index < plans.count ? plans[index] : nil))
+    /// `plans[i]` is what planning found for step i (nil: a folder is not a real directory);
+    /// `bridge` where the bridge goes (nil: it can't be made).
+    static func make(_ steps: [AdminStep], plans: [StepPlan?], bridge: PlannedBridge?) -> String {
+        let calls = steps.enumerated().map { index, step in
+            call(for: step, at: index, plan: index < plans.count ? plans[index] : nil, bridge: bridge)
         }
+        var lines = [prelude, "own_=\(bridge?.owner ?? 0)"]
+        let needsBridge = calls.contains { $0.hasPrefix("move_ ") || $0.hasPrefix("delete_ ") }
+        if needsBridge, let bridge {
+            lines.append("bridge_ \(quote(bridge.parent)) \(bridge.device)")
+        }
+        lines += calls
+        if needsBridge { lines.append("end_") }
         // A non-zero exit would make osascript throw away everything the script printed.
         lines.append("exit 0")
         return lines.joined(separator: "\n") + "\n"
-    }
-
-    static func newToken() -> String {
-        String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))
     }
 
     /// One result per step, in order. A step without a line (or with an unreadable one) is
@@ -227,19 +261,22 @@ public enum AdminScript {
     }
 
     /// The functions every step calls. Arguments:
-    /// - `move_out_` / `move_in_ <index> <head|-> <bootout 0|1> <expected identity|-> <same name 0|1>
-    ///   <source folder> <source folder identity> <source name> <destination folder>
+    /// - `bridge_ <parent> <device>` (once), `end_` (once, last)
+    /// - `move_ <index> <head|-> <bootout 0|1> <expected identity|-> <same name 0|1> <source folder>
+    ///   <source folder identity> <name> <item identity> <destination folder>
     ///   <destination folder identity> <new name>`
-    /// - `delete_ <index> <head|-> <expected identity|-> <folder> <folder identity> <name>`
-    /// `me_` (Dustling's user) and `tok_` (the staging token) are set after the functions; `run_` is
-    /// the user running the script (root, or the current user in tests), who owns what it makes.
+    /// - `delete_ <index> <head|-> <expected identity|-> <folder> <folder identity> <name>
+    ///   <item identity|- when missing>`
+    /// `own_`, the owner the bridge must have, is set after the functions.
     static let prelude = #"""
         set +e
+        umask 077
         PATH=/usr/bin:/bin:/usr/sbin:/sbin
         export PATH
         unset CDPATH
         ok_=' '
-        run_=$(/usr/bin/id -u)
+        br_=
+        bok_=0
         id_() { /usr/bin/stat -f '%d:%i:%u' -- "$1" 2>/dev/null; }
         at_() { [ -e "$1" ] || [ -L "$1" ]; }
         report_() {
@@ -253,107 +290,77 @@ public enum AdminScript {
         }
         pin_() { cd -P -- "$1" 2>/dev/null && [ "$(id_ .)" = "$2" ]; }
         empty_() { l_=$(/bin/ls -A -- "$1" 2>/dev/null) && [ -z "$l_" ]; }
-        dev_() { [ -n "$1" ] && [ "${1%%:*}" = "${2%%:*}" ] && [ "${2%%:*}" = "${3%%:*}" ]; }
-        boot_() {
-          if [ "$1" = 1 ] && [ -f "$2" ] && ! [ -L "$2" ]; then /bin/launchctl bootout system "$2" >/dev/null 2>&1; fi
-        }
         gone_() { if after_ "$2"; then report_ "$1" gone; else report_ "$1" skip; fi; }
-        args_() {
-          i_="$1"; h_="$2"; b_="$3"; e_="$4"; same_="$5"; sd_="$6"; sid_="$7"; sn_="$8"
-          dd_="$9"; did_="${10}"; dn_="${11}"; st_=".dustling-$tok_-$1"
-        }
-        enter_() {
-          stid_=$(id_ "./$st_")
-          if [ -z "$stid_" ] || [ -L "./$st_" ] || ! pin_ "./$st_" "$stid_"; then return 1; fi
-          if [ "${stid_##*:}" != "$run_" ] || [ "${stid_%%:*}" != "${1%%:*}" ] || [ "$(id_ ..)" != "$1" ]; then
-            return 1
+        bridge_() {
+          br_=$(/usr/bin/mktemp -d "$1/.dustling-XXXXXXXX" 2>/dev/null) || br_=
+          if [ -n "$br_" ] && ! [ -L "$br_" ] && [ -d "$br_" ] && /bin/chmod -N "$br_" 2>/dev/null \
+            && [ "$(/usr/bin/stat -f '%d:%u:%Lp' -- "$br_")" = "$2:$own_:700" ] && empty_ "$br_"; then
+            bok_=1
           fi
-          /bin/chmod -N . 2>/dev/null || return 1
-          [ "$(/usr/bin/stat -f '%Lp:%u' .)" = "700:$run_" ] && empty_ .
         }
-        leave_() {
-          if [ "$(id_ .)" != "$1" ]; then pin_ .. "$1" || return 1; fi
-          /bin/rmdir -- "./$st_" 2>/dev/null
+        end_() { if [ -n "$br_" ]; then /bin/rmdir -- "$br_" 2>/dev/null; fi; }
+        fin_() {
+          if [ "$bok_" = 1 ]; then /bin/rmdir -- "$k_" 2>/dev/null; fi
+          report_ "$i_" "$1"
         }
-        move_out_() {
-          args_ "$@"; sp_="$sd_/$sn_"
-          if ! after_ "$h_"; then report_ "$i_" skip; return; fi
-          if ! at_ "$sd_"; then report_ "$i_" gone; return; fi
-          if [ "$(id_ "$sd_")" != "$sid_" ]; then report_ "$i_" err; return; fi
-          if ! at_ "$sp_"; then report_ "$i_" gone; return; fi
-          was_=$(id_ "$sp_")
-          if ! dev_ "$was_" "$sid_" "$did_"; then report_ "$i_" err; return; fi
-          if [ "$e_" != - ] && [ "$was_" != "$e_" ]; then report_ "$i_" err; return; fi
-          if ! pin_ "$dd_" "$did_"; then report_ "$i_" err; return; fi
-          if at_ "./$dn_"; then report_ "$i_" exists; return; fi
-          if ! /bin/mkdir -m 700 -- "./$st_" 2>/dev/null; then report_ "$i_" err; return; fi
-          if ! enter_ "$did_"; then leave_ "$did_"; report_ "$i_" err; return; fi
-          boot_ "$b_" "$sp_"
-          /bin/mv -n -h -- "$sp_" . >/dev/null 2>&1
-          got_=$(id_ "./$sn_")
-          if [ -z "$got_" ]; then leave_ "$did_"; report_ "$i_" err; return; fi
-          if [ "$got_" != "$was_" ]; then report_ "$i_" err; return; fi
-          if [ "$same_" != 1 ]; then /bin/mv -n -h -- "./$sn_" "./$dn_" >/dev/null 2>&1; fi
-          /bin/mv -n -h -- "./$dn_" .. >/dev/null 2>&1
-          if at_ "./$dn_"; then
-            /bin/mv -n -h -- "./$dn_" "$sp_" >/dev/null 2>&1
-            if ! at_ "./$dn_"; then leave_ "$did_"; fi
-            report_ "$i_" err; return
-          fi
-          if [ "$(id_ "../$dn_")" = "$was_" ] && leave_ "$did_"; then report_ "$i_" ok; else report_ "$i_" err; fi
-        }
-        move_in_() {
-          args_ "$@"; sf_="$dd_/$st_"
-          if ! after_ "$h_"; then report_ "$i_" skip; return; fi
-          if ! pin_ "$sd_" "$sid_"; then
-            if at_ "$sd_"; then report_ "$i_" err; else report_ "$i_" gone; fi
+        back_() { if pin_ "$1" "$2"; then /bin/mv -n -h -- "$k_/$3" . >/dev/null 2>&1; fi; }
+        take_() {
+          t_=err
+          if ! pin_ "$1" "$2"; then
+            if ! at_ "$1"; then t_=gone; fi
             return
           fi
-          if ! at_ "./$sn_"; then report_ "$i_" gone; return; fi
-          was_=$(id_ "./$sn_")
-          if ! dev_ "$was_" "$sid_" "$did_"; then report_ "$i_" err; return; fi
-          if [ "$e_" != - ] && [ "$was_" != "$e_" ]; then report_ "$i_" err; return; fi
-          if [ "$(id_ "$dd_")" != "$did_" ]; then report_ "$i_" err; return; fi
-          if at_ "$dd_/$dn_"; then report_ "$i_" exists; return; fi
-          if ! /bin/mkdir -m 700 -- "$sf_" 2>/dev/null; then report_ "$i_" err; return; fi
-          if ! /bin/chmod -N "$sf_" 2>/dev/null || [ -L "$sf_" ] || ! [ -d "$sf_" ] \
-            || [ "$(/usr/bin/stat -f '%Lp:%u' -- "$sf_")" != "700:$run_" ] || ! empty_ "$sf_"; then
-            /bin/rmdir -- "$sf_" 2>/dev/null; report_ "$i_" err; return
-          fi
-          boot_ "$b_" "$sd_/$sn_"
-          /bin/mv -n -h -- "./$sn_" "$sf_/$sn_" >/dev/null 2>&1
-          got_=$(id_ "$sf_/$sn_")
-          if [ -z "$got_" ]; then /bin/rmdir -- "$sf_" 2>/dev/null; report_ "$i_" err; return; fi
-          if [ "$got_" != "$was_" ]; then
-            /bin/mv -n -h -- "$sf_/$sn_" . >/dev/null 2>&1
-            if at_ "$sf_/$sn_" && [ "${got_##*:}" = "$me_" ]; then /bin/rm -rfx -- "$sf_/$sn_" >/dev/null 2>&1; fi
-            /bin/rmdir -- "$sf_" 2>/dev/null
-            report_ "$i_" err; return
-          fi
-          if [ "$same_" != 1 ]; then /bin/mv -n -h -- "$sf_/$sn_" "$sf_/$dn_" >/dev/null 2>&1; fi
-          /bin/mv -n -h -- "$sf_/$dn_" "$dd_" >/dev/null 2>&1
-          if [ "$(id_ "$dd_/$dn_")" = "$was_" ] && ! at_ "$sf_/$dn_" && /bin/rmdir -- "$sf_" 2>/dev/null; then
-            report_ "$i_" ok
-          else
-            report_ "$i_" err
+          if ! at_ "./$3"; then t_=gone; return; fi
+          /bin/mkdir -m 700 -- "$k_" 2>/dev/null || return
+          /bin/mv -n -h -- "./$3" "$k_/" >/dev/null 2>&1
+          got_=$(id_ "$k_/$3")
+          if [ -z "$got_" ]; then return; fi
+          if [ "$got_" = "$4" ] && { [ "$5" = - ] || [ "$got_" = "$5" ]; }; then t_=ok; return; fi
+          back_ "$1" "$2" "$3"
+        }
+        boot_() {
+          if [ "$b_" = 1 ] && pin_ "$sd_" "$sid_" && [ "$(id_ "./$sn_")" = "$iid_" ] \
+            && [ -f "./$sn_" ] && ! [ -L "./$sn_" ]; then
+            /bin/launchctl bootout system "$sd_/$sn_" >/dev/null 2>&1
           fi
         }
-        delete_() {
-          if ! after_ "$2"; then report_ "$1" skip; return; fi
-          if ! pin_ "$4" "$5"; then report_ "$1" err; return; fi
-          if at_ "./$6"; then
-            is_=$(id_ "./$6")
-            if [ "${is_%%:*}" != "${5%%:*}" ] || { [ "$3" != - ] && [ "$is_" != "$3" ]; }; then
-              report_ "$1" err; return
-            fi
+        move_() {
+          i_="$1"; h_="$2"; b_="$3"; e_="$4"; same_="$5"; sd_="$6"; sid_="$7"; sn_="$8"; iid_="$9"
+          dd_="${10}"; did_="${11}"; dn_="${12}"; k_="$br_/$1"
+          if ! after_ "$h_"; then report_ "$i_" skip; return; fi
+          if [ "$bok_" != 1 ]; then report_ "$i_" err; return; fi
+          if ! pin_ "$dd_" "$did_"; then report_ "$i_" err; return; fi
+          if at_ "./$dn_"; then report_ "$i_" exists; return; fi
+          boot_
+          take_ "$sd_" "$sid_" "$sn_" "$iid_" "$e_"
+          if [ "$t_" != ok ]; then fin_ "$t_"; return; fi
+          if [ "$same_" != 1 ]; then /bin/mv -n -h -- "$k_/$sn_" "$k_/$dn_" >/dev/null 2>&1; fi
+          if pin_ "$dd_" "$did_"; then /bin/mv -n -h -- "$k_/$dn_" . >/dev/null 2>&1; fi
+          if at_ "$k_/$dn_" || at_ "$k_/$sn_"; then
+            if [ "$same_" != 1 ]; then /bin/mv -n -h -- "$k_/$dn_" "$k_/$sn_" >/dev/null 2>&1; fi
+            back_ "$sd_" "$sid_" "$sn_"
+            fin_ err; return
           fi
-          /bin/rm -rfx -- "./$6" >/dev/null 2>&1
-          if at_ "./$6"; then report_ "$1" err; else report_ "$1" ok; fi
+          if [ "$(id_ "./$dn_")" = "$iid_" ]; then fin_ ok; else fin_ err; fi
+        }
+        delete_() {
+          i_="$1"; h_="$2"; e_="$3"; k_="$br_/$1"
+          if ! after_ "$h_"; then report_ "$i_" skip; return; fi
+          if [ "$7" = - ]; then
+            if { pin_ "$4" "$5" && ! at_ "./$6"; } || ! at_ "$4"; then report_ "$i_" ok; else report_ "$i_" err; fi
+            return
+          fi
+          if [ "$bok_" != 1 ]; then report_ "$i_" err; return; fi
+          take_ "$4" "$5" "$6" "$7" "$e_"
+          if [ "$t_" = gone ]; then fin_ ok; return; fi
+          if [ "$t_" != ok ]; then fin_ err; return; fi
+          /bin/rm -rfx -- "$k_/$6" >/dev/null 2>&1
+          if at_ "$k_/$6"; then fin_ err; else fin_ ok; fi
         }
         """#
 
     /// The one line that runs this step.
-    private static func call(for step: AdminStep, at index: Int, plan: StepPlan?) -> String {
+    private static func call(for step: AdminStep, at index: Int, plan: StepPlan?, bridge: PlannedBridge?) -> String {
         var head = "-"
         if let dependsOn = step.dependsOn {
             guard (0..<index).contains(dependsOn) else { return "report_ \(index) skip" }
@@ -362,37 +369,37 @@ public enum AdminScript {
         let refused = "report_ \(index) err"
         let unsafe = "report_ \(index) unsafe"
         let expected = step.expectedSource?.stamp ?? "-"
-        guard let plan else { return refused }
         switch step.op {
         case .move(let from, let to, let bootOutDaemon):
+            guard let source = AdminPath(from), let destination = AdminPath(to) else { return refused }
+            guard let plan else { return unsafe }
             if plan.sourceGone { return "gone_ \(index) \(head)" }
-            guard let source = AdminPath(from), let destination = AdminPath(to), let sourceFolder = plan.source
-            else { return refused }
-            // A rename across volumes would make mv copy and delete instead.
-            guard sourceFolder.identity.device == plan.folder.identity.device else { return refused }
+            guard let sourceFolder = plan.source else { return unsafe }
+            guard let item = plan.item else { return "gone_ \(index) \(head)" }
+            // Every rename stays on the bridge's volume: mv never copies and deletes instead.
+            guard let bridge, [item.device, sourceFolder.identity.device, plan.folder.identity.device]
+                .allSatisfy({ $0 == bridge.device })
+            else { return unsafe }
             // launchctl reads the plist by its path: only through a root-only chain.
-            if bootOutDaemon && !sourceFolder.rootOnly { return unsafe }
-            let function: String
-            if plan.folder.rootOnly {
-                // Into a root-only folder root only puts what it can prove came from Put back,
-                // unless the source can't be swapped either.
-                if !sourceFolder.rootOnly && step.expectedSource == nil { return refused }
-                function = "move_in_"
-            } else if sourceFolder.rootOnly {
-                function = "move_out_"
-            } else {
-                return unsafe
-            }
+            if bootOutDaemon && !sourceFolder.rootOnlyChain { return unsafe }
+            // Into a folder the user can't write, only the item Put back recorded.
+            if !plan.folder.userCanWrite && step.expectedSource == nil { return unsafe }
+            if let expectedSource = step.expectedSource, expectedSource != item { return refused }
             let sameName = Array(source.name.utf8) == Array(destination.name.utf8)
-            return [function, String(index), head, bootOutDaemon ? "1" : "0", expected, sameName ? "1" : "0",
-                    quote(source.folder), sourceFolder.identity.stamp, quote(source.name),
+            return ["move_", String(index), head, bootOutDaemon ? "1" : "0", expected, sameName ? "1" : "0",
+                    quote(source.folder), sourceFolder.identity.stamp, quote(source.name), item.stamp,
                     quote(destination.folder), plan.folder.identity.stamp, quote(destination.name)]
                 .joined(separator: " ")
         case .delete(let url):
             guard let item = AdminPath(url) else { return refused }
-            return ["delete_", String(index), head, expected, quote(item.folder), plan.folder.identity.stamp,
-                    quote(item.name)]
-                .joined(separator: " ")
+            guard let plan else { return unsafe }
+            let fields = ["delete_", String(index), head, expected, quote(item.folder), plan.folder.identity.stamp,
+                          quote(item.name)]
+            guard let identity = plan.item else { return (fields + ["-"]).joined(separator: " ") }
+            guard let bridge, identity.device == bridge.device, plan.folder.identity.device == bridge.device
+            else { return unsafe }
+            if let expectedSource = step.expectedSource, expectedSource != identity { return refused }
+            return (fields + [identity.stamp]).joined(separator: " ")
         }
     }
 
@@ -415,7 +422,8 @@ public enum AdminScript {
 
 /// Whether root may resolve a path through a folder: the folder and every folder above it, from
 /// `/` down, is root-only from Dustling's user's point of view, so no program running as that user
-/// can add, rename or remove entries in any of them, or change their permissions to do so.
+/// can add, rename or remove entries in any of them, or change their permissions to do so. Used for
+/// the bridge's parent (`/Library`) and for the plist folder of a `bootOutDaemon` move.
 ///
 /// A folder is root-only when it is a real directory (lstat; a symlink anywhere in the chain, like
 /// `/tmp` or `/var`, fails), not owned by the user, not writable by others, not writable by a group

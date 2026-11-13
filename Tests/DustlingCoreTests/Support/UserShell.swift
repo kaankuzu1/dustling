@@ -29,6 +29,10 @@ final class UserShell: AdminShell, @unchecked Sendable {
         lock.lock()
         _calls.append(Call(script: script, prompt: prompt))
         lock.unlock()
+        // Only the sandbox: a test script must never even try to make its bridge in the real /Library.
+        if script.contains("\nbridge_ '/Library'") {
+            return .failed(reason: "a test script must make its bridge in its sandbox")
+        }
         do {
             try beforeRun()
             let result = try ProcessCommandRunner().run(
@@ -43,9 +47,8 @@ final class UserShell: AdminShell, @unchecked Sendable {
 }
 
 extension TestSandbox {
-    /// A planning seam for admin scripts (a test can't make root-owned folders): the sandbox's
-    /// folders outside `home` count as root-only chains, like `/Library`; the ones in `home`, like
-    /// `~/.Trash`, don't; nothing outside the sandbox does.
+    /// The sandbox's folders outside `home` count as root-only chains, like `/Library`; the ones in
+    /// `home`, like `~/.Trash`, don't; nothing outside the sandbox does.
     var rootOnlyOutsideHome: @Sendable (String) -> Bool {
         let root = self.root.path(percentEncoded: false)
         let home = environment.home.path(percentEncoded: false)
@@ -75,5 +78,24 @@ final class CannedShell: AdminShell, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         _calls.append(UserShell.Call(script: script, prompt: prompt))
         return result
+    }
+}
+
+extension TestSandbox {
+    /// Where test scripts make their bridge, instead of `/Library`.
+    var bridges: URL { root.appending(path: "bridges") }
+
+    /// Planning for admin scripts run as the user (a test can't make root-owned folders): the
+    /// bridge is made in `bridges` and must be owned by the user running the test; folder chains
+    /// outside `home` count as root-only (`rootOnlyOutsideHome`, for the bridge's parent and for
+    /// bootout); whether the user can write a folder is the real answer unless `locked` says so.
+    func adminPlanning(bridgeOwner: uid_t = getuid(), locked: @escaping @Sendable (String) -> Bool = { _ in false })
+        throws -> AdminPlanning
+    {
+        try FileManager.default.createDirectory(at: bridges, withIntermediateDirectories: true)
+        return AdminPlanning(
+            bridgeParent: bridges.path(percentEncoded: false), bridgeOwner: bridgeOwner,
+            rootOnlyChain: rootOnlyOutsideHome,
+            userCanWrite: { !locked($0) && access($0, W_OK) == 0 })
     }
 }
