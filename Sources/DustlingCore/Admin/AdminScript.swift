@@ -66,8 +66,8 @@ struct AdminPlanning: Sendable {
 
 /// Builds the one POSIX sh script that does every step of a user action as root, and reads back
 /// what happened. The script prints exactly one line per step, `R<TAB><index><TAB><status>`,
-/// with status `ok`, `gone`, `skip`, `exists`, `err`, `unsafe`, `unsafe_putback` or `held`. Before
-/// the first `held` step it prints the bridge's path once, `B<TAB><path>`.
+/// with status `ok`, `gone`, `skip`, `exists`, `err`, `unsafe`, `unsafe_putback`, `held` or
+/// `held_other`. Before the first `held` step it prints the bridge's path once, `B<TAB><path>`.
 ///
 /// Every step goes between a pinned folder and a root-only bridge on the same volume:
 /// - The bridge: once per script, root makes `/Library/.dustling-XXXXXXXX` with `mktemp -d`
@@ -79,21 +79,27 @@ struct AdminPlanning: Sendable {
 /// - A folder is pinned: `cd -P <folder>`, then `stat -f '%d:%i:%u' .` must be the identity
 ///   planning saw (volume, inode, owner). From a pinned folder the script names only `.` and
 ///   `./<name>`.
+/// - Every rename between folders is `rn_ <source> <folder>`: zsh's `zf_mv` builtin (`/bin/zsh -f`,
+///   no startup files, the module from the sealed system volume), which is rename(2) and nothing
+///   else. Across volumes it fails (EXDEV) and copies nothing; `/bin/mv` would copy with
+///   `cp -PRp` and then `rm -rf` the source, so it is used only for renames inside a step's own
+///   bridge folder. The target is always a folder operand (`.` of a pinned folder, or the step's
+///   bridge folder), never a full path: `zf_mv` then renames onto `<folder>/<name>`, refuses a
+///   directory there, and replaces a link or file there without following it.
 /// - Out of a folder: pin it; right before the rename, `./<name>` must still have the identity
 ///   planning recorded for the item (`stat -f '%d:%i:%u'`, which doesn't follow a link; a disk image
 ///   mounted there is another volume), else nothing is done (`err`). Then
-///   `mv -n -h -- ./<name> <bridge>/<index>/`. In the bridge the item must have that identity
-///   again: the inode root checked, renamed, never a copy (`/bin/mv` copies with `cp -PRp` and
-///   removes the source with `rm -rf` when rename(2) fails with EXDEV). Anything else that got
-///   there stays there for good, unpublished and never given back: `held`.
+///   `rn_ ./<name> <bridge>/<index>`. In the bridge the item must have that identity again.
+///   Anything else that got there stays there for good, unpublished and never given back:
+///   `held_other`.
 /// - Only the inode root took leaves the bridge: right before publishing or giving back, the item
-///   in the bridge must have the item's planned identity.
+///   in the bridge must have the item's planned identity, and the name must be free.
 /// - Into a folder: inside the bridge the item gets its final name ("name 2"); the destination is
-///   pinned and `mv -n -h -- <bridge>/<index>/<final> .`; `ok` only if `./<final>` then has the
-///   item's identity. If it couldn't be published (the name was taken in the meantime, or the
-///   destination changed) it is given back to the folder it came from (pinned again,
-///   `mv -n -h -- <bridge>/<index>/<name> .`), and the step is `err`; if that doesn't happen either
-///   (the name was taken there too), it stays in the bridge: `held`.
+///   pinned and `rn_ <bridge>/<index>/<final> .`; `ok` only if `./<final>` then has the item's
+///   identity. If it couldn't be published (the name was taken in the meantime, the destination
+///   changed, or the rename failed) it is given back to the folder it came from (pinned again,
+///   `rn_ <bridge>/<index>/<name> .`), and the step is `err`; if that doesn't happen either, it
+///   stays in the bridge: `held` (the planned item, untouched).
 /// - A move (to the Trash, or Put back) is out of the source folder and into the destination, with
 ///   the destination's name checked free first (`exists`). A delete (Empty Trash) is out of the
 ///   folder, then `rm -rfx` on the verified item inside the bridge (never following links, never
@@ -121,25 +127,28 @@ struct AdminPlanning: Sendable {
 ///   root-only chain), and the folders it pins, each followed by the identity check before
 ///   anything is done in it. Everything else is `.` or `./<name>` of a pinned folder. Paths are
 ///   also read (`stat`, existence tests), which changes nothing.
+/// - Root never copies and never removes anything outside its bridge: every move is a rename, and
+///   the only `rm` is of the verified item inside the bridge.
 /// - Out of a folder root takes only `./<name>` of the very folder planning saw, and only after
 ///   checking it is still the planned item. Into a folder it puts only the very inode it took and
-///   checked: the requested item at its destination, or given back to the folder it came from. A
-///   copy (of anything) never leaves the bridge. It deletes only the planned item, inside the bridge.
-/// - Such a program can make a step fail (`err`, or `held` with what root took kept in the bridge).
-///   It can make the requested item end up in a folder it can write other than the one asked for
-///   (by moving the pinned destination folder, or renaming the item once published).
+///   checked: the requested item at its destination, or given back to the folder it came from,
+///   always as `<pinned folder>/<name>`, never through a link. It deletes only the planned item,
+///   inside the bridge.
+/// - Such a program can make a step fail (`err`, or `held`/`held_other` with what root took kept
+///   in the bridge). It can make the requested item end up in a folder it can write other than the
+///   one asked for (by moving the pinned destination folder, or renaming the item once published).
 ///
 /// What it doesn't:
 /// - The plan is what was there at planning time. An item swapped before planning is what gets
 ///   planned; Put back's `expectedSource` (from the journal) covers that.
-/// - Between root's last check of `./<name>` and its rename, the entry can still change. Root then
-///   takes the other entry into the bridge, where it stays (`held`). If that entry is a mount (another
-///   volume), `/bin/mv` copies it into the bridge and then runs `rm -rf -- ./<name>` in the pinned
-///   folder, as root, on whatever is at that name by then. When publishing or giving back, a mount
-///   that appears at the target name after mv's `-n` check makes the rename fail; mv's fallback
-///   first removes the target (`rmdir`, which a mount refuses), so nothing is copied unless the
-///   mount goes away in that instant: then the item itself is copied there and the step is `err`.
-///   `/bin/mv` has no option to only rename.
+/// - Between root's last check of `./<name>` and its rename, the entry can still change. If the
+///   other entry is on the same volume, root takes it into the bridge, where it stays
+///   (`held_other`); if it is a mount, the rename fails and nothing is taken (`err`).
+/// - Between the check that the target name is free and the rename onto it, something can appear
+///   there. A directory (a mount included) makes the rename fail. A link or a file is replaced by
+///   the item (rename(2) replaces it; the link is never followed): in a folder the user can write
+///   that is only something the other program could remove itself, and in a root-only folder only
+///   root creates entries.
 /// - Identities compare the item itself, not what is inside a folder item. A program holding an
 ///   open descriptor on a folder inside a user-owned item can still add or remove entries in it
 ///   while it sits in the bridge. It can only add something it could move there anyway (moving a
@@ -152,10 +161,11 @@ struct AdminPlanning: Sendable {
 /// - Each step is one call line. Paths and names are single-quoted with `'` → `'\''`, done
 ///   on unicode scalars (a `'` followed by a combining mark is one Swift Character, so
 ///   Character-based replacing would miss it). Inside the functions every value is used
-///   double-quoted, so the shell never expands, splits or globs anything from a name. Tools have
-///   absolute paths and get `--` (except `chmod -N`, which takes `--` for a file name; it only
-///   gets an absolute path); nothing is evaluated; no path appears in comments, and the only one
-///   in the output is the bridge's own (`B` line).
+///   double-quoted, so the shell never expands, splits or globs anything from a name; `rn_` passes
+///   its two values to zsh as arguments, never in its command text. Tools have absolute paths and
+///   get `--` (except `chmod -N`, which takes `--` for a file name; it only gets an absolute path);
+///   nothing is evaluated; no path appears in comments, and the only one in the output is the
+///   bridge's own (`B` line).
 /// - A path that is not absolute, is `/`, has a `.` or `..` component or a NUL byte (checked on
 ///   UTF-8 bytes) never reaches a tool: `err`.
 public enum AdminScript {
@@ -165,6 +175,10 @@ public enum AdminScript {
     public static let refusedReason = "macOS refused, even with your password"
     public static let unsafeReason = "Dustling can't safely move this with your password. Move it to the Trash in Finder."
     public static let putBackUnsafeReason = "Dustling can't safely put this back with your password. Use Put Back in Finder."
+    /// `held_other`: what is left in the bridge is not the planned item (it changed between root's
+    /// last check and the rename); where the item went, root can't tell.
+    public static let movedAwayReason =
+        "Something changed while it was moving, so Dustling stopped. Another program may have moved your item."
     public static let noResultReason = "no result"
 
     /// Reads each step's folders and item now (planning time) and builds the script.
@@ -320,8 +334,8 @@ public enum AdminScript {
         return results.map { $0 ?? .notDone(reason: noResultReason) }
     }
 
-    /// Why a step is `held`: what root took is still in the bridge at `bridge` (its path, from the
-    /// script; nil if it didn't say), in that step's subfolder.
+    /// Why a step is `held`: the planned item itself is still in the bridge at `bridge` (its path,
+    /// from the script; nil if it didn't say), in that step's subfolder.
     public static func heldReason(bridge: String?) -> String {
         "Something changed while it was moving, so Dustling stopped. It is untouched in \(bridge ?? "a hidden folder in /Library")."
     }
@@ -336,6 +350,7 @@ public enum AdminScript {
         case "unsafe": return .notDone(reason: unsafeReason)
         case "unsafe_putback": return .notDone(reason: putBackUnsafeReason)
         case "held": return .notDone(reason: heldReason(bridge: bridge))
+        case "held_other": return .notDone(reason: movedAwayReason)
         default: return nil
         }
     }
@@ -348,8 +363,9 @@ public enum AdminScript {
     /// - `delete_ <index> <head|-> <expected identity|-> <folder> <folder identity> <name>
     ///   <item identity|- when missing>`
     /// `own_`, the owner the bridge must have, is set after the functions. `take_` leaves `t_` as
-    /// `ok` (the planned item is in `<bridge>/<index>`), `gone`, `err` (nothing taken) or `held`
-    /// (something else got into the bridge and stays there).
+    /// `ok` (the planned item is in `<bridge>/<index>`), `gone`, `err` (nothing taken) or
+    /// `held_other` (something else got into the bridge and stays there). `rn_ <source> <folder>` is
+    /// the only rename between folders (see above).
     static let prelude = #"""
         set +e
         umask 077
@@ -387,7 +403,8 @@ public enum AdminScript {
           if [ "$bok_" = 1 ]; then /bin/rmdir -- "$k_" 2>/dev/null; fi
           report_ "$i_" "$1"
         }
-        back_() { if pin_ "$1" "$2" && [ "$(id_ "$k_/$3")" = "$4" ]; then /bin/mv -n -h -- "$k_/$3" . >/dev/null 2>&1; fi; }
+        rn_() { /bin/zsh -f -c 'zmodload -F zsh/files b:zf_mv && zf_mv -- "$1" "$2"' rn_ "$1" "$2" </dev/null >/dev/null 2>&1; }
+        back_() { if pin_ "$1" "$2" && [ "$(id_ "$k_/$3")" = "$4" ] && ! at_ "./$3"; then rn_ "$k_/$3" .; fi; }
         take_() {
           t_=err
           if ! pin_ "$1" "$2"; then
@@ -397,8 +414,8 @@ public enum AdminScript {
           if ! at_ "./$3"; then t_=gone; return; fi
           if [ "$5" != - ] && [ "$5" != "$4" ]; then return; fi
           /bin/mkdir -m 700 -- "$k_" 2>/dev/null || return
-          if [ "$(id_ "./$3")" = "$4" ]; then /bin/mv -n -h -- "./$3" "$k_/" >/dev/null 2>&1; fi
-          if [ "$(id_ "$k_/$3")" = "$4" ]; then t_=ok; elif ! empty_ "$k_"; then t_=held; fi
+          if [ "$(id_ "./$3")" = "$4" ]; then rn_ "./$3" "$k_"; fi
+          if [ "$(id_ "$k_/$3")" = "$4" ]; then t_=ok; elif ! empty_ "$k_"; then t_=held_other; fi
         }
         boot_() {
           if [ "$b_" = 1 ] && pin_ "$sd_" "$sid_" && [ "$(id_ "./$sn_")" = "$iid_" ] \
@@ -417,11 +434,13 @@ public enum AdminScript {
           take_ "$sd_" "$sid_" "$sn_" "$iid_" "$e_"
           if [ "$t_" != ok ]; then fin_ "$t_"; return; fi
           if [ "$same_" != 1 ]; then /bin/mv -n -h -- "$k_/$sn_" "$k_/$dn_" >/dev/null 2>&1; fi
-          if pin_ "$dd_" "$did_" && [ "$(id_ "$k_/$dn_")" = "$iid_" ]; then /bin/mv -n -h -- "$k_/$dn_" . >/dev/null 2>&1; fi
+          if pin_ "$dd_" "$did_" && [ "$(id_ "$k_/$dn_")" = "$iid_" ] && ! at_ "./$dn_"; then rn_ "$k_/$dn_" .; fi
           if at_ "$k_/$dn_" || at_ "$k_/$sn_"; then
             if [ "$same_" != 1 ]; then /bin/mv -n -h -- "$k_/$dn_" "$k_/$sn_" >/dev/null 2>&1; fi
             back_ "$sd_" "$sid_" "$sn_" "$iid_"
-            if empty_ "$k_"; then fin_ err; else fin_ held; fi
+            if empty_ "$k_"; then fin_ err
+            elif [ "$(id_ "$k_/$sn_")" = "$iid_" ] || [ "$(id_ "$k_/$dn_")" = "$iid_" ]; then fin_ held
+            else fin_ held_other; fi
             return
           fi
           if [ "$(id_ "./$dn_")" = "$iid_" ]; then fin_ ok; else fin_ err; fi
@@ -463,8 +482,8 @@ public enum AdminScript {
             if plan.sourceGone { return "gone_ \(index) \(head)" }
             guard let sourceFolder = plan.source else { return unsafe }
             guard let item = plan.item else { return "gone_ \(index) \(head)" }
-            // Every rename stays on the bridge's volume (mv would copy and delete instead; the script
-            // also checks right before each rename).
+            // Every rename stays on the bridge's volume (a rename across volumes fails; the script also
+            // checks right before each rename).
             guard let bridge, [item.device, sourceFolder.identity.device, plan.folder.identity.device]
                 .allSatisfy({ $0 == bridge.device })
             else { return unsafe }

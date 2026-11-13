@@ -73,9 +73,11 @@ public struct AdminMover: Sendable {
     /// and `AdminScript.unsafeReason` ("Dustling can't safely move this with your password. Move it
     /// to the Trash in Finder.") for a move into the Trash or a delete.
     /// When something changed while an item was moving and what root took can't safely leave the
-    /// bridge, it stays there, untouched: `.notDone(reason: AdminScript.heldReason(bridge:))` names
-    /// the bridge ("Something changed while it was moving, so Dustling stopped. It is untouched in
-    /// /Library/.dustling-XXXXXXXX.").
+    /// bridge, it stays there, untouched. If it is the planned item,
+    /// `.notDone(reason: AdminScript.heldReason(bridge:))` names the bridge ("Something changed while
+    /// it was moving, so Dustling stopped. It is untouched in /Library/.dustling-XXXXXXXX."); if it
+    /// is something else, `AdminScript.movedAwayReason` ("Something changed while it was moving, so
+    /// Dustling stopped. Another program may have moved your item.").
     /// No steps: the shell is never called. The password box cancelled: every step is `.cancelled`.
     /// The shell failed: every step is `.notDone` with why.
     public func perform(_ steps: [AdminStep], prompt: String) -> [AdminStepResult] {

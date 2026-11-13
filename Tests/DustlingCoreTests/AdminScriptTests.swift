@@ -305,8 +305,8 @@ struct AdminScriptTests {
         // Every path a tool gets is the bridge, a step's folder in it (`$k_`), `.` or `./<name>` of
         // a pinned folder: never a path through any other folder.
         var operands: [String] = []
-        for line in AdminScript.prelude.split(separator: "\n").map(String.init) {
-            for tool in ["/bin/mv ", "/bin/rm ", "/bin/mkdir ", "/bin/rmdir ", "/bin/chmod "] {
+        for line in AdminScript.prelude.split(separator: "\n").map(String.init) where !line.hasPrefix("rn_() {") {
+            for tool in ["/bin/mv ", "/bin/rm ", "/bin/mkdir ", "/bin/rmdir ", "/bin/chmod ", "rn_ "] {
                 guard let range = line.range(of: tool) else { continue }
                 var rest = line[range.upperBound...]
                 for stop in [" >", " 2>", ";", " ||", " \\"] {
@@ -321,9 +321,9 @@ struct AdminScriptTests {
             #expect(operand == "." || operand.hasPrefix(#""./"#) || operand.hasPrefix(#""$k_"#)
                 || operand == #""$br_""#, "\(operand)")
         }
-        #expect(script.contains(#"/bin/mv -n -h -- "./$3" "$k_/" >/dev/null 2>&1"#))
-        #expect(script.contains(#"/bin/mv -n -h -- "$k_/$3" . >/dev/null 2>&1"#))
-        #expect(script.contains(#"/bin/mv -n -h -- "$k_/$dn_" . >/dev/null 2>&1"#))
+        #expect(script.contains(#"rn_ "./$3" "$k_"; fi"#))
+        #expect(script.contains(#"rn_ "$k_/$3" .; fi"#))
+        #expect(script.contains(#"rn_ "$k_/$dn_" .; fi"#))
         #expect(script.contains(#"/bin/rm -rfx -- "$k_/$6" >/dev/null 2>&1"#))
         #expect(script.contains(#"/bin/mkdir -m 700 -- "$k_" 2>/dev/null"#))
         // Folders are entered by path only in pin_, and checked there.
@@ -341,24 +341,42 @@ struct AdminScriptTests {
     @Test func everyRenameOutOfAFolderOrTheBridgeChecksTheItemRightBefore() throws {
         // Out of a pinned folder: the entry must still be the planned item (lstat: a mount there
         // is another volume), checked on the same line as the rename.
-        #expect(try body(of: "take_").contains(
-            #"if [ "$(id_ "./$3")" = "$4" ]; then /bin/mv -n -h -- "./$3" "$k_/" >/dev/null 2>&1; fi"#))
-        // Out of the bridge (giving back, publishing): only the inode root took. A copy stays.
-        let back = #"back_() { if pin_ "$1" "$2" && [ "$(id_ "$k_/$3")" = "$4" ]; then /bin/mv -n -h -- "$k_/$3" . >/dev/null 2>&1; fi; }"#
+        #expect(try body(of: "take_").contains(#"if [ "$(id_ "./$3")" = "$4" ]; then rn_ "./$3" "$k_"; fi"#))
+        // Out of the bridge (giving back, publishing): only the inode root took, onto a free name.
+        let back = #"back_() { if pin_ "$1" "$2" && [ "$(id_ "$k_/$3")" = "$4" ] && ! at_ "./$3"; then rn_ "$k_/$3" .; fi; }"#
         #expect(AdminScript.prelude.contains("\n\(back)\n"))
-        let publish = #"if pin_ "$dd_" "$did_" && [ "$(id_ "$k_/$dn_")" = "$iid_" ]; then /bin/mv -n -h -- "$k_/$dn_" . >/dev/null 2>&1; fi"#
+        let publish = #"if pin_ "$dd_" "$did_" && [ "$(id_ "$k_/$dn_")" = "$iid_" ] && ! at_ "./$dn_"; then rn_ "$k_/$dn_" .; fi"#
         #expect(try body(of: "move_").contains(publish))
         #expect(try body(of: "move_").contains(#"back_ "$sd_" "$sid_" "$sn_" "$iid_""#))
-        // Every other mv renames inside the step's own bridge folder.
-        let moves = AdminScript.prelude.split(separator: "\n").map(String.init).filter { $0.contains("/bin/mv ") }
-        #expect(moves.count == 5)
-        for line in moves where !line.contains(back) && !line.hasSuffix(publish) && !line.contains(#"then /bin/mv -n -h -- "./$3""#) {
-            #expect(line.hasSuffix(#"/bin/mv -n -h -- "$k_/$sn_" "$k_/$dn_" >/dev/null 2>&1; fi"#)
-                || line.hasSuffix(#"/bin/mv -n -h -- "$k_/$dn_" "$k_/$sn_" >/dev/null 2>&1; fi"#), "\(line)")
-        }
-        // Something that stays in the bridge is reported `held`, with the bridge's path once.
+        // Only the planned item left in the bridge is `held` (and gets the bridge's path, once).
         #expect(AdminScript.prelude.contains(
             #"if [ "$2" = held ] && [ "$bp_" != 1 ]; then printf 'B\t%s\n' "$br_"; bp_=1; fi"#))
+        #expect(try body(of: "move_").contains(
+            #"elif [ "$(id_ "$k_/$sn_")" = "$iid_" ] || [ "$(id_ "$k_/$dn_")" = "$iid_" ]; then fin_ held"#))
+        #expect(try body(of: "take_").contains(#"elif ! empty_ "$k_"; then t_=held_other; fi"#))
+    }
+
+    @Test func onlyZshsRenameCrossesFolders() throws {
+        // /bin/mv copies (cp -PRp) and removes the source (rm -rf) when rename(2) fails across
+        // volumes, and its copy follows a link at the target. Every rename between folders is rn_:
+        // zsh's zf_mv builtin, plain rename(2), with no startup files and nothing from the environment.
+        #expect(AdminScript.prelude.contains("\nrn_() { \(Self.rnBody); }\n"))
+        let lines = AdminScript.prelude.split(separator: "\n").map(String.init)
+        // rn_ is called three times, always in folder form: the target is `.` or the step's bridge folder.
+        let calls = lines.filter { $0.contains("rn_ \"") && !$0.hasPrefix("rn_() {") }
+        #expect(calls.count == 3)
+        for call in calls {
+            #expect(call.hasSuffix(#"then rn_ "./$3" "$k_"; fi"#) || call.hasSuffix(#" .; fi"#)
+                || call.hasSuffix(#" .; fi; }"#), "\(call)")
+        }
+        // /bin/mv is left only for renames inside a step's own bridge folder (root-only; one folder,
+        // one volume), to give the item its final name and back.
+        let moves = lines.filter { $0.contains("/bin/mv ") }
+        #expect(moves == [
+            #"  if [ "$same_" != 1 ]; then /bin/mv -n -h -- "$k_/$sn_" "$k_/$dn_" >/dev/null 2>&1; fi"#,
+            #"    if [ "$same_" != 1 ]; then /bin/mv -n -h -- "$k_/$dn_" "$k_/$sn_" >/dev/null 2>&1; fi"#,
+        ])
+        #expect(!AdminScript.prelude.contains("/bin/cp"))
     }
 
     @Test func planningRefusesUnsafeSteps() {
@@ -508,11 +526,14 @@ struct AdminScriptTests {
     private static let pinBody = #"cd -P -- "$1" 2>/dev/null && [ "$(id_ .)" = "$2" ]"#
     private static let atBody = #"[ -e "$1" ] || [ -L "$1" ]"#
     private static let idBody = #"/usr/bin/stat -f '%d:%i:%u' -- "$1" 2>/dev/null"#
+    private static let rnBody =
+        #"/bin/zsh -f -c 'zmodload -F zsh/files b:zf_mv && zf_mv -- "$1" "$2"' rn_ "$1" "$2" </dev/null >/dev/null 2>&1"#
 
     @Test func hooksKeepTheRealFunctions() {
         #expect(AdminScript.prelude.contains("\npin_() { \(Self.pinBody); }\n"))
         #expect(AdminScript.prelude.contains("\nat_() { \(Self.atBody); }\n"))
         #expect(AdminScript.prelude.contains("\nid_() { \(Self.idBody); }\n"))
+        #expect(AdminScript.prelude.contains("\nrn_() { \(Self.rnBody); }\n"))
     }
 
     /// `name` (`pin_` or `at_`, which run in the script's own shell) does `action` on its `nth` call
@@ -662,7 +683,7 @@ struct AdminScriptTests {
         #expect(contents(move.sandbox.bridges).isEmpty)
     }
 
-    // MARK: - mv must rename, never copy (the reviewer's r5x)
+    // MARK: - Renames never copy (the reviewer's r5x and r7rev)
 
     /// `id_` does `action` the first time it reads `argument` (it runs in a subshell, so a flag file
     /// says it happened): before reading it, or right after (then the read sees the old entry).
@@ -672,26 +693,41 @@ struct AdminScriptTests {
         return ["id_() {", "  \(after ? Self.idBody : once)", "  \(after ? once : Self.idBody)", "}"]
     }
 
-    /// `script` with every `/bin/mv` of the functions written to `log` (its arguments, one call per
-    /// line) before it runs.
-    private func loggingMoves(_ script: String, to log: URL) -> String {
+    /// Hooks writing every rename of the functions (`rn_`, and `/bin/mv` inside the bridge) to `log`,
+    /// one call per line, before it runs.
+    private func loggingRenames(_ script: String, to log: URL) -> String {
         let prelude = AdminScript.prelude
         #expect(script.hasPrefix(prelude))
         return hooked(prelude.replacingOccurrences(of: "/bin/mv ", with: "mvlog_ ") + script.dropFirst(prelude.count), [
-            "mvlog_() { /usr/bin/printf '%s\\n' \"$*\" >> \(q(log)); /bin/mv \"$@\"; }",
+            "mvlog_() { /usr/bin/printf 'mv %s\\n' \"$*\" >> \(q(log)); /bin/mv \"$@\"; }",
+            "rn_() { /usr/bin/printf 'rn %s\\n' \"$*\" >> \(q(log)); \(Self.rnBody); }",
         ])
     }
 
-    /// `script` with root's rename out of the pinned folder doing what `/bin/mv` does when rename(2)
-    /// fails with EXDEV (the name is a disk image another program mounted there): `cp -PRp` into
-    /// the bridge (as root: owner and setuid bits kept), then `rm -rf` of the source. What lands in
-    /// the bridge is a copy, a new inode.
-    private func copyingInsteadOfRenaming(_ script: String) -> String {
-        let take = #"/bin/mv -n -h -- "./$3" "$k_/""#
+    /// `script` with root's rename out of the pinned folder making a copy instead, as `/bin/mv` did
+    /// when rename(2) failed with EXDEV (`cp -PRp` into the bridge, then `rm -rf` of the source; as
+    /// root, owner and setuid kept). rn_ can't do that; this checks the rule behind it: what lands in
+    /// the bridge as a new inode never leaves it. `only` limits it to one step.
+    private func copyingInsteadOfRenaming(_ script: String, only step: Int? = nil) -> String {
+        let take = #"rn_ "./$3" "$k_""#
         #expect(script.components(separatedBy: take).count == 2)
-        return hooked(script.replacingOccurrences(of: take, with: #"exdev_ "./$3" "$k_/""#), [
-            #"exdev_() { /bin/cp -PRp -- "$1" "$2" && /bin/rm -rf -- "$1"; }"#,
+        let others = step.map { #"if [ "$i_" != \#($0) ]; then rn_ "$1" "$2"; return; fi; "# } ?? ""
+        return hooked(script.replacingOccurrences(of: take, with: #"exdev_ "./$3" "$k_""#), [
+            #"exdev_() { "# + others + #"/bin/cp -PRp -- "$1" "$2/" && /bin/rm -rf -- "$1"; }"#,
         ])
+    }
+
+    /// Hooks making the renames numbered in `failing` (1 = the take, 2 = publishing, 3 = giving back,
+    /// for a move) fail the way rn_ fails across volumes: nothing done, status 1.
+    private func failingRenames(_ failing: [Int]) -> [String] {
+        [
+            "nrn_=0",
+            "rn_() {",
+            "  nrn_=$((nrn_ + 1))",
+            "  case ' \(failing.map(String.init).joined(separator: " ")) ' in *\" $nrn_ \"*) return 1 ;; esac",
+            "  \(Self.rnBody)",
+            "}",
+        ]
     }
 
     /// The one bridge left in `sandbox` (a step held something), or fails the test.
@@ -705,10 +741,12 @@ struct AdminScriptTests {
         .notDone(reason: "Something changed while it was moving, so Dustling stopped. It is untouched in \(bridge).")
     }
 
+    private let movedAway = AdminStepResult.notDone(
+        reason: "Something changed while it was moving, so Dustling stopped. Another program may have moved your item.")
+
     @Test func aCopyMadeInsteadOfTheRenameNeverLeavesTheBridge() throws {
-        // If mv copies instead of renaming, root's copy (in the app: owned by root, setuid kept) is a
-        // new inode. It is never given back or published, never deleted, and the step says where it
-        // is. Shown for a move into the Trash, a Put back and a delete.
+        // A copy is a new inode. It is never given back or published, never deleted, and the step
+        // doesn't call it the user's item. Shown for a move into the Trash, a Put back and a delete.
         let sandbox = try TestSandbox()
         let trash = try sandbox.directory("home/.Trash")
         try sandbox.file("Library/Caches/app/Contents/MacOS/tool", bytes: 6)
@@ -724,8 +762,8 @@ struct AdminScriptTests {
         let planned = try [app, trashed, doomed].map { try #require(ItemIdentity.of($0)) }
         let out = output(of: copyingInsteadOfRenaming(AdminScript.make(steps, planning: try sandbox.adminPlanning())))
         let bridge = try heldBridge(sandbox)
-        #expect(out == "B\t\(bridge)\nR\t0\theld\nR\t1\theld\nR\t2\theld\n")
-        #expect(AdminScript.parse(out, count: 3) == Array(repeating: held(in: bridge), count: 3))
+        #expect(out == "R\t0\theld_other\nR\t1\theld_other\nR\t2\theld_other\n")
+        #expect(AdminScript.parse(out, count: 3) == Array(repeating: movedAway, count: 3))
         // The copies stay in the bridge, untouched: new inodes, same content.
         let copies = ["0/app", "1/helper", "2/old.log"].map { URL(filePath: bridge + "/" + $0) }
         for (copy, original) in zip(copies, planned) {
@@ -747,21 +785,21 @@ struct AdminScriptTests {
         let copy = #"/bin/cp -p "$k_/x.plist" "$k_/c" && /bin/rm -f "$k_/x.plist" && /bin/mv "$k_/c" "$k_/x.plist""#
         let out = output(of: hooked(move.script, on("pin_", path(move.trash), nth: 2, copy)))
         let bridge = try heldBridge(move.sandbox)
-        #expect(out == "B\t\(bridge)\nR\t0\theld\n")
+        #expect(out == "R\t0\theld_other\n")
         #expect(size(URL(filePath: bridge + "/0/x.plist")) == 6)
         #expect(contents(move.trash).isEmpty)
         #expect(contents(move.source.deletingLastPathComponent()).isEmpty)
     }
 
-    @Test func anItemThatChangedRightBeforeTheRenameNeverReachesMv() throws {
+    @Test func anItemThatChangedRightBeforeTheRenameIsNeverRenamed() throws {
         // Root reads the entry right before its rename. Here another program replaces it at that
-        // very moment (another inode; a disk image mounted there would be another volume): mv is
-        // never called on it, nothing reaches the bridge, and the other file stays where it is.
+        // very moment (another inode; a disk image mounted there would be another volume): it is
+        // never renamed, nothing reaches the bridge, and the other file stays where it is.
         let move = try TrashMove(victim: false)
-        let log = move.sandbox.root.appending(path: "mv.log")
+        let log = move.sandbox.root.appending(path: "rename.log")
         let kept = move.sandbox.root.appending(path: "kept.plist")
         let swap = "/bin/mv \(q(move.source)) \(q(kept)); /usr/bin/printf attacker > \(q(move.source))"
-        let script = loggingMoves(hooked(move.script, onRead("./x.plist", flag: move.flag, swap)), to: log)
+        let script = loggingRenames(hooked(move.script, onRead("./x.plist", flag: move.flag, swap)), to: log)
         #expect(output(of: script) == "R\t0\terr\n")
         #expect(!exists(log))
         #expect(size(move.source) == 8)
@@ -770,20 +808,23 @@ struct AdminScriptTests {
         #expect(contents(move.sandbox.bridges).isEmpty)
     }
 
-    @Test func anItemSwappedBetweenTheCheckAndTheRenameIsHeld() throws {
+    @Test func anItemSwappedBetweenTheCheckAndTheRenameStaysInTheBridge() throws {
         // The residual race: the entry changes after root's check and before its rename. What root
         // took isn't the planned item, so it stays in the bridge (even though its name is free to
-        // go back to), and the step says where it is. The planned item is never touched.
+        // go back to), and the step says another program may have moved the user's item, which is
+        // never touched.
         let move = try TrashMove(victim: false)
-        let log = move.sandbox.root.appending(path: "mv.log")
+        let log = move.sandbox.root.appending(path: "rename.log")
         let kept = move.sandbox.root.appending(path: "kept.plist")
         let swap = "/bin/mv \(q(move.source)) \(q(kept)); /usr/bin/printf attacker > \(q(move.source))"
-        let script = loggingMoves(hooked(move.script, onRead("./x.plist", flag: move.flag, after: true, swap)), to: log)
+        let script = loggingRenames(hooked(move.script, onRead("./x.plist", flag: move.flag, after: true, swap)), to: log)
         let out = output(of: script)
         let bridge = try heldBridge(move.sandbox)
-        #expect(out == "B\t\(bridge)\nR\t0\theld\n")
-        // One mv: the take. Nothing was given back or published.
-        #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").count == 1)
+        #expect(out == "R\t0\theld_other\n")
+        #expect(AdminScript.parse(out, count: 1) == [movedAway])
+        // One rename: the take. Nothing was given back or published.
+        let calls = try String(contentsOf: log, encoding: .utf8).split(separator: "\n")
+        #expect(calls.count == 1 && calls.first?.hasPrefix("rn ./x.plist ") == true, "\(calls)")
         #expect(size(URL(filePath: bridge + "/0/x.plist")) == 8)
         #expect(size(kept) == 6)
         #expect(contents(move.source.deletingLastPathComponent()).isEmpty)
@@ -801,28 +842,159 @@ struct AdminScriptTests {
         let out = output(of: hooked(move.script, onBridgeRead("x.plist", flag: move.flag, block)))
         let bridge = try heldBridge(move.sandbox)
         #expect(out == "B\t\(bridge)\nR\t0\theld\n")
+        #expect(AdminScript.parse(out, count: 1) == [held(in: bridge)])
         #expect(ItemIdentity.of(URL(filePath: bridge + "/0/x.plist")) == planned)
         #expect(size(move.trash.appending(path: "x.plist")) == 7)
         #expect(size(move.source) == 7)
     }
 
-    @Test func theBridgePathIsPrintedOnceForSeveralHeldSteps() throws {
-        // Two held steps and one that worked: one B line, before the first held step.
+    @Test func theBridgePathIsPrintedOnceAndOnlyForThePlannedItem() throws {
+        // a moves; b and c are held (their names are taken on both sides); d's take makes a copy.
+        // One B line, before the first held step; d's reason doesn't call the copy the user's item.
         let sandbox = try TestSandbox()
         let trash = try sandbox.directory("home/.Trash")
-        let a = try sandbox.file("Library/a", bytes: 1)
-        let b = try sandbox.file("Library/b", bytes: 2)
-        let c = try sandbox.file("Library/c", bytes: 3)
-        var script = AdminScript.make([move(a, trash.appending(path: "a")), move(b, trash.appending(path: "b")),
-                                       move(c, trash.appending(path: "c"))], planning: try sandbox.adminPlanning())
-        // Only steps 1 and 2 copy instead of renaming.
-        script = copyingInsteadOfRenaming(script).replacingOccurrences(
-            of: #"exdev_() {"#, with: #"exdev_() { if [ "$i_" = 0 ]; then /bin/mv -n -h -- "$1" "$2"; return; fi;"#)
-        let out = output(of: script)
+        let library = sandbox.root.appending(path: "Library")
+        let items = try ["a", "b", "c", "d"].enumerated().map { try sandbox.file("Library/\($1)", bytes: $0 + 1) }
+        let flags = try sandbox.directory("flags")
+        let script = AdminScript.make(items.map { move($0, trash.appending(path: $0.lastPathComponent)) },
+                                      planning: try sandbox.adminPlanning())
+        let block = [
+            "id_() {",
+            "  \(Self.idBody)",
+            "  case \"$1\" in */.dustling-*/[0-9]*/b|*/.dustling-*/[0-9]*/c)",
+            "    n_=\"${1##*/}\"",
+            "    if ! [ -e \(q(flags))/\"$n_\" ]; then /usr/bin/touch \(q(flags))/\"$n_\"; "
+                + "/usr/bin/printf blocked > \(q(trash))/\"$n_\"; /usr/bin/printf blocked > \(q(library))/\"$n_\"; fi ;;",
+            "  esac",
+            "}",
+        ]
+        let out = output(of: copyingInsteadOfRenaming(hooked(script, block), only: 3))
         let bridge = try heldBridge(sandbox)
-        #expect(out == "R\t0\tok\nB\t\(bridge)\nR\t1\theld\nR\t2\theld\n")
-        #expect(AdminScript.parse(out, count: 3) == [.done, held(in: bridge), held(in: bridge)])
+        #expect(out == "R\t0\tok\nB\t\(bridge)\nR\t1\theld\nR\t2\theld\nR\t3\theld_other\n")
+        #expect(AdminScript.parse(out, count: 4) == [.done, held(in: bridge), held(in: bridge), movedAway])
         #expect(size(trash.appending(path: "a")) == 1)
+        #expect(Set(contents(URL(filePath: bridge))) == ["1", "2", "3"])
+    }
+
+    @Test func aRenameThatFailsAcrossVolumesCopiesNothing() throws {
+        // rn_ only renames: across volumes (a disk image mounted at the target, or the source
+        // replaced by one) it fails and does nothing. Whatever rename fails, nothing is copied
+        // anywhere; the item ends up where it was or, untouched, in the bridge.
+        func attempt(failing: [Int]) throws -> (output: String, move: TrashMove, before: [String: Int64]) {
+            let move = try TrashMove(victim: false)
+            let before = tree(move.sandbox)
+            return (output(of: hooked(move.script, failingRenames(failing))), move, before)
+        }
+        // The take fails: nothing moved at all.
+        let take = try attempt(failing: [1])
+        #expect(take.output == "R\t0\terr\n")
+        #expect(tree(take.move.sandbox) == take.before)
+        // Publishing fails: the item is given back.
+        let publish = try attempt(failing: [2])
+        #expect(publish.output == "R\t0\terr\n")
+        #expect(tree(publish.move.sandbox) == publish.before)
+        // Publishing and giving back fail: the planned item stays in the bridge, untouched.
+        let both = try attempt(failing: [2, 3])
+        let bridge = try heldBridge(both.move.sandbox)
+        #expect(both.output == "B\t\(bridge)\nR\t0\theld\n")
+        let relative = String(bridge.dropFirst(path(both.move.sandbox.root).count + 1))
+        #expect(tree(both.move.sandbox) == changed(both.before, removing: ["sys/x.plist"], adding: [
+            relative: -1, relative + "/0": -1, relative + "/0/x.plist": 6,
+        ]))
+    }
+
+    @Test func aLinkPutAtTheNameRightBeforeTheRenameIsReplacedNotFollowed() throws {
+        // r7rev: right after root found the name free, another program puts a link to a folder
+        // there. /bin/mv's copy would have gone into that folder; the rename replaces the link
+        // itself. Shown when publishing into the Trash, and when giving back to sys.
+        func run(blockPublishing: Bool) throws -> (output: String, move: TrashMove, planned: ItemIdentity) {
+            let move = try TrashMove(victim: true)
+            let planned = try #require(ItemIdentity.of(move.source))
+            // at_ ./x.plist: 1 the destination check, 2 the take, 3 publishing, 4 giving back.
+            let linkAt = blockPublishing ? 4 : 3
+            let hooks = [
+                "nat_=0",
+                "at_() {",
+                "  if [ \"$1\" = ./x.plist ]; then nat_=$((nat_ + 1)); fi",
+                blockPublishing
+                    ? "  if [ \"$1\" = ./x.plist ] && [ \"$nat_\" = 3 ]; then /usr/bin/printf blocker > ./x.plist; fi"
+                    : "",
+                "  \(Self.atBody); r_=$?",
+                "  if [ \"$1\" = ./x.plist ] && [ \"$nat_\" = \(linkAt) ]; then /bin/ln -s \(q(move.priv)) ./x.plist; fi",
+                "  return $r_",
+                "}",
+            ]
+            return (output(of: hooked(move.script, hooks)), move, planned)
+        }
+        let published = try run(blockPublishing: false)
+        #expect(published.output == "R\t0\tok\n")
+        #expect(ItemIdentity.of(published.move.trash.appending(path: "x.plist")) == published.planned)
+        #expect(contents(published.move.priv) == ["x.plist"])
+        #expect(size(published.move.priv.appending(path: "x.plist")) == 7)
+        let givenBack = try run(blockPublishing: true)
+        #expect(givenBack.output == "R\t0\terr\n")
+        #expect(ItemIdentity.of(givenBack.move.source) == givenBack.planned)
+        #expect(size(givenBack.move.trash.appending(path: "x.plist")) == 7)
+        #expect(contents(givenBack.move.priv) == ["x.plist"])
+        #expect(size(givenBack.move.priv.appending(path: "x.plist")) == 7)
+    }
+
+    @Test func rnIsARenameOntoAFolderOnly() throws {
+        // The real rn_, as the script runs it. Onto a folder: the item keeps its name there. A link
+        // already at that name is replaced, never followed; a directory there is never replaced; a
+        // link as the source moves as itself.
+        let sandbox = try TestSandbox()
+        let a = try sandbox.directory("a")
+        let b = try sandbox.directory("b")
+        let target = try sandbox.directory("target")
+        try sandbox.file("a/x", bytes: 1)
+        try sandbox.file("a/y", bytes: 2)
+        try sandbox.file("a/dir", bytes: 3)
+        try sandbox.directory("b/dir")
+        try fm.createSymbolicLink(atPath: path(b) + "/y", withDestinationPath: path(target))
+        try fm.createSymbolicLink(atPath: path(a) + "/ln", withDestinationPath: path(target))
+        let script = AdminScript.prelude + "\ncd -P -- \(q(b))\n"
+            + ["x", "y", "dir", "ln"].map { "rn_ \(AdminScript.quote(path(a) + "/" + $0)) .\n" }.joined()
+        #expect(output(of: script) == "")
+        #expect(size(b.appending(path: "x")) == 1)
+        #expect(size(b.appending(path: "y")) == 2)
+        #expect((try? fm.destinationOfSymbolicLink(atPath: path(b) + "/ln")) == path(target))
+        #expect(size(a.appending(path: "dir")) == 3)
+        #expect(contents(b.appending(path: "dir")).isEmpty)
+        #expect(contents(target).isEmpty)
+        #expect(contents(a) == ["dir"])
+    }
+
+    @Test func rnReadsNoStartupFilesOrModulePathFromTheEnvironment() throws {
+        // zsh -f skips ~/.zshenv and the rest (control: without -f it reads ZDOTDIR's .zshenv); the
+        // module path from the environment is ignored, so zsh/files comes from the system.
+        let sandbox = try TestSandbox()
+        let dot = try sandbox.directory("dot")
+        let marker = sandbox.root.appending(path: "read")
+        try Data("/usr/bin/touch \(q(marker))\n".utf8).write(to: dot.appending(path: ".zshenv"))
+        try Data("/usr/bin/touch \(q(marker))\n".utf8).write(to: dot.appending(path: ".zshrc"))
+        let environment = ["ZDOTDIR": path(dot), "HOME": path(dot), "MODULE_PATH": path(dot), "PATH": "/usr/bin:/bin"]
+        let runner = ProcessCommandRunner()
+        let quiet = try runner.run(
+            "/bin/zsh", ["-f", "-c", "zmodload -F zsh/files b:zf_mv && print -r -- $module_path"], environment: environment)
+        #expect(quiet.status == 0)
+        #expect(quiet.stdout.hasPrefix("/usr/lib/zsh/"), "\(quiet.stdout)")
+        #expect(!exists(marker))
+        let control = try runner.run("/bin/zsh", ["-c", "true"], environment: environment)
+        #expect(control.status == 0)
+        #expect(exists(marker))
+        #expect(Self.rnBody.hasPrefix("/bin/zsh -f -c "))
+    }
+
+    @Test func rnWorksInOsascriptsEnvironment() throws {
+        // osascript runs the script with a minimal environment (only PATH); zsh still loads its module.
+        let sandbox = try TestSandbox()
+        try sandbox.file("a/x", bytes: 4)
+        let b = try sandbox.directory("b")
+        let script = AdminScript.prelude + "\ncd -P -- \(q(b)) && rn_ \(AdminScript.quote(path(sandbox.root) + "/a/x")) . "
+            + "&& /usr/bin/printf moved\n"
+        #expect(OsascriptAdminShell(privileged: false).run(script: script, prompt: "x") == .finished(output: "moved"))
+        #expect(size(b.appending(path: "x")) == 4)
     }
 
     // MARK: - The bridge
@@ -937,10 +1109,10 @@ struct AdminScriptTests {
     @Test func sourceSwappedAfterTheCheckStaysInTheBridge() throws {
         // The impostor reached the bridge: it is never published, and never given back either (only
         // the inode root checked may leave the bridge), though its name in the Trash is free. The
-        // step is held and the bridge is left (never rm -rf'ed).
+        // step is held_other (it isn't the user's item) and the bridge is left (never rm -rf'ed).
         let swap = try putBackWithSwap(early: false)
         let bridge = try heldBridge(swap.sandbox)
-        #expect(swap.output == "B\t\(bridge)\nR\t0\theld\n")
+        #expect(swap.output == "R\t0\theld_other\n")
         #expect(contents(swap.folder).isEmpty)
         #expect(!exists(swap.trashed))
         #expect(size(swap.kept) == 4)
@@ -1160,8 +1332,8 @@ struct AdminScriptTests {
 
     @Test func parseMapsEveryStatus() {
         let output = "R\t0\tok\nR\t1\tgone\nR\t2\tskip\nR\t3\texists\nR\t4\terr\nR\t5\tunsafe\n"
-            + "R\t6\tunsafe_putback\nB\t/Library/.dustling-Ab12Cd34\nR\t7\theld\n"
-        #expect(AdminScript.parse(output, count: 8) == [
+            + "R\t6\tunsafe_putback\nB\t/Library/.dustling-Ab12Cd34\nR\t7\theld\nR\t8\theld_other\n"
+        #expect(AdminScript.parse(output, count: 9) == [
             .done,
             .notDone(reason: "already gone"),
             .notDone(reason: "kept because the app itself was not removed"),
@@ -1171,6 +1343,8 @@ struct AdminScriptTests {
             .notDone(reason: "Dustling can't safely put this back with your password. Use Put Back in Finder."),
             .notDone(reason: "Something changed while it was moving, so Dustling stopped. "
                 + "It is untouched in /Library/.dustling-Ab12Cd34."),
+            .notDone(reason: "Something changed while it was moving, so Dustling stopped. "
+                + "Another program may have moved your item."),
         ])
     }
 
