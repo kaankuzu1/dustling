@@ -88,14 +88,14 @@ extension TestSandbox {
     /// Planning for admin scripts run as the user (a test can't make root-owned folders): the
     /// bridge is made in `bridges` and must be owned by the user running the test; folder chains
     /// outside `home` count as root-only (`rootOnlyOutsideHome`, for the bridge's parent and for
-    /// bootout); whether the user can write a folder is the real answer unless `locked` says so.
+    /// bootout); whether the user can write a folder is the real answer unless `locked` says so;
+    /// the sandbox's `home/.Trash` (and `Volumes/<volume>/.Trashes/<uid>`) are the Trash.
     func adminPlanning(bridgeOwner: uid_t = getuid(), locked: @escaping @Sendable (String) -> Bool = { _ in false })
         throws -> AdminPlanning
     {
         try FileManager.default.createDirectory(at: bridges, withIntermediateDirectories: true)
         return AdminPlanning(
             bridgeParent: bridges.path(percentEncoded: false), bridgeOwner: bridgeOwner,
-            rootOnlyChain: rootOnlyOutsideHome,
-            userCanWrite: { !locked($0) && access($0, W_OK) == 0 })
+            rootOnlyChain: rootOnlyOutsideHome, locked: locked, isTrash: AdminPlanning.trash(of: environment))
     }
 }

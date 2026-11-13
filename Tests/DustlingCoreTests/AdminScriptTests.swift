@@ -199,7 +199,7 @@ struct AdminScriptTests {
             return AdminScript.StepPlan(folder: folder, source: nil, item: item)
         }
         let planned = bridge ? AdminScript.PlannedBridge(parent: "/Library", device: 7, owner: 0) : nil
-        return AdminScript.make(steps, plans: plans, bridge: planned)
+        return AdminScript.make(steps, plans: plans, bridge: planned, isTrash: { $0 == "/Users/u/.Trash" })
     }
 
     /// How many `$name` / `${…}` expansions in a line are outside double quotes (a small sh
@@ -338,6 +338,29 @@ struct AdminScriptTests {
         #expect(!script.contains("eval"))
     }
 
+    @Test func everyRenameOutOfAFolderOrTheBridgeChecksTheItemRightBefore() throws {
+        // Out of a pinned folder: the entry must still be the planned item (lstat: a mount there
+        // is another volume), checked on the same line as the rename.
+        #expect(try body(of: "take_").contains(
+            #"if [ "$(id_ "./$3")" = "$4" ]; then /bin/mv -n -h -- "./$3" "$k_/" >/dev/null 2>&1; fi"#))
+        // Out of the bridge (giving back, publishing): only the inode root took. A copy stays.
+        let back = #"back_() { if pin_ "$1" "$2" && [ "$(id_ "$k_/$3")" = "$4" ]; then /bin/mv -n -h -- "$k_/$3" . >/dev/null 2>&1; fi; }"#
+        #expect(AdminScript.prelude.contains("\n\(back)\n"))
+        let publish = #"if pin_ "$dd_" "$did_" && [ "$(id_ "$k_/$dn_")" = "$iid_" ]; then /bin/mv -n -h -- "$k_/$dn_" . >/dev/null 2>&1; fi"#
+        #expect(try body(of: "move_").contains(publish))
+        #expect(try body(of: "move_").contains(#"back_ "$sd_" "$sid_" "$sn_" "$iid_""#))
+        // Every other mv renames inside the step's own bridge folder.
+        let moves = AdminScript.prelude.split(separator: "\n").map(String.init).filter { $0.contains("/bin/mv ") }
+        #expect(moves.count == 5)
+        for line in moves where !line.contains(back) && !line.hasSuffix(publish) && !line.contains(#"then /bin/mv -n -h -- "./$3""#) {
+            #expect(line.hasSuffix(#"/bin/mv -n -h -- "$k_/$sn_" "$k_/$dn_" >/dev/null 2>&1; fi"#)
+                || line.hasSuffix(#"/bin/mv -n -h -- "$k_/$dn_" "$k_/$sn_" >/dev/null 2>&1; fi"#), "\(line)")
+        }
+        // Something that stays in the bridge is reported `held`, with the bridge's path once.
+        #expect(AdminScript.prelude.contains(
+            #"if [ "$2" = held ] && [ "$bp_" != 1 ]; then printf 'B\t%s\n' "$br_"; bp_=1; fi"#))
+    }
+
     @Test func planningRefusesUnsafeSteps() {
         let trashed = URL(filePath: "/Users/u/.Trash/x")
         let planned = ItemIdentity(device: 7, inode: 99, owner: 0)
@@ -349,10 +372,13 @@ struct AdminScriptTests {
         let daemon = AdminStep(op: .move(from: URL(filePath: "/Library/LaunchDaemons/d.plist"),
                                          to: URL(filePath: "/Users/u/.Trash/d.plist"), bootOutDaemon: true))
         let delete = AdminStep(op: .delete(trashed))
-        // Into a folder the user can't write: only with the recorded identity.
+        // Into a folder the user can't write: only with the recorded identity. Refused Put backs (out
+        // of the Trash) have their own status, so the reason can point to Finder's Put Back.
         #expect(callLines(text([putBack], destinationWritable: false)).first
             == "move_ 0 - 0 7:99:0 1 '/Users/u/.Trash' 7:41:0 'x' 7:99:0 '/Library' 7:42:501 'x'")
-        #expect(callLines(text([unchecked], destinationWritable: false)).first == "report_ 0 unsafe")
+        #expect(callLines(text([unchecked], destinationWritable: false)).first == "report_ 0 unsafe_putback")
+        #expect(callLines(text([putBack], destinationWritable: false, itemDevice: 8)).first == "report_ 0 unsafe_putback")
+        #expect(callLines(text([putBack], bridge: false)).first == "report_ 0 unsafe_putback")
         // Into a folder the user can write, from any folder, also to a numbered name.
         #expect(callLines(text([unchecked])).first?.hasPrefix("move_ 0 - 0 - 1 ") == true)
         #expect(callLines(text([numbered], sourceRootOnly: false)).first
@@ -390,6 +416,66 @@ struct AdminScriptTests {
         #expect(lines[2].hasPrefix("delete_ 2 - - '") && lines[2].hasSuffix(" 'never' -"))
         // A folder that isn't a real directory when planned (missing, or a link): refused.
         #expect(lines[3] == "report_ 3 unsafe")
+    }
+
+    @Test func planningReadsAFolderThroughOneDescriptor() throws {
+        // A folder is opened once (O_DIRECTORY | O_NOFOLLOW); its identity, whether the user can
+        // write it and the item in it all come from that descriptor. Another program that swaps
+        // what is at the path right after the open can't make planning mix two folders.
+        let sandbox = try TestSandbox()
+        let place = try sandbox.directory("place")
+        try sandbox.file("place/item", bytes: 2)
+        let locked = try sandbox.directory("locked")
+        try sandbox.file("locked/item", bytes: 3)
+        #expect(chmod(path(locked), 0o555) == 0)
+        defer { _ = chmod(path(place), 0o755); _ = chmod(path(locked), 0o755) }
+        let writable = try #require(ItemIdentity.of(place))
+        let writableItem = try #require(ItemIdentity.of(place.appending(path: "item")))
+        let readOnly = try #require(ItemIdentity.of(locked))
+        let readOnlyItem = try #require(ItemIdentity.of(locked.appending(path: "item")))
+        let planning = try sandbox.adminPlanning()
+        let (a, b) = (path(place), path(locked))
+        let swap = { _ = renamex_np(a, b, UInt32(RENAME_SWAP)) }
+        func read(_ folder: String, swapping: Bool) -> AdminScript.PlannedFolder.Read {
+            AdminScript.PlannedFolder.read(folder, item: "item", planning: planning, afterOpen: swapping ? swap : {})
+        }
+        func found(_ identity: ItemIdentity, writable: Bool, item: ItemIdentity?) -> AdminScript.PlannedFolder.Read {
+            .found(AdminScript.PlannedFolder(identity: identity, userCanWrite: writable, rootOnlyChain: true), item: item)
+        }
+        // The writable folder is opened, then the locked one takes its place.
+        #expect(read(a, swapping: true) == found(writable, writable: true, item: writableItem))
+        #expect(ItemIdentity.of(place) == readOnly)
+        // Now the locked one is there: it is opened, then the writable one takes its place again.
+        #expect(read(a, swapping: true) == found(readOnly, writable: false, item: readOnlyItem))
+        #expect(ItemIdentity.of(place) == writable)
+        // Without a swap: the same answers. A missing item is nil; `locked` counts as not writable.
+        #expect(read(b, swapping: false) == found(readOnly, writable: false, item: readOnlyItem))
+        #expect(AdminScript.PlannedFolder.read(a, item: "none", planning: planning)
+            == found(writable, writable: true, item: nil))
+        var locking = planning
+        locking.locked = { $0 == a }
+        #expect(AdminScript.PlannedFolder.read(a, item: nil, planning: locking) == found(writable, writable: false, item: nil))
+        // Only a real folder is used: a link to one, a file or nothing at all is not.
+        let link = sandbox.root.appending(path: "link")
+        try fm.createSymbolicLink(atPath: path(link), withDestinationPath: a)
+        #expect(AdminScript.PlannedFolder.read(path(link), item: "item", planning: planning) == .unusable)
+        #expect(AdminScript.PlannedFolder.read(a + "/item", item: nil, planning: planning) == .unusable)
+        #expect(AdminScript.PlannedFolder.read(path(sandbox.root) + "/missing", item: nil, planning: planning) == .missing)
+    }
+
+    @Test func theTrashIsTheUsersOrAVolumesTrashForTheUser() throws {
+        let sandbox = try TestSandbox()
+        let isTrash = AdminPlanning.trash(of: sandbox.environment)
+        let root = path(sandbox.root)
+        let uid = getuid()
+        #expect(isTrash(root + "/home/.Trash"))
+        #expect(isTrash(root + "/Volumes/Backup/.Trashes/\(uid)"))
+        #expect(!isTrash(root + "/Volumes/Backup/.Trashes/\(uid &+ 1)"))
+        #expect(!isTrash(root + "/Volumes/.Trashes/\(uid)"))
+        #expect(!isTrash(root + "/Volumes/a/b/.Trashes/\(uid)"))
+        #expect(!isTrash(root + "/home/.Trash/inner"))
+        #expect(!isTrash(root + "/home"))
+        #expect(!isTrash(root + "/Library/.Trash"))
     }
 
     @Test func quoteEscapesEveryApostropheScalar() {
@@ -526,10 +612,10 @@ struct AdminScriptTests {
         ]))
     }
 
-    @Test func itemSwappedJustBeforeTheRenameGoesBack() throws {
+    @Test func itemSwappedJustBeforeTheRenameIsNeverTaken() throws {
         // r3review poc4: the source folder is one the user can write (like /Applications for an
         // admin). Just before root's rename, the app is swapped for another program's file. Root
-        // finds it isn't the planned item and gives it back; nothing else is touched.
+        // finds it isn't the planned item before mv, so it stays where it is; nothing is touched.
         let sandbox = try TestSandbox()
         try sandbox.file("apps/Foo.app/real", bytes: 6)
         let app = sandbox.root.appending(path: "apps/Foo.app")
@@ -574,6 +660,169 @@ struct AdminScriptTests {
         #expect(output(of: script) == "R\t0\terr\n")
         #expect(contents(move.trash).isEmpty)
         #expect(contents(move.sandbox.bridges).isEmpty)
+    }
+
+    // MARK: - mv must rename, never copy (the reviewer's r5x)
+
+    /// `id_` does `action` the first time it reads `argument` (it runs in a subshell, so a flag file
+    /// says it happened): before reading it, or right after (then the read sees the old entry).
+    private func onRead(_ argument: String, flag: URL, after: Bool = false, _ action: String) -> [String] {
+        let once = "if [ \"$1\" = \(AdminScript.quote(argument)) ] && ! [ -e \(q(flag)) ]; then "
+            + "/usr/bin/touch \(q(flag)); \(action); fi"
+        return ["id_() {", "  \(after ? Self.idBody : once)", "  \(after ? once : Self.idBody)", "}"]
+    }
+
+    /// `script` with every `/bin/mv` of the functions written to `log` (its arguments, one call per
+    /// line) before it runs.
+    private func loggingMoves(_ script: String, to log: URL) -> String {
+        let prelude = AdminScript.prelude
+        #expect(script.hasPrefix(prelude))
+        return hooked(prelude.replacingOccurrences(of: "/bin/mv ", with: "mvlog_ ") + script.dropFirst(prelude.count), [
+            "mvlog_() { /usr/bin/printf '%s\\n' \"$*\" >> \(q(log)); /bin/mv \"$@\"; }",
+        ])
+    }
+
+    /// `script` with root's rename out of the pinned folder doing what `/bin/mv` does when rename(2)
+    /// fails with EXDEV (the name is a disk image another program mounted there): `cp -PRp` into
+    /// the bridge (as root: owner and setuid bits kept), then `rm -rf` of the source. What lands in
+    /// the bridge is a copy, a new inode.
+    private func copyingInsteadOfRenaming(_ script: String) -> String {
+        let take = #"/bin/mv -n -h -- "./$3" "$k_/""#
+        #expect(script.components(separatedBy: take).count == 2)
+        return hooked(script.replacingOccurrences(of: take, with: #"exdev_ "./$3" "$k_/""#), [
+            #"exdev_() { /bin/cp -PRp -- "$1" "$2" && /bin/rm -rf -- "$1"; }"#,
+        ])
+    }
+
+    /// The one bridge left in `sandbox` (a step held something), or fails the test.
+    private func heldBridge(_ sandbox: TestSandbox) throws -> String {
+        let left = contents(sandbox.bridges)
+        #expect(left.count == 1, "\(left)")
+        return path(sandbox.bridges) + "/" + (try #require(left.first))
+    }
+
+    private func held(in bridge: String) -> AdminStepResult {
+        .notDone(reason: "Something changed while it was moving, so Dustling stopped. It is untouched in \(bridge).")
+    }
+
+    @Test func aCopyMadeInsteadOfTheRenameNeverLeavesTheBridge() throws {
+        // If mv copies instead of renaming, root's copy (in the app: owned by root, setuid kept) is a
+        // new inode. It is never given back or published, never deleted, and the step says where it
+        // is. Shown for a move into the Trash, a Put back and a delete.
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        try sandbox.file("Library/Caches/app/Contents/MacOS/tool", bytes: 6)
+        let app = sandbox.root.appending(path: "Library/Caches/app")
+        let trashed = try sandbox.file("home/.Trash/helper", bytes: 4)
+        let folder = try sandbox.directory("Library/PrivilegedHelperTools")
+        let doomed = try sandbox.file("home/.Trash/old.log", bytes: 5)
+        let steps = [
+            move(app, trash.appending(path: "app")),
+            try putBackStep(trashed, into: folder),
+            AdminStep(op: .delete(doomed)),
+        ]
+        let planned = try [app, trashed, doomed].map { try #require(ItemIdentity.of($0)) }
+        let out = output(of: copyingInsteadOfRenaming(AdminScript.make(steps, planning: try sandbox.adminPlanning())))
+        let bridge = try heldBridge(sandbox)
+        #expect(out == "B\t\(bridge)\nR\t0\theld\nR\t1\theld\nR\t2\theld\n")
+        #expect(AdminScript.parse(out, count: 3) == Array(repeating: held(in: bridge), count: 3))
+        // The copies stay in the bridge, untouched: new inodes, same content.
+        let copies = ["0/app", "1/helper", "2/old.log"].map { URL(filePath: bridge + "/" + $0) }
+        for (copy, original) in zip(copies, planned) {
+            #expect(ItemIdentity.of(copy).map { $0.inode != original.inode } == true)
+        }
+        #expect(size(copies[0].appending(path: "Contents/MacOS/tool")) == 6)
+        #expect(size(copies[1]) == 4)
+        #expect(size(copies[2]) == 5)
+        // Nothing handed back, published or deleted.
+        #expect(contents(trash).isEmpty)
+        #expect(contents(sandbox.root.appending(path: "Library/Caches")).isEmpty)
+        #expect(contents(folder).isEmpty)
+    }
+
+    @Test func aCopyInTheBridgeIsNeverPublishedOrGivenBack() throws {
+        // Publishing and giving back check the inode too: here what sits in the bridge becomes a
+        // copy right before publishing. It stays in the bridge; the Trash and sys get nothing.
+        let move = try TrashMove(victim: false)
+        let copy = #"/bin/cp -p "$k_/x.plist" "$k_/c" && /bin/rm -f "$k_/x.plist" && /bin/mv "$k_/c" "$k_/x.plist""#
+        let out = output(of: hooked(move.script, on("pin_", path(move.trash), nth: 2, copy)))
+        let bridge = try heldBridge(move.sandbox)
+        #expect(out == "B\t\(bridge)\nR\t0\theld\n")
+        #expect(size(URL(filePath: bridge + "/0/x.plist")) == 6)
+        #expect(contents(move.trash).isEmpty)
+        #expect(contents(move.source.deletingLastPathComponent()).isEmpty)
+    }
+
+    @Test func anItemThatChangedRightBeforeTheRenameNeverReachesMv() throws {
+        // Root reads the entry right before its rename. Here another program replaces it at that
+        // very moment (another inode; a disk image mounted there would be another volume): mv is
+        // never called on it, nothing reaches the bridge, and the other file stays where it is.
+        let move = try TrashMove(victim: false)
+        let log = move.sandbox.root.appending(path: "mv.log")
+        let kept = move.sandbox.root.appending(path: "kept.plist")
+        let swap = "/bin/mv \(q(move.source)) \(q(kept)); /usr/bin/printf attacker > \(q(move.source))"
+        let script = loggingMoves(hooked(move.script, onRead("./x.plist", flag: move.flag, swap)), to: log)
+        #expect(output(of: script) == "R\t0\terr\n")
+        #expect(!exists(log))
+        #expect(size(move.source) == 8)
+        #expect(size(kept) == 6)
+        #expect(contents(move.trash).isEmpty)
+        #expect(contents(move.sandbox.bridges).isEmpty)
+    }
+
+    @Test func anItemSwappedBetweenTheCheckAndTheRenameIsHeld() throws {
+        // The residual race: the entry changes after root's check and before its rename. What root
+        // took isn't the planned item, so it stays in the bridge (even though its name is free to
+        // go back to), and the step says where it is. The planned item is never touched.
+        let move = try TrashMove(victim: false)
+        let log = move.sandbox.root.appending(path: "mv.log")
+        let kept = move.sandbox.root.appending(path: "kept.plist")
+        let swap = "/bin/mv \(q(move.source)) \(q(kept)); /usr/bin/printf attacker > \(q(move.source))"
+        let script = loggingMoves(hooked(move.script, onRead("./x.plist", flag: move.flag, after: true, swap)), to: log)
+        let out = output(of: script)
+        let bridge = try heldBridge(move.sandbox)
+        #expect(out == "B\t\(bridge)\nR\t0\theld\n")
+        // One mv: the take. Nothing was given back or published.
+        #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").count == 1)
+        #expect(size(URL(filePath: bridge + "/0/x.plist")) == 8)
+        #expect(size(kept) == 6)
+        #expect(contents(move.source.deletingLastPathComponent()).isEmpty)
+        #expect(contents(move.trash).isEmpty)
+    }
+
+    @Test func thePlannedItemIsHeldWhenItCanGoNeitherOnNorBack() throws {
+        // Right after root verified the item in the bridge, its name is taken both in the Trash and
+        // in sys: it can't be published or given back, so it stays in the bridge, and the step says
+        // where (it used to be a plain err).
+        let move = try TrashMove(victim: false)
+        let planned = try #require(ItemIdentity.of(move.source))
+        let block = "/usr/bin/printf blocked > \(q(move.trash.appending(path: "x.plist"))); "
+            + "/usr/bin/printf blocked > \(q(move.source))"
+        let out = output(of: hooked(move.script, onBridgeRead("x.plist", flag: move.flag, block)))
+        let bridge = try heldBridge(move.sandbox)
+        #expect(out == "B\t\(bridge)\nR\t0\theld\n")
+        #expect(ItemIdentity.of(URL(filePath: bridge + "/0/x.plist")) == planned)
+        #expect(size(move.trash.appending(path: "x.plist")) == 7)
+        #expect(size(move.source) == 7)
+    }
+
+    @Test func theBridgePathIsPrintedOnceForSeveralHeldSteps() throws {
+        // Two held steps and one that worked: one B line, before the first held step.
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        let a = try sandbox.file("Library/a", bytes: 1)
+        let b = try sandbox.file("Library/b", bytes: 2)
+        let c = try sandbox.file("Library/c", bytes: 3)
+        var script = AdminScript.make([move(a, trash.appending(path: "a")), move(b, trash.appending(path: "b")),
+                                       move(c, trash.appending(path: "c"))], planning: try sandbox.adminPlanning())
+        // Only steps 1 and 2 copy instead of renaming.
+        script = copyingInsteadOfRenaming(script).replacingOccurrences(
+            of: #"exdev_() {"#, with: #"exdev_() { if [ "$i_" = 0 ]; then /bin/mv -n -h -- "$1" "$2"; return; fi;"#)
+        let out = output(of: script)
+        let bridge = try heldBridge(sandbox)
+        #expect(out == "R\t0\tok\nB\t\(bridge)\nR\t1\theld\nR\t2\theld\n")
+        #expect(AdminScript.parse(out, count: 3) == [.done, held(in: bridge), held(in: bridge)])
+        #expect(size(trash.appending(path: "a")) == 1)
     }
 
     // MARK: - The bridge
@@ -658,10 +907,10 @@ struct AdminScriptTests {
         #expect(contents(sandbox.bridges).isEmpty)
     }
 
-    /// Puts back `helper` from the Trash into a folder; just before root's rename out of the Trash,
-    /// another file is swapped in at `helper`. With `takeAgain`, the name is taken again while the
-    /// impostor is in the bridge.
-    private func putBackWithSwap(takeAgain: Bool) throws
+    /// Puts back `helper` from the Trash into a folder; another program swaps its own file in at
+    /// `helper`: `early`, before root's last check of the entry (so mv never sees it), or else right
+    /// after that check, before the rename.
+    private func putBackWithSwap(early: Bool) throws
         -> (output: String, sandbox: TestSandbox, folder: URL, trashed: URL, kept: URL)
     {
         let sandbox = try TestSandbox()
@@ -670,17 +919,14 @@ struct AdminScriptTests {
         let impostor = try sandbox.file("impostor", bytes: 9)
         let folder = try sandbox.directory("Library/PrivilegedHelperTools")
         let script = AdminScript.make([try putBackStep(trashed, into: folder)], planning: try sandbox.adminPlanning())
-        // The first at_ ./helper is the destination check; the second is in the Trash.
-        var hooks = on("at_", "./helper", nth: 2, "/bin/mv \(q(trashed)) \(q(kept)); /bin/cp \(q(impostor)) \(q(trashed))")
-        if takeAgain {
-            hooks += onBridgeRead("helper", flag: sandbox.root.appending(path: "flag"),
-                                  "/usr/bin/printf again > \(q(trashed))")
-        }
-        return (output(of: hooked(script, hooks)), sandbox, folder, trashed, kept)
+        let swap = "/bin/mv \(q(trashed)) \(q(kept)); /bin/cp \(q(impostor)) \(q(trashed))"
+        let flag = sandbox.root.appending(path: "flag")
+        return (output(of: hooked(script, onRead("./helper", flag: flag, after: !early, swap))), sandbox, folder,
+                trashed, kept)
     }
 
-    @Test func swappedSourceGoesBackToTheTrash() throws {
-        let swap = try putBackWithSwap(takeAgain: false)
+    @Test func swappedSourceIsNeverTaken() throws {
+        let swap = try putBackWithSwap(early: true)
         #expect(swap.output == "R\t0\terr\n")
         #expect(contents(swap.folder).isEmpty)
         #expect(size(swap.trashed) == 9)
@@ -688,17 +934,17 @@ struct AdminScriptTests {
         #expect(contents(swap.sandbox.bridges).isEmpty)
     }
 
-    @Test func swappedSourceThatCantGoBackStaysInTheBridge() throws {
-        // The name in the Trash was taken again, so the impostor can't go back: it stays in the
-        // bridge, unpublished; the step is err and the bridge is left (never rm -rf'ed).
-        let swap = try putBackWithSwap(takeAgain: true)
-        #expect(swap.output == "R\t0\terr\n")
+    @Test func sourceSwappedAfterTheCheckStaysInTheBridge() throws {
+        // The impostor reached the bridge: it is never published, and never given back either (only
+        // the inode root checked may leave the bridge), though its name in the Trash is free. The
+        // step is held and the bridge is left (never rm -rf'ed).
+        let swap = try putBackWithSwap(early: false)
+        let bridge = try heldBridge(swap.sandbox)
+        #expect(swap.output == "B\t\(bridge)\nR\t0\theld\n")
         #expect(contents(swap.folder).isEmpty)
-        #expect(size(swap.trashed) == 5)
+        #expect(!exists(swap.trashed))
         #expect(size(swap.kept) == 4)
-        let bridges = contents(swap.sandbox.bridges)
-        #expect(bridges.count == 1)
-        #expect(size(swap.sandbox.bridges.appending(path: "\(bridges.first ?? "")/0/helper")) == 9)
+        #expect(size(URL(filePath: bridge + "/0/helper")) == 9)
     }
 
     @Test func trashSwappedJustBeforeTheRenameIsNeverUsed() throws {
@@ -914,14 +1160,33 @@ struct AdminScriptTests {
 
     @Test func parseMapsEveryStatus() {
         let output = "R\t0\tok\nR\t1\tgone\nR\t2\tskip\nR\t3\texists\nR\t4\terr\nR\t5\tunsafe\n"
-        #expect(AdminScript.parse(output, count: 6) == [
+            + "R\t6\tunsafe_putback\nB\t/Library/.dustling-Ab12Cd34\nR\t7\theld\n"
+        #expect(AdminScript.parse(output, count: 8) == [
             .done,
             .notDone(reason: "already gone"),
             .notDone(reason: "kept because the app itself was not removed"),
             .notDone(reason: "something with the same name is already there"),
             .notDone(reason: "macOS refused, even with your password"),
             .notDone(reason: "Dustling can't safely move this with your password. Move it to the Trash in Finder."),
+            .notDone(reason: "Dustling can't safely put this back with your password. Use Put Back in Finder."),
+            .notDone(reason: "Something changed while it was moving, so Dustling stopped. "
+                + "It is untouched in /Library/.dustling-Ab12Cd34."),
         ])
+    }
+
+    @Test func parseReadsWhereAHeldItemIs() {
+        let held = { (place: String) in
+            AdminStepResult.notDone(reason: "Something changed while it was moving, so Dustling stopped. It is untouched in \(place).")
+        }
+        // The B line may come anywhere and is not a step's line; the first one counts.
+        #expect(AdminScript.parse("R\t0\theld\nR\t1\tok\nB\t/Library/.dustling-Ab12Cd34\nB\t/elsewhere\n", count: 2)
+            == [held("/Library/.dustling-Ab12Cd34"), .done])
+        // A path is read whole, spaces and tabs included.
+        #expect(AdminScript.parse("B\t/Vol ume/.dustling-x\ty\nR\t0\theld\n", count: 1) == [held("/Vol ume/.dustling-x\ty")])
+        // Without it (the script always prints it first) the reason still says where to look.
+        #expect(AdminScript.parse("R\t0\theld\nB\t\n", count: 1) == [held("a hidden folder in /Library")])
+        // B lines never become results.
+        #expect(AdminScript.parse("B\t0\tok\n", count: 1) == [.notDone(reason: "no result")])
     }
 
     @Test func parseKeepsTheFirstLineForAStep() {

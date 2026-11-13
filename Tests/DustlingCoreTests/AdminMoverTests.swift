@@ -124,6 +124,8 @@ struct AdminMoverTests {
     private let refused = AdminStepResult.notDone(reason: "macOS refused, even with your password")
     private let unsafe = AdminStepResult.notDone(
         reason: "Dustling can't safely move this with your password. Move it to the Trash in Finder.")
+    private let putBackUnsafe = AdminStepResult.notDone(
+        reason: "Dustling can't safely put this back with your password. Use Put Back in Finder.")
 
     private func size(_ url: URL) -> Int64 {
         var st = stat()
@@ -194,6 +196,36 @@ struct AdminMoverTests {
         #expect(shell.calls.first?.script.hasSuffix("\nreport_ 0 unsafe\nexit 0\n") == true)
         #expect(size(item) == 4)
         #expect(contents(elsewhere).isEmpty)
+    }
+
+    @Test func refusalsSayWhatToDoInFinder() throws {
+        // Each refused step gets the advice for its operation: a Put back (out of the Trash) points
+        // to Finder's Put Back; a move into the Trash and a delete point to the Trash in Finder.
+        #expect(AdminScript.unsafeReason
+            == "Dustling can't safely move this with your password. Move it to the Trash in Finder.")
+        #expect(AdminScript.putBackUnsafeReason
+            == "Dustling can't safely put this back with your password. Use Put Back in Finder.")
+        let sandbox = try TestSandbox()
+        let elsewhere = try sandbox.directory("elsewhere")
+        try sandbox.file("elsewhere/helper", bytes: 4)
+        try sandbox.file("elsewhere/old.log", bytes: 4)
+        // The Trash is a link when planned, so no step in it can be planned.
+        try fm.createSymbolicLink(at: sandbox.environment.userTrash, withDestinationURL: elsewhere)
+        let trash = sandbox.environment.userTrash
+        let folder = try sandbox.directory("Library/PrivilegedHelperTools")
+        let item = try sandbox.file("Library/Caches/a", bytes: 4)
+        let shell = UserShell()
+        let results = try mover(shell, sandbox).perform([
+            moveStep(trash.appending(path: "helper"), folder.appending(path: "helper")),
+            moveStep(item, trash.appending(path: "a")),
+            AdminStep(op: .delete(trash.appending(path: "old.log"))),
+        ], prompt: "p")
+        #expect(results == [putBackUnsafe, unsafe, unsafe])
+        #expect(shell.calls.first?.script.hasSuffix(
+            "\nreport_ 0 unsafe_putback\nreport_ 1 unsafe\nreport_ 2 unsafe\nexit 0\n") == true)
+        #expect(contents(folder).isEmpty)
+        #expect(size(item) == 4)
+        #expect(Set(contents(elsewhere)) == ["helper", "old.log"])
     }
 
     @Test func deleteFolderSwappedForALinkIsRefused() throws {
@@ -271,10 +303,11 @@ struct AdminMoverTests {
         #expect(chmod(folder.path(percentEncoded: false), 0o555) == 0)
         defer { _ = chmod(folder.path(percentEncoded: false), 0o755) }
         let destination = folder.appending(path: "helper")
-        // The user really can't write the folder: without the recorded identity it never runs…
+        // The user really can't write the folder: without the recorded identity it never runs (a
+        // Put back, so the reason points to Finder's Put Back)…
         let shell = UserShell()
-        #expect(try mover(shell, sandbox).perform([moveStep(trashed, destination)], prompt: "p") == [unsafe])
-        #expect(shell.calls.first?.script.hasSuffix("\nreport_ 0 unsafe\nexit 0\n") == true)
+        #expect(try mover(shell, sandbox).perform([moveStep(trashed, destination)], prompt: "p") == [putBackUnsafe])
+        #expect(shell.calls.first?.script.hasSuffix("\nreport_ 0 unsafe_putback\nexit 0\n") == true)
         #expect(size(trashed) == 4)
         // …with it, it is planned; the user-level shell then can't publish there (root could), so
         // the item goes back to the Trash.

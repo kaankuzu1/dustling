@@ -43,14 +43,31 @@ struct AdminPlanning: Sendable {
     /// Whether a folder's whole chain is root-only (`RootOnlyChain`). Required of the bridge's
     /// parent, and of the plist's folder for `bootOutDaemon` (launchctl reads the plist by path).
     var rootOnlyChain: @Sendable (String) -> Bool = { RootOnlyChain.contains($0) }
-    /// Whether Dustling's user can write a folder; a move into one they can't (Put back into a
-    /// system folder) needs `expectedSource`.
-    var userCanWrite: @Sendable (String) -> Bool = { access($0, W_OK) == 0 }
+    /// Folders to count as ones Dustling's user can't write whatever the folder itself says (tests:
+    /// a sandbox folder standing in for a system folder). Otherwise the opened folder is asked
+    /// (`PlannedFolder.read`); a move into one the user can't write needs `expectedSource`.
+    var locked: @Sendable (String) -> Bool = { _ in false }
+    /// Whether a folder is a Trash: a move out of one is a Put back, refused with its own reason.
+    var isTrash: @Sendable (String) -> Bool = AdminPlanning.trash(of: .current)
+
+    /// `environment`'s Trash folders: `~/.Trash`, and `<volumes>/<volume>/.Trashes/<uid>`.
+    static func trash(of environment: SystemEnvironment) -> @Sendable (String) -> Bool {
+        let userTrash = AdminPath.trimmingTrailingSlashes(environment.userTrash.path(percentEncoded: false))
+        let volumes = AdminPath.trimmingTrailingSlashes(environment.volumesDirectory.path(percentEncoded: false))
+        let uid = String(environment.userID)
+        return { folder in
+            if folder == userTrash { return true }
+            guard folder.hasPrefix(volumes + "/") else { return false }
+            let parts = folder.dropFirst(volumes.count + 1).split(separator: "/", omittingEmptySubsequences: false)
+            return parts.count == 3 && !parts[0].isEmpty && parts[1] == ".Trashes" && parts[2] == uid
+        }
+    }
 }
 
 /// Builds the one POSIX sh script that does every step of a user action as root, and reads back
 /// what happened. The script prints exactly one line per step, `R<TAB><index><TAB><status>`,
-/// with status `ok`, `gone`, `skip`, `exists`, `err` or `unsafe`.
+/// with status `ok`, `gone`, `skip`, `exists`, `err`, `unsafe`, `unsafe_putback` or `held`. Before
+/// the first `held` step it prints the bridge's path once, `B<TAB><path>`.
 ///
 /// Every step goes between a pinned folder and a root-only bridge on the same volume:
 /// - The bridge: once per script, root makes `/Library/.dustling-XXXXXXXX` with `mktemp -d`
@@ -62,16 +79,21 @@ struct AdminPlanning: Sendable {
 /// - A folder is pinned: `cd -P <folder>`, then `stat -f '%d:%i:%u' .` must be the identity
 ///   planning saw (volume, inode, owner). From a pinned folder the script names only `.` and
 ///   `./<name>`.
-/// - Out of a folder: pin it, `mv -n -h -- ./<name> <bridge>/<index>/`. In the bridge the item must
-///   have the identity planning recorded for it and, when given, `expectedSource`. Otherwise it is
-///   given back: the folder is pinned again and `mv -n -h -- <bridge>/<index>/<name> .`; if that
-///   doesn't happen (the name was taken again), it stays in the bridge. Either way the step is
-///   `err`.
+/// - Out of a folder: pin it; right before the rename, `./<name>` must still have the identity
+///   planning recorded for the item (`stat -f '%d:%i:%u'`, which doesn't follow a link; a disk image
+///   mounted there is another volume), else nothing is done (`err`). Then
+///   `mv -n -h -- ./<name> <bridge>/<index>/`. In the bridge the item must have that identity
+///   again: the inode root checked, renamed, never a copy (`/bin/mv` copies with `cp -PRp` and
+///   removes the source with `rm -rf` when rename(2) fails with EXDEV). Anything else that got
+///   there stays there for good, unpublished and never given back: `held`.
+/// - Only the inode root took leaves the bridge: right before publishing or giving back, the item
+///   in the bridge must have the item's planned identity.
 /// - Into a folder: inside the bridge the item gets its final name ("name 2"); the destination is
 ///   pinned and `mv -n -h -- <bridge>/<index>/<final> .`; `ok` only if `./<final>` then has the
 ///   item's identity. If it couldn't be published (the name was taken in the meantime, or the
-///   destination changed) it is given back to the folder it came from as above, and the step is
-///   `err`.
+///   destination changed) it is given back to the folder it came from (pinned again,
+///   `mv -n -h -- <bridge>/<index>/<name> .`), and the step is `err`; if that doesn't happen either
+///   (the name was taken there too), it stays in the bridge: `held`.
 /// - A move (to the Trash, or Put back) is out of the source folder and into the destination, with
 ///   the destination's name checked free first (`exists`). A delete (Empty Trash) is out of the
 ///   folder, then `rm -rfx` on the verified item inside the bridge (never following links, never
@@ -79,15 +101,18 @@ struct AdminPlanning: Sendable {
 ///   after the destination check and before the item is taken, and only if the plist is still the
 ///   planned item, a regular file and not a link.
 ///
-/// Planning (when the script is made, as the user) reads each folder a step touches with lstat
-/// (a real directory; its identity is recorded) and the item itself (its identity, or that it is
-/// missing). It refuses a step as `unsafe` ("Dustling can't safely move this with your password.
-/// Move it to the Trash in Finder.") when the item or a folder is on another volume than the bridge
-/// (or no bridge can be made), a folder is not a real directory, `bootOutDaemon` is asked for a
-/// plist whose folder chain isn't root-only, or a move goes into a folder the user can't write
-/// without `expectedSource`. A move whose item (or source folder) is missing reports `gone`; a
-/// delete whose item is missing reports `ok` if it is still missing (and `err` if something
-/// appeared). An `expectedSource` that isn't the item planning saw is `err`.
+/// Planning (when the script is made, as the user) opens each folder a step touches once
+/// (`O_DIRECTORY | O_NOFOLLOW`, so a real directory) and reads through that descriptor its
+/// identity, whether the user can write it and the item's identity in it (`PlannedFolder.read`).
+/// It refuses a step when the item or a folder is on another volume than the bridge (or no bridge
+/// can be made), a folder is not a real directory, `bootOutDaemon` is asked for a plist whose folder
+/// chain isn't root-only, or a move goes into a folder the user can't write without
+/// `expectedSource`: `unsafe_putback` ("Dustling can't safely put this back with your password. Use
+/// Put Back in Finder.") for a move out of the Trash (`AdminPlanning.isTrash`), `unsafe` ("Dustling
+/// can't safely move this with your password. Move it to the Trash in Finder.") for a move into the
+/// Trash or a delete. A move whose item (or source folder) is missing reports `gone`; a delete whose
+/// item is missing reports `ok` if it is still missing (and `err` if something appeared). An
+/// `expectedSource` that isn't the item planning saw is `err`.
 ///
 /// What this guarantees, against a program running as Dustling's user (even with Full Disk Access)
 /// that renames, replaces or mounts things in any folder the user can write, at any moment:
@@ -96,24 +121,32 @@ struct AdminPlanning: Sendable {
 ///   root-only chain), and the folders it pins, each followed by the identity check before
 ///   anything is done in it. Everything else is `.` or `./<name>` of a pinned folder. Paths are
 ///   also read (`stat`, existence tests), which changes nothing.
-/// - Out of a folder root takes only `./<name>` of the very folder planning saw. Into a folder it
-///   puts only an item that sat in its private bridge folder and had the planned identity there:
-///   the requested item, at its destination, or an item it took from that same folder a moment
-///   before, given back. It deletes only the planned item, inside the bridge.
-/// - Such a program can make a step fail (`err`). It can make the requested item end up in a
-///   folder it can write other than the one asked for (by moving the pinned destination folder, or
-///   renaming the item once published). An item swapped in that can't be given back stays in the
-///   bridge, unpublished, and the step is `err`.
+/// - Out of a folder root takes only `./<name>` of the very folder planning saw, and only after
+///   checking it is still the planned item. Into a folder it puts only the very inode it took and
+///   checked: the requested item at its destination, or given back to the folder it came from. A
+///   copy (of anything) never leaves the bridge. It deletes only the planned item, inside the bridge.
+/// - Such a program can make a step fail (`err`, or `held` with what root took kept in the bridge).
+///   It can make the requested item end up in a folder it can write other than the one asked for
+///   (by moving the pinned destination folder, or renaming the item once published).
 ///
 /// What it doesn't:
 /// - The plan is what was there at planning time. An item swapped before planning is what gets
 ///   planned; Put back's `expectedSource` (from the journal) covers that.
+/// - Between root's last check of `./<name>` and its rename, the entry can still change. Root then
+///   takes the other entry into the bridge, where it stays (`held`). If that entry is a mount (another
+///   volume), `/bin/mv` copies it into the bridge and then runs `rm -rf -- ./<name>` in the pinned
+///   folder, as root, on whatever is at that name by then. When publishing or giving back, a mount
+///   that appears at the target name after mv's `-n` check makes the rename fail; mv's fallback
+///   first removes the target (`rmdir`, which a mount refuses), so nothing is copied unless the
+///   mount goes away in that instant: then the item itself is copied there and the step is `err`.
+///   `/bin/mv` has no option to only rename.
 /// - Identities compare the item itself, not what is inside a folder item. A program holding an
 ///   open descriptor on a folder inside a user-owned item can still add or remove entries in it
 ///   while it sits in the bridge. It can only add something it could move there anyway (moving a
 ///   folder between folders takes write permission on that folder, so never a root-owned one), and
 ///   on Empty Trash that is then deleted with the item.
-/// - A batch interrupted halfway (the Mac shuts down) leaves its hidden bridge in `/Library`.
+/// - A batch interrupted halfway (the Mac shuts down) leaves its hidden bridge in `/Library`. A held
+///   item is never deleted: it stays in `<bridge>/<index>/`.
 ///
 /// Quoting and input checks:
 /// - Each step is one call line. Paths and names are single-quoted with `'` → `'\''`, done
@@ -121,7 +154,8 @@ struct AdminPlanning: Sendable {
 ///   Character-based replacing would miss it). Inside the functions every value is used
 ///   double-quoted, so the shell never expands, splits or globs anything from a name. Tools have
 ///   absolute paths and get `--` (except `chmod -N`, which takes `--` for a file name; it only
-///   gets an absolute path); nothing is evaluated; paths never appear in comments or output.
+///   gets an absolute path); nothing is evaluated; no path appears in comments, and the only one
+///   in the output is the bridge's own (`B` line).
 /// - A path that is not absolute, is `/`, has a `.` or `..` component or a NUL byte (checked on
 ///   UTF-8 bytes) never reaches a tool: `err`.
 public enum AdminScript {
@@ -130,6 +164,7 @@ public enum AdminScript {
     public static let existsReason = "something with the same name is already there"
     public static let refusedReason = "macOS refused, even with your password"
     public static let unsafeReason = "Dustling can't safely move this with your password. Move it to the Trash in Finder."
+    public static let putBackUnsafeReason = "Dustling can't safely put this back with your password. Use Put Back in Finder."
     public static let noResultReason = "no result"
 
     /// Reads each step's folders and item now (planning time) and builds the script.
@@ -138,7 +173,8 @@ public enum AdminScript {
     }
 
     static func make(_ steps: [AdminStep], planning: AdminPlanning) -> String {
-        make(steps, plans: steps.map { plan(of: $0, planning: planning) }, bridge: PlannedBridge(planning))
+        make(steps, plans: steps.map { plan(of: $0, planning: planning) }, bridge: PlannedBridge(planning),
+             isTrash: planning.isTrash)
     }
 
     /// What planning learned about a folder a step acts in.
@@ -155,11 +191,38 @@ public enum AdminScript {
             self.rootOnlyChain = rootOnlyChain
         }
 
-        /// The folder at `path` if it is a real directory right now (lstat).
-        init?(path: String, planning: AdminPlanning) {
-            guard let identity = ItemIdentity.of(path: path, directoryOnly: true) else { return nil }
-            self.init(identity: identity, userCanWrite: planning.userCanWrite(path),
-                      rootOnlyChain: planning.rootOnlyChain(path))
+        enum Read: Equatable {
+            /// A real directory, and the identity of the entry asked about (nil: nothing there).
+            case found(PlannedFolder, item: ItemIdentity?)
+            /// Nothing at the path (or above it).
+            case missing
+            /// A link, a file, or a folder that can't be opened.
+            case unusable
+        }
+
+        /// The folder at `path`, read through one descriptor: `open(O_RDONLY | O_DIRECTORY |
+        /// O_NOFOLLOW)`, then its identity (`fstat`), whether Dustling's user can write it
+        /// (`faccessat(fd, ".", W_OK)`, the real ids as `access(2)` uses) and the identity of its
+        /// entry `name` (`fstatat(fd, name, AT_SYMLINK_NOFOLLOW)`, lstat semantics). All of them
+        /// belong to the same directory even if another program renames or replaces what is at
+        /// `path` meanwhile. Only whether the folder's chain is root-only goes by `path`: no one but
+        /// root can change such a chain. `afterOpen` runs right after the open (tests: a swap).
+        static func read(_ path: String, item name: String?, planning: AdminPlanning, afterOpen: () -> Void = {})
+            -> Read
+        {
+            let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { return errno == ENOENT ? .missing : .unusable }
+            defer { close(fd) }
+            afterOpen()
+            var info = stat()
+            guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return .unusable }
+            let writable = !planning.locked(path) && faccessat(fd, ".", W_OK, 0) == 0
+            var item: ItemIdentity?
+            var entry = stat()
+            if let name, fstatat(fd, name, &entry, AT_SYMLINK_NOFOLLOW) == 0 { item = ItemIdentity(entry) }
+            let folder = PlannedFolder(
+                identity: ItemIdentity(info), userCanWrite: writable, rootOnlyChain: planning.rootOnlyChain(path))
+            return .found(folder, item: item)
         }
     }
 
@@ -198,27 +261,30 @@ public enum AdminScript {
         switch step.op {
         case .move(let from, let to, _):
             guard let source = AdminPath(from), let destination = AdminPath(to),
-                  let folder = PlannedFolder(path: destination.folder, planning: planning)
+                  case .found(let folder, _) = PlannedFolder.read(destination.folder, item: nil, planning: planning)
             else { return nil }
-            let item = ItemIdentity.of(path: source.full)
-            if let sourceFolder = PlannedFolder(path: source.folder, planning: planning) {
-                return StepPlan(folder: folder, source: sourceFolder, item: item)
+            switch PlannedFolder.read(source.folder, item: source.name, planning: planning) {
+            case .found(let sourceFolder, let item): return StepPlan(folder: folder, source: sourceFolder, item: item)
+            case .missing: return StepPlan(folder: folder, source: nil, item: nil, sourceGone: true)
+            case .unusable: return nil
             }
-            var info = stat()
-            let missing = lstat(source.folder, &info) != 0 && errno == ENOENT
-            return missing ? StepPlan(folder: folder, source: nil, item: nil, sourceGone: true) : nil
         case .delete(let url):
-            guard let item = AdminPath(url), let folder = PlannedFolder(path: item.folder, planning: planning)
+            guard let item = AdminPath(url),
+                  case .found(let folder, let identity) = PlannedFolder.read(item.folder, item: item.name, planning: planning)
             else { return nil }
-            return StepPlan(folder: folder, source: nil, item: ItemIdentity.of(path: item.full))
+            return StepPlan(folder: folder, source: nil, item: identity)
         }
     }
 
     /// `plans[i]` is what planning found for step i (nil: a folder is not a real directory);
-    /// `bridge` where the bridge goes (nil: it can't be made).
-    static func make(_ steps: [AdminStep], plans: [StepPlan?], bridge: PlannedBridge?) -> String {
+    /// `bridge` where the bridge goes (nil: it can't be made); `isTrash` which folders are a Trash
+    /// (a refused move out of one is a Put back).
+    static func make(
+        _ steps: [AdminStep], plans: [StepPlan?], bridge: PlannedBridge?, isTrash: (String) -> Bool = { _ in false }
+    ) -> String {
         let calls = steps.enumerated().map { index, step in
-            call(for: step, at: index, plan: index < plans.count ? plans[index] : nil, bridge: bridge)
+            call(for: step, at: index, plan: index < plans.count ? plans[index] : nil, bridge: bridge,
+                 isTrash: isTrash)
         }
         var lines = [prelude, "own_=\(bridge?.owner ?? 0)"]
         let needsBridge = calls.contains { $0.hasPrefix("move_ ") || $0.hasPrefix("delete_ ") }
@@ -233,22 +299,34 @@ public enum AdminScript {
     }
 
     /// One result per step, in order. A step without a line (or with an unreadable one) is
-    /// `.notDone(reason: "no result")`; when a step has several lines the first one counts.
+    /// `.notDone(reason: "no result")`; when a step has several lines the first one counts. A
+    /// `held` step's reason names the bridge from the script's `B<TAB><path>` line (the first one).
     public static func parse(_ output: String, count: Int) -> [AdminStepResult] {
         guard count > 0 else { return [] }
+        let lines = output.split(whereSeparator: \.isNewline)
+        let bridge = lines.lazy.compactMap { line -> String? in
+            let fields = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            return fields.count == 2 && fields[0] == "B" && !fields[1].isEmpty ? String(fields[1]) : nil
+        }.first
         var results = [AdminStepResult?](repeating: nil, count: count)
-        for line in output.split(whereSeparator: \.isNewline) {
+        for line in lines {
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
             guard fields.count == 3, fields[0] == "R",
                   let index = Int(fields[1]), results.indices.contains(index), results[index] == nil,
-                  let result = result(for: String(fields[2]))
+                  let result = result(for: String(fields[2]), bridge: bridge)
             else { continue }
             results[index] = result
         }
         return results.map { $0 ?? .notDone(reason: noResultReason) }
     }
 
-    private static func result(for status: String) -> AdminStepResult? {
+    /// Why a step is `held`: what root took is still in the bridge at `bridge` (its path, from the
+    /// script; nil if it didn't say), in that step's subfolder.
+    public static func heldReason(bridge: String?) -> String {
+        "Something changed while it was moving, so Dustling stopped. It is untouched in \(bridge ?? "a hidden folder in /Library")."
+    }
+
+    private static func result(for status: String, bridge: String?) -> AdminStepResult? {
         switch status {
         case "ok": return .done
         case "gone": return .notDone(reason: goneReason)
@@ -256,6 +334,8 @@ public enum AdminScript {
         case "exists": return .notDone(reason: existsReason)
         case "err": return .notDone(reason: refusedReason)
         case "unsafe": return .notDone(reason: unsafeReason)
+        case "unsafe_putback": return .notDone(reason: putBackUnsafeReason)
+        case "held": return .notDone(reason: heldReason(bridge: bridge))
         default: return nil
         }
     }
@@ -267,7 +347,9 @@ public enum AdminScript {
     ///   <destination folder identity> <new name>`
     /// - `delete_ <index> <head|-> <expected identity|-> <folder> <folder identity> <name>
     ///   <item identity|- when missing>`
-    /// `own_`, the owner the bridge must have, is set after the functions.
+    /// `own_`, the owner the bridge must have, is set after the functions. `take_` leaves `t_` as
+    /// `ok` (the planned item is in `<bridge>/<index>`), `gone`, `err` (nothing taken) or `held`
+    /// (something else got into the bridge and stays there).
     static let prelude = #"""
         set +e
         umask 077
@@ -277,10 +359,12 @@ public enum AdminScript {
         ok_=' '
         br_=
         bok_=0
+        bp_=0
         id_() { /usr/bin/stat -f '%d:%i:%u' -- "$1" 2>/dev/null; }
         at_() { [ -e "$1" ] || [ -L "$1" ]; }
         report_() {
           if [ "$2" = ok ]; then ok_="$ok_$1 "; fi
+          if [ "$2" = held ] && [ "$bp_" != 1 ]; then printf 'B\t%s\n' "$br_"; bp_=1; fi
           printf 'R\t%s\t%s\n' "$1" "$2"
         }
         after_() {
@@ -303,7 +387,7 @@ public enum AdminScript {
           if [ "$bok_" = 1 ]; then /bin/rmdir -- "$k_" 2>/dev/null; fi
           report_ "$i_" "$1"
         }
-        back_() { if pin_ "$1" "$2"; then /bin/mv -n -h -- "$k_/$3" . >/dev/null 2>&1; fi; }
+        back_() { if pin_ "$1" "$2" && [ "$(id_ "$k_/$3")" = "$4" ]; then /bin/mv -n -h -- "$k_/$3" . >/dev/null 2>&1; fi; }
         take_() {
           t_=err
           if ! pin_ "$1" "$2"; then
@@ -311,12 +395,10 @@ public enum AdminScript {
             return
           fi
           if ! at_ "./$3"; then t_=gone; return; fi
+          if [ "$5" != - ] && [ "$5" != "$4" ]; then return; fi
           /bin/mkdir -m 700 -- "$k_" 2>/dev/null || return
-          /bin/mv -n -h -- "./$3" "$k_/" >/dev/null 2>&1
-          got_=$(id_ "$k_/$3")
-          if [ -z "$got_" ]; then return; fi
-          if [ "$got_" = "$4" ] && { [ "$5" = - ] || [ "$got_" = "$5" ]; }; then t_=ok; return; fi
-          back_ "$1" "$2" "$3"
+          if [ "$(id_ "./$3")" = "$4" ]; then /bin/mv -n -h -- "./$3" "$k_/" >/dev/null 2>&1; fi
+          if [ "$(id_ "$k_/$3")" = "$4" ]; then t_=ok; elif ! empty_ "$k_"; then t_=held; fi
         }
         boot_() {
           if [ "$b_" = 1 ] && pin_ "$sd_" "$sid_" && [ "$(id_ "./$sn_")" = "$iid_" ] \
@@ -335,11 +417,12 @@ public enum AdminScript {
           take_ "$sd_" "$sid_" "$sn_" "$iid_" "$e_"
           if [ "$t_" != ok ]; then fin_ "$t_"; return; fi
           if [ "$same_" != 1 ]; then /bin/mv -n -h -- "$k_/$sn_" "$k_/$dn_" >/dev/null 2>&1; fi
-          if pin_ "$dd_" "$did_"; then /bin/mv -n -h -- "$k_/$dn_" . >/dev/null 2>&1; fi
+          if pin_ "$dd_" "$did_" && [ "$(id_ "$k_/$dn_")" = "$iid_" ]; then /bin/mv -n -h -- "$k_/$dn_" . >/dev/null 2>&1; fi
           if at_ "$k_/$dn_" || at_ "$k_/$sn_"; then
             if [ "$same_" != 1 ]; then /bin/mv -n -h -- "$k_/$dn_" "$k_/$sn_" >/dev/null 2>&1; fi
-            back_ "$sd_" "$sid_" "$sn_"
-            fin_ err; return
+            back_ "$sd_" "$sid_" "$sn_" "$iid_"
+            if empty_ "$k_"; then fin_ err; else fin_ held; fi
+            return
           fi
           if [ "$(id_ "./$dn_")" = "$iid_" ]; then fin_ ok; else fin_ err; fi
         }
@@ -353,30 +436,35 @@ public enum AdminScript {
           if [ "$bok_" != 1 ]; then report_ "$i_" err; return; fi
           take_ "$4" "$5" "$6" "$7" "$e_"
           if [ "$t_" = gone ]; then fin_ ok; return; fi
-          if [ "$t_" != ok ]; then fin_ err; return; fi
+          if [ "$t_" != ok ]; then fin_ "$t_"; return; fi
           /bin/rm -rfx -- "$k_/$6" >/dev/null 2>&1
           if at_ "$k_/$6"; then fin_ err; else fin_ ok; fi
         }
         """#
 
     /// The one line that runs this step.
-    private static func call(for step: AdminStep, at index: Int, plan: StepPlan?, bridge: PlannedBridge?) -> String {
+    private static func call(
+        for step: AdminStep, at index: Int, plan: StepPlan?, bridge: PlannedBridge?, isTrash: (String) -> Bool
+    ) -> String {
         var head = "-"
         if let dependsOn = step.dependsOn {
             guard (0..<index).contains(dependsOn) else { return "report_ \(index) skip" }
             head = String(dependsOn)
         }
         let refused = "report_ \(index) err"
-        let unsafe = "report_ \(index) unsafe"
+        var unsafe = "report_ \(index) unsafe"
         let expected = step.expectedSource?.stamp ?? "-"
         switch step.op {
         case .move(let from, let to, let bootOutDaemon):
             guard let source = AdminPath(from), let destination = AdminPath(to) else { return refused }
+            // Out of the Trash: a Put back, whose refusal points to Finder's Put Back.
+            if isTrash(source.folder) { unsafe = "report_ \(index) unsafe_putback" }
             guard let plan else { return unsafe }
             if plan.sourceGone { return "gone_ \(index) \(head)" }
             guard let sourceFolder = plan.source else { return unsafe }
             guard let item = plan.item else { return "gone_ \(index) \(head)" }
-            // Every rename stays on the bridge's volume: mv never copies and deletes instead.
+            // Every rename stays on the bridge's volume (mv would copy and delete instead; the script
+            // also checks right before each rename).
             guard let bridge, [item.device, sourceFolder.identity.device, plan.folder.identity.device]
                 .allSatisfy({ $0 == bridge.device })
             else { return unsafe }

@@ -24,9 +24,13 @@ public struct ItemIdentity: Equatable, Hashable, Sendable {
         var info = stat()
         guard lstat(path, &info) == 0 else { return nil }
         if directoryOnly, (info.st_mode & S_IFMT) != S_IFDIR { return nil }
+        return ItemIdentity(info)
+    }
+
+    /// The identity in `info` (from lstat, fstat or fstatat).
+    init(_ info: stat) {
         // `stat -f %d` widens the signed dev_t to 64 bits the same way.
-        return ItemIdentity(
-            device: UInt64(bitPattern: Int64(info.st_dev)), inode: UInt64(info.st_ino), owner: info.st_uid)
+        self.init(device: UInt64(bitPattern: Int64(info.st_dev)), inode: UInt64(info.st_ino), owner: info.st_uid)
     }
 
     /// As `/usr/bin/stat -f '%d:%i:%u'` prints it.

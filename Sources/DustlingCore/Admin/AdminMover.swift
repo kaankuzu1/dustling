@@ -9,7 +9,8 @@ public struct AdminMover: Sendable {
     private let planning: AdminPlanning
 
     public init(shell: AdminShell, environment: SystemEnvironment) {
-        self.init(shell: shell, environment: environment, planning: AdminPlanning())
+        self.init(shell: shell, environment: environment,
+                  planning: AdminPlanning(isTrash: AdminPlanning.trash(of: environment)))
     }
 
     /// `planning` says where the bridge goes and who must own it; tests point it at a sandbox,
@@ -61,13 +62,20 @@ public struct AdminMover: Sendable {
     }
 
     /// Runs every step in one script. The folders each step acts in and the item itself are read
-    /// now (planning); the script refuses a step whose folders or item changed by the time it runs.
-    /// Every item passes through a private root-only bridge folder in `/Library` (see
-    /// `AdminScript`). Refused without running, as `.notDone(reason: AdminScript.unsafeReason)`
-    /// ("Dustling can't safely move this with your password. Move it to the Trash in Finder."):
-    /// an item or folder on another volume than `/Library`; a folder that is not a real directory;
-    /// `bootOutDaemon` when the plist's folder chain isn't root-only; a move into a folder the user
-    /// can't write without the recorded `expectedSource` (Put back's steps carry it).
+    /// now (planning, one descriptor per folder); the script refuses a step whose folders or item
+    /// changed by the time it runs, checking the item again right before it is renamed. Every item
+    /// passes through a private root-only bridge folder in `/Library` (see `AdminScript`).
+    /// Refused without running: an item or folder on another volume than `/Library`; a folder that
+    /// is not a real directory; `bootOutDaemon` when the plist's folder chain isn't root-only; a move
+    /// into a folder the user can't write without the recorded `expectedSource` (Put back's steps
+    /// carry it). The reason is `AdminScript.putBackUnsafeReason` ("Dustling can't safely put this
+    /// back with your password. Use Put Back in Finder.") for a move out of the environment's Trash,
+    /// and `AdminScript.unsafeReason` ("Dustling can't safely move this with your password. Move it
+    /// to the Trash in Finder.") for a move into the Trash or a delete.
+    /// When something changed while an item was moving and what root took can't safely leave the
+    /// bridge, it stays there, untouched: `.notDone(reason: AdminScript.heldReason(bridge:))` names
+    /// the bridge ("Something changed while it was moving, so Dustling stopped. It is untouched in
+    /// /Library/.dustling-XXXXXXXX.").
     /// No steps: the shell is never called. The password box cancelled: every step is `.cancelled`.
     /// The shell failed: every step is `.notDone` with why.
     public func perform(_ steps: [AdminStep], prompt: String) -> [AdminStepResult] {
