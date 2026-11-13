@@ -33,6 +33,8 @@ macOS ties Full Disk Access to the code signature. With ad-hoc signing every reb
 
 Open **System Settings > Privacy & Security > Full Disk Access** and switch Dustling on. Without it, Dustling still runs and says which places it can't read.
 
+Debug builds are a separate app: they are called "Dustling Dev" and use the bundle ID `app.dustling.Dustling.debug`. macOS keeps Full Disk Access per bundle ID, so a Debug build needs its own grant, and it no longer disturbs the one for the installed Dustling.
+
 ## Repository in iCloud Drive
 
 If the repository sits in an iCloud-synced folder (Desktop or Documents), File Provider tags the built app with Finder information and `codesign` refuses to sign it. Two build phases handle this: one marks the build products folder as not synced (`com.apple.fileprovider.ignore#P`), and one clears extended attributes from the app before signing.

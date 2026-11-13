@@ -20,8 +20,9 @@ public struct CategoryTileModel: Identifiable, Equatable, Sendable {
     public let issues: [ScanIssue]
     /// Items belonging to apps that are open right now; a clean leaves them alone.
     public let inUseCount: Int
-    /// Only the cleanup helper can move these (system caches): shown with their size, never selected.
-    public var needsHelper: Bool = false
+    /// macOS manages what is in it (System caches and logs, `JunkCategory.isNeverCleaned`): shown with
+    /// its size for information, never selected, not even by choice, and never cleaned.
+    public var leftAlone: Bool = false
     /// Files the user left out in Review files: never moved, never counted as selected.
     public var excludedCount: Int = 0
     public var excludedBytes: UInt64 = 0
@@ -259,6 +260,10 @@ public final class JunkScanModel {
     /// Reads the bundle IDs running right now; `clean()` re-checks in-use with it before every cleanup.
     /// nil: keep what the scan saw.
     @ObservationIgnored public var runningBundleIDs: (@Sendable () -> Set<String>)?
+    /// What moves items of the system with the Mac password now, read when a cleanup or Put
+    /// everything back starts: one password box for all of them. The app passes one only while
+    /// Dustling has Full Disk Access (and never in its QA copy); nil: they stay needing admin.
+    @ObservationIgnored public var admin: @MainActor () -> AdminMover? = { nil }
     /// Owner bundle ID → running, from the last re-check. Empty until one (the scan's view holds).
     private var runningNow: [String: Bool] = [:]
     /// Apps closed before the last cleanup, by name, for the summary. A rescan clears them.
@@ -304,8 +309,8 @@ public final class JunkScanModel {
 
     // MARK: derived
 
-    /// What a clean would move: selected, fully scanned categories that don't need admin, minus the
-    /// items of apps that are open right now.
+    /// What a clean would move: selected, fully scanned categories, minus the items of apps that are
+    /// open right now.
     public var selectedBytes: UInt64 {
         selectedBytesByCategory.values.reduce(0, +)
     }
@@ -438,17 +443,15 @@ public final class JunkScanModel {
 
     private func tile(for scan: CategoryScan, selected: Bool?) -> CategoryTileModel {
         let category = scan.category
-        // Admin-only categories wait for the cleanup helper: shown with their size, never selected.
-        let initial = !scan.stopped && !category.requiresAdmin && category.selection == .preselected && preselectSafe
+        // What macOS manages (System caches and logs) is shown, never selected and never cleaned.
+        let initial = !scan.stopped && category.isSelectedByDefault && preselectSafe
         return CategoryTileModel(
             id: category.id, title: category.title,
-            note: category.requiresAdmin
-                ? "Needs the cleanup helper"
-                : (category.id == .iosBackups ? "Your data, never selected for you" : nil),
+            note: category.id == .iosBackups ? "Your data, never selected for you" : nil,
             bytes: scan.bytes, itemCount: scan.items.count, selection: category.selection,
-            isSelected: (scan.stopped || category.requiresAdmin) ? false : (selected ?? initial), stopped: scan.stopped,
+            isSelected: (scan.stopped || category.isNeverCleaned) ? false : (selected ?? initial), stopped: scan.stopped,
             issues: scan.issues, inUseCount: scan.items.filter { inUseOwner($0) != nil }.count,
-            needsHelper: category.requiresAdmin,
+            leftAlone: category.isNeverCleaned,
             excludedCount: scan.items.filter { excludedItems.contains($0.url) }.count,
             excludedBytes: scan.items.filter { excludedItems.contains($0.url) }.reduce(0) { $0 + $1.bytes })
     }
@@ -585,7 +588,7 @@ public final class JunkScanModel {
     public func toggle(_ id: JunkCategoryID) {
         guard case .ready = state, let index = categories.firstIndex(where: { $0.id == id }) else { return }
         let tile = categories[index]
-        guard !tile.stopped, tile.selection != .emptyTrashOnly, scans[id]?.category.requiresAdmin != true else { return }
+        guard !tile.stopped, tile.selection != .emptyTrashOnly, !tile.leftAlone else { return }
         categories[index].isSelected.toggle()
         message = nil
     }
@@ -657,7 +660,7 @@ public final class JunkScanModel {
         categoryOutcomes = [:]
         self.closedApps = closedApps
         state = .moving(done: 0, total: urls.count, bytes: 0)
-        let runner = self.runner
+        let runner = self.runner.with(admin: admin())
         let allowedRoots = Array(roots)
         let itemSizes = sizes
         let itemCategories = urlCategory
@@ -706,10 +709,11 @@ public final class JunkScanModel {
         guard !paths.isEmpty else { throw RunJournalError.notRestorable(record.id) }
         let journal = self.journal
         let id = record.id
+        let admin = self.admin()
         isRestoring = true
         defer { isRestoring = false }
         do {
-            let outcomes = try await Blocking.run { try journal.restore(runID: id, paths: paths) }
+            let outcomes = try await Blocking.run { try journal.restore(runID: id, paths: paths, admin: admin) }
             // Only onto the summary of this same run.
             if case .done(let shown) = state, shown.id == id {
                 restoreOutcomes = outcomes
@@ -738,6 +742,8 @@ extension JunkScanModel {
         case scanning(ScanProgress, finished: Int)
         /// The summary of this run (its entries' paths are the fixture items' paths).
         case done(RunRecord)
+        /// A cleanup of the selected tiles that has moved `done` of their items so far.
+        case moving(done: Int)
     }
 
     /// Screenshot fixture (DEBUG only): shows these scan results without reading the disk. The model
@@ -777,7 +783,27 @@ extension JunkScanModel {
                 categoryProgress[tile.id] = CategoryProgress(done: tile.itemCount, total: tile.itemCount)
             }
             state = .done(record)
+        case .moving(let done):
+            for scan in results { scans[scan.category.id] = scan }
+            rebuildTiles()
+            lastScanFinishedAt = .now
+            var total = 0
+            var moved: UInt64 = 0
+            for tile in categories where tile.isSelected {
+                guard let scan = scans[tile.id] else { continue }
+                let finished = min(scan.items.count, max(0, done - total))
+                categoryProgress[tile.id] = CategoryProgress(done: finished, total: scan.items.count)
+                moved += scan.items.prefix(finished).reduce(0) { $0 + $1.bytes }
+                total += scan.items.count
+            }
+            state = .moving(done: min(done, total), total: total, bytes: moved)
         }
+    }
+
+    /// Screenshot fixture: Put everything back is running (it never finishes).
+    public func showFixtureRestoring() {
+        guard isFixture else { return }
+        isRestoring = true
     }
 }
 #endif

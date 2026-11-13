@@ -7,12 +7,12 @@ private let quarter: UInt64 = 268_435_456
 
 private func tile(
     _ id: JunkCategoryID, _ bytes: UInt64, selected: Bool = true, stopped: Bool = false,
-    selection: Selection = .preselected, items: Int = 3, inUse: Int = 0, needsHelper: Bool = false
+    selection: Selection = .preselected, items: Int = 3, inUse: Int = 0, leftAlone: Bool = false
 ) -> CategoryTileModel {
     CategoryTileModel(
         id: id, title: "\(id)", note: id == .iosBackups ? "Your data, never selected for you" : nil, bytes: bytes,
         itemCount: items, selection: selection, isSelected: selected, stopped: stopped, issues: [], inUseCount: inUse,
-        needsHelper: needsHelper)
+        leftAlone: leftAlone)
 }
 
 private let catalog: [JunkScreen.Entry] = [
@@ -28,37 +28,80 @@ private let catalog: [JunkScreen.Entry] = [
 private func input(
     phase: JunkScreen.Phase = .ready, tiles: [CategoryTileModel], places: [Place]? = nil,
     scope: HomeScanScope? = nil, progress: [JunkCategoryID: CategoryProgress] = [:],
-    outcomes: [JunkCategoryID: CategoryOutcome] = [:]
+    outcomes: [JunkCategoryID: CategoryOutcome] = [:], fullDiskAccess: Bool = true
 ) -> JunkScreen.Input {
     let places = places ?? catalog.filter { $0.id != .trash }.map { Place(id: $0.id, access: .readable) }
     return JunkScreen.Input(
         catalog: catalog, phase: phase, tiles: tiles, places: places,
-        scope: scope ?? HomeScanScope.make(places: places), progress: progress, outcomes: outcomes)
+        scope: scope ?? HomeScanScope.make(places: places), progress: progress, outcomes: outcomes,
+        fullDiskAccess: fullDiskAccess)
 }
 
 struct JunkScreenTilesTests {
     @Test func tilesFollowTheCatalogInTwoSectionsWithoutTheTrash() {
         let tiles = JunkScreen.tiles(input(tiles: [
             tile(.userCaches, quarter), tile(.userLogs, 0), tile(.xcodeJunk, 2 * quarter),
-            tile(.systemCachesAndLogs, quarter, selected: false, needsHelper: true),
+            tile(.systemCachesAndLogs, quarter, selected: false, leftAlone: true),
             tile(.iosBackups, quarter, selected: false, selection: .review),
             tile(.mailDownloads, 0, selected: false, selection: .review),
         ]))
         #expect(tiles.map(\.id) == [.userCaches, .userLogs, .xcodeJunk, .systemCachesAndLogs, .iosBackups, .mailDownloads])
-        #expect(tiles.filter { $0.section == .safe }.count == 4)
+        #expect(tiles.filter { $0.section == .safe }.count == 3)
         #expect(tiles.filter { $0.section == .review }.count == 2)
         #expect(tiles[0].status == .scanned && tiles[0].canToggle)
-        #expect(tiles[3].status == .needsHelper && !tiles[3].canToggle)
-        #expect(tiles[3].note == "Needs the cleanup helper (coming in a later version)")
+        // System caches and logs: its size for information, never ticked, never cleaned, and in
+        // neither section: "Safe to remove" counts only what a clean could move.
+        #expect(tiles[3].section == .leftAlone)
+        #expect(JunkScreen.sectionTotal(tiles, .safe).bytes == 3 * quarter)
+        #expect(tiles[3].status == .leftAlone && !tiles[3].canToggle && !tiles[3].isSelected)
+        #expect(tiles[3].bytes == quarter)
+        #expect(tiles[3].note == "macOS manages these, so Dustling leaves them alone.")
+        #expect(tiles[3].accessibilityValue == "268.4 MB, left alone")
+        let limited = JunkScreen.tiles(input(
+            tiles: [tile(.systemCachesAndLogs, quarter, selected: false, leftAlone: true)], fullDiskAccess: false))
+        #expect(limited.first { $0.id == .systemCachesAndLogs }?.note == "macOS manages these, so Dustling leaves them alone.")
         #expect(tiles[4].note == "Your data, never selected for you")
         #expect(tiles[5].note == "Review before removing")
         #expect(tiles[0].note == "3 items, rebuilt when needed")
     }
 
+    @Test func systemCachesAndLogsAreOneLineUnderTheSectionsNeverInATotal() {
+        let tiles = JunkScreen.tiles(input(tiles: [
+            tile(.userCaches, quarter), tile(.systemCachesAndLogs, 24 * quarter, selected: false, leftAlone: true),
+        ]))
+        #expect(JunkScreen.sectionTotal(tiles, .safe).bytes == quarter)
+        #expect(JunkScreen.leftAloneLine(tiles)
+            == "System caches and logs take up 6.44 GB. macOS manages these, so Dustling leaves them alone.")
+        // A scan stopped in it: "or more". Stopped before it, locked or unreadable: only why.
+        let safe = [tile(.userCaches, quarter), tile(.userLogs, 0, items: 0), tile(.xcodeJunk, 0, items: 0)]
+        let stopped = JunkScreen.tiles(input(
+            tiles: safe + [tile(.systemCachesAndLogs, quarter, selected: false, stopped: true, leftAlone: true)]))
+        #expect(JunkScreen.leftAloneLine(stopped)
+            == "System caches and logs take up 268.4 MB or more. macOS manages these, so Dustling leaves them alone.")
+        #expect(JunkScreen.sectionTotal(stopped, .safe).bytes == quarter)
+        #expect(!JunkScreen.sectionTotal(stopped, .safe).isLowerBound)
+        let locked = JunkScreen.tiles(input(
+            tiles: safe,
+            places: catalog.filter { $0.id != .trash }.map {
+                Place(id: $0.id, access: $0.id == .systemCachesAndLogs ? .unreadable : .readable)
+            }))
+        #expect(JunkScreen.leftAloneLine(locked)
+            == "System caches and logs: macOS manages these, so Dustling leaves them alone.")
+        #expect(!JunkScreen.sectionTotal(locked, .safe).isLowerBound)
+        // Nothing to say while it is scanned, when it holds nothing, and in the summary.
+        #expect(JunkScreen.leftAloneLine(JunkScreen.tiles(input(phase: .scanning, tiles: []))) == nil)
+        #expect(JunkScreen.leftAloneLine(JunkScreen.tiles(input(tiles: [
+            tile(.systemCachesAndLogs, 0, selected: false, items: 0, leftAlone: true),
+        ]))) == nil)
+        #expect(JunkScreen.leftAloneLine(JunkScreen.tiles(input(phase: .done, tiles: [
+            tile(.userCaches, quarter), tile(.systemCachesAndLogs, quarter, selected: false, leftAlone: true),
+        ], outcomes: [.userCaches: CategoryOutcome(movedBytes: quarter, movedCount: 1)]))) == nil)
+    }
+
     @Test func emptyPlacesSayNothingIsThereAndTheScreenIsAllClean() {
         let empty = JunkScreen.tiles(input(tiles: [
             tile(.userCaches, 0, items: 0), tile(.userLogs, 0, items: 0), tile(.xcodeJunk, 0, items: 0),
-            tile(.systemCachesAndLogs, quarter, selected: false, needsHelper: true),
+            tile(.systemCachesAndLogs, 0, selected: false, items: 0, leftAlone: true),
             tile(.iosBackups, 0, selected: false, selection: .review, items: 0),
             tile(.mailDownloads, 0, selected: false, selection: .review, items: 0),
         ]))
@@ -70,11 +113,34 @@ struct JunkScreenTilesTests {
 
         let some = JunkScreen.tiles(input(tiles: [tile(.userCaches, 0, items: 0), tile(.userLogs, quarter)]))
         #expect(!JunkScreen.isAllClean(some))
+        // System caches are never cleaned, so what they hold doesn't count.
+        let system = JunkScreen.tiles(input(tiles: [
+            tile(.userCaches, 0, items: 0), tile(.userLogs, 0, items: 0), tile(.xcodeJunk, 0, items: 0),
+            tile(.systemCachesAndLogs, quarter, selected: false, leftAlone: true),
+            tile(.iosBackups, 0, selected: false, selection: .review, items: 0),
+            tile(.mailDownloads, 0, selected: false, selection: .review, items: 0),
+        ]))
+        #expect(JunkScreen.isAllClean(system))
+        // However far it was read: stopped in it or unreadable, it still holds nothing to move.
+        let others = [
+            tile(.userCaches, 0, items: 0), tile(.userLogs, 0, items: 0), tile(.xcodeJunk, 0, items: 0),
+            tile(.iosBackups, 0, selected: false, selection: .review, items: 0),
+            tile(.mailDownloads, 0, selected: false, selection: .review, items: 0),
+        ]
+        let systemStopped = JunkScreen.tiles(input(
+            tiles: others + [tile(.systemCachesAndLogs, quarter, selected: false, stopped: true, leftAlone: true)]))
+        #expect(JunkScreen.isAllClean(systemStopped))
+        let systemUnreadable = JunkScreen.tiles(input(
+            tiles: others,
+            places: catalog.filter { $0.id != .trash }.map {
+                Place(id: $0.id, access: $0.id == .systemCachesAndLogs ? .unreadable : .readable)
+            }))
+        #expect(JunkScreen.isAllClean(systemUnreadable))
         #expect(!JunkScreen.isAllClean([]))
         // Everything left out in Review files is still there: not "All clean".
         var leftOut = CategoryTileModel(
             id: .userCaches, title: "App caches", note: nil, bytes: quarter, itemCount: 2, selection: .preselected,
-            isSelected: true, stopped: false, issues: [], inUseCount: 0, needsHelper: false)
+            isSelected: true, stopped: false, issues: [], inUseCount: 0, leftAlone: false)
         leftOut.excludedBytes = quarter
         leftOut.excludedCount = 2
         #expect(!JunkScreen.isAllClean(JunkScreen.tiles(input(tiles: [leftOut]))))
@@ -217,8 +283,11 @@ struct JunkScreenTilesTests {
         #expect(tiles.map(\.id) == [.userCaches])
         #expect(tiles[0].status == .cleaned)
         #expect(tiles[0].bytes == quarter / 2)
-        #expect(tiles[0].note == "1 item in the Trash, 1 skipped, 1 needs the cleanup helper")
+        #expect(tiles[0].note == "1 item in the Trash, 1 skipped, 1 needs your Mac password")
         #expect(tiles[0].cells == MiniMosaic(count: 1, kind: .inTrash))
+        let limited = JunkScreen.tiles(input(
+            phase: .done, tiles: [tile(.userCaches, quarter)], outcomes: [.userCaches: outcome], fullDiskAccess: false))
+        #expect(limited[0].note == "1 item in the Trash, 1 skipped, 1 needs Full Disk Access, then your Mac password")
 
         // A ticked place that held nothing isn't listed as cleaned.
         let empty = JunkScreen.tiles(input(
@@ -254,9 +323,10 @@ struct JunkScreenTilesTests {
     @Test func selectionLineCountsWhatCanBeTicked() {
         let tiles = JunkScreen.tiles(input(tiles: [
             tile(.userCaches, quarter), tile(.userLogs, quarter, selected: false),
-            tile(.systemCachesAndLogs, quarter, selected: false, needsHelper: true),
+            tile(.systemCachesAndLogs, quarter, selected: false, leftAlone: true),
         ], places: [Place(id: .userCaches, access: .readable), Place(id: .userLogs, access: .readable),
                     Place(id: .systemCachesAndLogs, access: .readable), Place(id: .xcodeJunk, access: .locked)]))
+        // System caches and logs can't be ticked: not counted.
         #expect(JunkScreen.selectionLine(tiles, selectedBytes: quarter) == "1 of 2 selected, 268.4 MB")
     }
 }
@@ -307,10 +377,16 @@ struct JunkSummaryTests {
             JournalEntry(originalPath: "/u/c", bytes: 1, outcome: .skipped(reason: "cleanup stopped")),
             JournalEntry(originalPath: "/u/d", bytes: 1, outcome: .needsAdmin),
         ]), appName: { _ in nil })
-        #expect(summary.sentence == "1 item moved, 2 skipped, 1 needs the cleanup helper.")
+        #expect(summary.sentence == "1 item moved, 2 skipped, 1 needs your Mac password.")
         #expect(summary.reasons.map(\.text) == [
-            "1 skipped because com.x.y is using it", "1 skipped: cleanup stopped", "1 needs the cleanup helper",
+            "1 skipped because com.x.y is using it", "1 skipped: cleanup stopped", "1 needs your Mac password",
         ])
+        let limited = JunkSummary.make(record([
+            JournalEntry(originalPath: "/u/d", bytes: 1, outcome: .needsAdmin),
+            JournalEntry(originalPath: "/u/e", bytes: 1, outcome: .needsAdmin),
+        ]), fullDiskAccess: false)
+        #expect(limited.sentence == "0 items moved, 2 need Full Disk Access, then your Mac password.")
+        #expect(limited.reasons.map(\.text) == ["2 need Full Disk Access, then your Mac password"])
     }
 
     @Test func restoreHeadlineFollowsWhatCameBack() {
@@ -393,8 +469,6 @@ struct JunkTileAccessibilityTests {
         let locked = tile(.locked, bytes: nil, selected: false).accessibilityValue
         #expect(locked == "size unknown, locked")
         #expect(!locked.contains("0"))
-        #expect(tile(.needsHelper, bytes: 2_000_000, selected: false).accessibilityValue
-            == "2 MB, needs the cleanup helper")
         #expect(tile(.pending, bytes: nil, selected: false).accessibilityValue == "scanning")
     }
 }

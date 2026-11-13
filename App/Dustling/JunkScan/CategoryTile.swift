@@ -92,7 +92,7 @@ struct CategoryTile: View {
                 .labelsHidden()
                 .tint(Palette.accentFill)
                 .accessibilityLabel(tile.title)
-        case .scanned, .stopped, .needsHelper, .notScannedYet:
+        case .scanned, .stopped, .leftAlone, .notScannedYet:
             Toggle(isOn: .constant(tile.isSelected)) { EmptyView() }
                 .toggleStyle(.checkbox)
                 .labelsHidden()

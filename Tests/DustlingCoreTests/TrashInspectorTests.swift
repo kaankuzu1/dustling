@@ -75,7 +75,14 @@ struct TrashInspectorTests {
         let lockedDir = locked.deletingLastPathComponent()
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: lockedDir.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedDir.path) }
-        let (inspector, _) = makeInspector(sandbox)
+        // Claim to be another user so the folder isn't unlocked (it would be, for its owner).
+        var environment = sandbox.environment
+        environment.userID = getuid() &+ 1
+        let inspector = TrashInspector(
+            environment: environment,
+            journal: RunJournal(directory: environment.historyDirectory),
+            logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: false, inspect: TrashInspector.lstatKind, blocker: { _, _ in nil })
         let record = inspector.emptyTrash()
         #expect(record.entries.count == 2)
         let lockedEntry = try #require(record.entries.first { $0.originalPath.hasSuffix("locked") })
@@ -283,6 +290,74 @@ struct TrashInspectorTests {
         #expect(contents.size.bytes > 0)
     }
 
+    /// An inspector for a user whose uid isn't the test's: everything the test makes belongs to
+    /// "another account", as a System caches folder moved with the password does.
+    private func foreignInspector(_ sandbox: TestSandbox) -> TrashInspector {
+        var environment = sandbox.environment
+        environment.userID = getuid() &+ 1
+        return TrashInspector(
+            environment: environment, journal: RunJournal(directory: environment.historyDirectory),
+            logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: false, inspect: TrashInspector.lstatKind, blocker: { _, _ in nil })
+    }
+
+    @Test func unreadableItemsOfAnotherAccountDontKeepTheTrashFromEmptying() throws {
+        // After a System caches clean: com.apple.iconservices.store (drwx--x--x _iconservices) in the
+        // Trash. Dustling can't list it, but that isn't missing Full Disk Access: it belongs to the
+        // system, and Empty Trash deletes it with the password. The size leaves out what is inside.
+        let sandbox = try TestSandbox()
+        try sandbox.file("home/.Trash/ok.bin", bytes: 4096)
+        let store = try sandbox.directory("home/.Trash/com.apple.iconservices.store")
+        try sandbox.file("home/.Trash/com.apple.iconservices.store/inner.bin", bytes: 4096)
+        // Readable, not searchable: every entry inside can be named but not looked at.
+        let half = try sandbox.directory("home/.Trash/TI App")
+        try sandbox.file("home/.Trash/TI App/a.bin", bytes: 4096)
+        FolderMode.set(store, 0o111)
+        FolderMode.set(half, 0o444)
+        defer { FolderMode.unlock(store); FolderMode.unlock(half) }
+        let contents = foreignInspector(sandbox).contents()
+        #expect(contents.issues.isEmpty)
+        // What the sizer couldn't read: each folder (or what is inside it).
+        let unread = contents.systemUnreadable.compactMap { norm($0.path) }
+        #expect(unread.count == 2)
+        for folder in [half, store].compactMap({ norm($0.path) }) {
+            #expect(unread.contains { $0 == folder || $0.hasPrefix(folder + "/") }, "\(folder)")
+        }
+        #expect(contents.size.unreadable.count == 2)
+        #expect(contents.items.count == 3)
+        #expect(contents.size.bytes > 0)
+        #expect(foreignInspector(sandbox).sizeWithIssues().issues.isEmpty)
+    }
+
+    @Test func theUsersOwnUnreadableItemIsStillAnIssue() throws {
+        // The same folder, but the user's own: still what it was (it may need Full Disk Access).
+        let sandbox = try TestSandbox()
+        let store = try sandbox.directory("home/.Trash/mine")
+        try sandbox.file("home/.Trash/mine/inner.bin", bytes: 4096)
+        FolderMode.set(store, 0o111)
+        defer { FolderMode.unlock(store) }
+        let (inspector, _) = makeInspector(sandbox)
+        let contents = inspector.contents()
+        #expect(contents.systemUnreadable.isEmpty)
+        #expect(contents.issues.map { if case .missingFullDiskAccess(let u) = $0 { norm(u.path) } else { nil } }
+            == [norm(store.path)])
+    }
+
+    @Test func belongingToAnotherAccountLooksAtTheItemAndTheFoldersAboveIt() throws {
+        let sandbox = try TestSandbox()
+        let item = try sandbox.directory("home/.Trash/TI App")
+        let inner = try sandbox.file("home/.Trash/TI App/Contents/x", bytes: 1)
+        let me = getuid()
+        #expect(!TrashInspector.belongsToAnotherAccount(inner, in: item, userID: me))
+        #expect(TrashInspector.belongsToAnotherAccount(inner, in: item, userID: me &+ 1))
+        // Something that can't be looked at: its folder decides.
+        let contents = item.appending(path: "Contents")
+        FolderMode.set(contents, 0o444)
+        defer { FolderMode.unlock(contents) }
+        #expect(TrashInspector.belongsToAnotherAccount(inner, in: item, userID: me &+ 1))
+        #expect(!TrashInspector.belongsToAnotherAccount(inner, in: item, userID: me))
+    }
+
     @Test func contentsListsTopLevelItemsWithSizes() throws {
         let sandbox = try TestSandbox()
         let a = try sandbox.file("home/.Trash/a.bin", bytes: 4096)
@@ -308,5 +383,196 @@ struct TrashInspectorTests {
         let contents = inspector.contents()
         #expect(contents.items.isEmpty && contents.issues.isEmpty && contents.size.bytes == 0)
     }
-}
 
+    @Test func emptyTrashDeletesLockedOwnItems() throws {
+        let sandbox = try TestSandbox()
+        let file = try sandbox.file("home/.Trash/locked/a.bin", bytes: 64)
+        let folder = file.deletingLastPathComponent()
+        #expect(chflags(file.path, UInt32(UF_IMMUTABLE)) == 0)
+        #expect(chmod(folder.path, 0o555) == 0)
+        defer { _ = chflags(file.path, 0); _ = chmod(folder.path, 0o755) }
+        let (inspector, _) = makeInspector(sandbox)
+        let record = inspector.emptyTrash()
+        #expect(record.entries.count == 1)
+        #expect(record.entries.allSatisfy { $0.outcome == .deleted })
+        let left = try FileManager.default.contentsOfDirectory(atPath: sandbox.environment.userTrash.path)
+        #expect(left.isEmpty)
+    }
+
+    @Test func mixedOwnershipReportsNeedsAdmin() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.file("home/.Trash/ok.bin", bytes: 8)
+        let stuck = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8)
+        let dir = stuck.deletingLastPathComponent()
+        _ = chmod(dir.path, 0o555)
+        defer { _ = chmod(dir.path, 0o755) }
+        // The environment claims to be uid 503, so the read-only folder isn't "ours" and stays
+        // locked: a real removal failure. The injected blocker says why.
+        var environment = sandbox.environment
+        environment.userID = getuid() &+ 1
+        let inspector = TrashInspector(
+            environment: environment,
+            journal: RunJournal(directory: environment.historyDirectory),
+            logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: false, inspect: TrashInspector.lstatKind,
+            blocker: { url, _ in url.lastPathComponent == "TI App" ? .otherOwner(count: 2) : nil })
+        let record = inspector.emptyTrash()
+        func outcome(_ name: String) -> DeletionOutcome? {
+            record.entries.first { $0.originalPath.hasSuffix(name) }?.outcome
+        }
+        #expect(outcome("ok.bin") == .deleted)
+        #expect(outcome("TI App") == .needsAdmin)
+    }
+
+    @Test func nilBlockerWithPermissionDeniedErrorIsProtected() throws {
+        let sandbox = try TestSandbox()
+        let stuck = try sandbox.file("home/.Trash/locked/inner.bin")
+        let dir = stuck.deletingLastPathComponent()
+        #expect(chmod(dir.path, 0o555) == 0)
+        defer { _ = chmod(dir.path, 0o755) }
+        var environment = sandbox.environment
+        environment.userID = getuid() &+ 1
+        let inspector = TrashInspector(
+            environment: environment, journal: RunJournal(directory: environment.historyDirectory),
+            logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: false, inspect: TrashInspector.lstatKind, blocker: { _, _ in .protectedByMacOS })
+        let record = inspector.emptyTrash()
+        #expect(record.entries.first?.outcome == .failed(reason: TrashUnlocker.protectedReason))
+    }
+
+    @Test func permissionDeniedIsFoundInUnderlyingErrors() {
+        let inner = NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))
+        let outer = NSError(domain: NSCocoaErrorDomain, code: 513, userInfo: [NSUnderlyingErrorKey: inner])
+        #expect(TrashInspector.isPermissionDenied(outer))
+        #expect(!TrashInspector.isPermissionDenied(NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT))))
+    }
+
+    // MARK: - What belongs to another account: deleted with the password, in one batch
+
+    /// An inspector for a user whose uid isn't the test's (so a locked folder in the Trash stays
+    /// locked and can't be deleted), with `admin` behind it. `stuck` items count as another account's.
+    private func adminInspector(
+        _ sandbox: TestSandbox, admin: AdminMover?, stuck: Set<String>
+    ) -> TrashInspector {
+        var environment = sandbox.environment
+        environment.userID = getuid() &+ 1
+        return TrashInspector(
+            environment: environment, journal: RunJournal(directory: environment.historyDirectory),
+            logger: RunLogger(directory: environment.logsDirectory), sizer: DirectorySizer(),
+            includeExternalVolumes: false, inspect: TrashInspector.lstatKind,
+            blocker: { url, _ in stuck.contains(url.lastPathComponent) ? .otherOwner(count: 1) : nil },
+            admin: admin)
+    }
+
+    private func outcome(_ record: RunRecord, _ name: String) -> DeletionOutcome? {
+        record.entries.first { $0.originalPath.hasSuffix("/" + name) }?.outcome
+    }
+
+    @Test func emptyTrashDeletesSystemItemsWithPassword() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.file("home/.Trash/ok.bin", bytes: 8)
+        let one = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8).deletingLastPathComponent()
+        let two = try sandbox.file("home/.Trash/TI Tool/inner.bin", bytes: 8).deletingLastPathComponent()
+        FolderMode.lock(one)
+        FolderMode.lock(two)
+        defer { FolderMode.unlock(one); FolderMode.unlock(two) }
+        // The script runs as the user: the folders open again only after planning.
+        let shell = UserShell(beforeRun: { FolderMode.unlock(one); FolderMode.unlock(two) })
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let record = adminInspector(sandbox, admin: admin, stuck: ["TI App", "TI Tool"]).emptyTrash()
+        #expect(shell.calls.count == 1)
+        #expect(shell.calls.first?.prompt == AdminMover.deletePrompt(count: 2))
+        #expect(record.entries.count == 3)
+        #expect(record.entries.allSatisfy { $0.outcome == .deleted })
+        #expect(try FileManager.default.contentsOfDirectory(atPath: sandbox.environment.userTrash.path).isEmpty)
+        let saved = try #require(try RunJournal(directory: sandbox.environment.historyDirectory).all().first)
+        #expect(saved.entries == record.entries)
+    }
+
+    @Test func emptyTrashKeepsSystemItemsWhenPasswordCancelled() throws {
+        let sandbox = try TestSandbox()
+        try sandbox.file("home/.Trash/ok.bin", bytes: 8)
+        let stuck = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8).deletingLastPathComponent()
+        FolderMode.lock(stuck)
+        defer { FolderMode.unlock(stuck) }
+        let shell = CannedShell(.cancelled)
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let record = adminInspector(sandbox, admin: admin, stuck: ["TI App"]).emptyTrash()
+        #expect(shell.calls.count == 1)
+        #expect(outcome(record, "ok.bin") == .deleted)
+        #expect(outcome(record, "TI App") == .needsAdmin)
+        #expect(FileManager.default.fileExists(atPath: stuck.appending(path: "inner.bin").path))
+    }
+
+    @Test func emptyTrashWithoutAdminNeverAsks() throws {
+        let sandbox = try TestSandbox()
+        let stuck = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8).deletingLastPathComponent()
+        FolderMode.lock(stuck)
+        defer { FolderMode.unlock(stuck) }
+        let record = adminInspector(sandbox, admin: nil, stuck: ["TI App"]).emptyTrash()
+        #expect(outcome(record, "TI App") == .needsAdmin)
+    }
+
+    @Test func emptyTrashNeverDeletesOutsideTrashWithPassword() throws {
+        // Only a child of a Trash location the inspector found goes into the script, even if
+        // something hands it a needs-admin item somewhere else.
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        let inside = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8).deletingLastPathComponent()
+        let outsideFolder = try sandbox.directory("Library/Extensions")
+        let outside = try sandbox.file("Library/Extensions/system.kext", bytes: 5)
+        let shell = CannedShell(.cancelled)
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let inspector = adminInspector(sandbox, admin: admin, stuck: [])
+        var entries = [
+            JournalEntry(originalPath: outside.path, bytes: 5, outcome: .needsAdmin),
+            JournalEntry(originalPath: inside.path, bytes: 8, outcome: .needsAdmin),
+        ]
+        inspector.deleteWithPassword([
+            TrashInspector.SystemChild(entry: 0, location: outsideFolder, name: "system.kext", identity: ItemIdentity.of(outside)),
+            TrashInspector.SystemChild(entry: 1, location: trash, name: "TI App", identity: ItemIdentity.of(inside)),
+        ], into: &entries)
+        let script = try #require(shell.calls.first?.script)
+        #expect(shell.calls.count == 1)
+        #expect(shell.calls.first?.prompt == AdminMover.deletePrompt(count: 1))
+        #expect(!script.contains("system.kext") && !script.contains("Extensions"))
+        #expect(script.contains("'TI App'"))
+        #expect(entries.map(\.outcome) == [.needsAdmin, .needsAdmin])
+        #expect(FileManager.default.fileExists(atPath: outside.path))
+    }
+
+    @Test func emptyTrashLeavesItemsOnAnotherVolumeWithoutAsking() throws {
+        // Root only renames through its bridge on /Library's volume: an external disk's Trash item
+        // would be refused with advice meant for moves into the Trash. It is never in the script.
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        let inside = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8).deletingLastPathComponent()
+        let elsewhere = try sandbox.file("home/.Trash/Disk Thing", bytes: 4)
+        let shell = CannedShell(.cancelled)
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let inspector = adminInspector(sandbox, admin: admin, stuck: [])
+        let real = try #require(ItemIdentity.of(elsewhere))
+        let otherVolume = ItemIdentity(device: real.device &+ 1, inode: real.inode, owner: real.owner)
+        var entries = [
+            JournalEntry(originalPath: elsewhere.path, bytes: 4, outcome: .needsAdmin),
+            JournalEntry(originalPath: inside.path, bytes: 8, outcome: .needsAdmin),
+        ]
+        inspector.deleteWithPassword([
+            TrashInspector.SystemChild(entry: 0, location: trash, name: "Disk Thing", identity: otherVolume),
+            TrashInspector.SystemChild(entry: 1, location: trash, name: "TI App", identity: ItemIdentity.of(inside)),
+        ], into: &entries)
+        #expect(shell.calls.count == 1)
+        #expect(shell.calls.first?.prompt == AdminMover.deletePrompt(count: 1))
+        #expect(shell.calls.first?.script.contains("Disk Thing") == false)
+        #expect(entries.map(\.outcome) == [.needsAdmin, .needsAdmin])
+        // Only that item: no password box at all.
+        let alone = CannedShell(.cancelled)
+        let aloneInspector = adminInspector(
+            sandbox, admin: AdminMover(shell: alone, environment: sandbox.environment, planning: try sandbox.adminPlanning()),
+            stuck: [])
+        aloneInspector.deleteWithPassword(
+            [TrashInspector.SystemChild(entry: 0, location: trash, name: "Disk Thing", identity: otherVolume)],
+            into: &entries)
+        #expect(alone.calls.isEmpty)
+    }
+}

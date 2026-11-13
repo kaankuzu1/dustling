@@ -12,8 +12,8 @@ public protocol AppQuitter: Sendable {
 public enum LeftoverBadge: Equatable, Sendable {
     /// A Group Container matched exactly by the app's Team ID.
     case teamID
-    /// Needs the cleanup helper (admin rights) to be removed.
-    case helper
+    /// Belongs to the system: Dustling moves it after asking for the Mac password.
+    case system
     /// Matched by name only, so it might belong to something else.
     case nameMatch
     /// May hold the user's own documents or settings.
@@ -64,7 +64,8 @@ public struct ConfirmModel: Identifiable, Equatable, Sendable {
         public let items: Int
         /// Checked rows that may hold the user's data; listed separately in `dataWarnings`.
         public let dataItems: Int
-        /// Leftovers only the cleanup helper can remove; not moved now and not in `bytes`.
+        /// Leftovers that belong to the system: they move only with the Mac password, after the last
+        /// app, so they aren't in `items` or `bytes`.
         public let adminItems: Int
         public let bytes: UInt64
     }
@@ -95,9 +96,9 @@ public struct ConfirmModel: Identifiable, Equatable, Sendable {
     public let runningApps: [String]
     /// Checked launch agents; they are unloaded before they move.
     public let launchAgents: Int
-    /// Total of the helper-only leftovers across apps, counted apart from what will be freed.
+    /// Total of the leftovers that belong to the system across apps, counted apart from what will be freed.
     public let adminItems: Int
-    /// "Needs the cleanup helper" when `adminItems > 0`.
+    /// "Needs your Mac password" when `adminItems > 0`.
     public let adminNote: String?
     public let totalBytes: UInt64
     /// Set while Dustling can't take things back out of the Trash (no Full Disk Access). The sheet
@@ -189,6 +190,13 @@ public final class UninstallerModel {
     public private(set) var refusal: String?
     /// Stop was pressed; the app being removed now finishes, the rest are left alone.
     public private(set) var stopRequested = false
+    /// True while the uninstall waits for the Mac password: after the last app, for every item of the
+    /// system the action left (`moveSystemItems`).
+    public private(set) var isWaitingForPassword = false
+    /// What moves items of the system with the Mac password now, read when an action needs it. The
+    /// app passes one only while Dustling has Full Disk Access (and never in its QA copy); nil: nothing
+    /// asks, and such items stay where they are.
+    @ObservationIgnored public var admin: @MainActor () -> AdminMover? = { nil }
 
     @ObservationIgnored private let scout: AppScout
     @ObservationIgnored private let finder: LeftoverFinder
@@ -311,7 +319,7 @@ public final class UninstallerModel {
     ) -> LeftoverRow {
         var badges: [LeftoverBadge] = []
         if leftover.kind == .groupContainer && leftover.match == .exact { badges.append(.teamID) }
-        if leftover.requiresAdmin { badges.append(.helper) }
+        if leftover.requiresAdmin { badges.append(.system) }
         if leftover.match == .nameBased { badges.append(.nameMatch) }
         if leftover.mayContainUserData { badges.append(.yourData) }
         let disabled = app.linkTarget != nil ? Self.linkReason : protectedPaths.exclusionReason(for: leftover.url)
@@ -359,7 +367,7 @@ public final class UninstallerModel {
         let planned = plan()
         for (app, checked) in planned {
             // One rule (`block(for:)`) for what moves, here, in Review all files and in the uninstall.
-            let admin = checked.filter { block(for: $0) == .needsHelper }
+            let admin = checked.filter { block(for: $0) == .needsPassword }
             // Left where they are without Full Disk Access: not counted as moving.
             accessSkipped += checked.filter { block(for: $0) == .needsFullDiskAccess }.count
             let movable = checked.filter { block(for: $0) == nil }
@@ -386,7 +394,7 @@ public final class UninstallerModel {
             plan: planned.map { .init(app: $0.app, leftovers: $0.leftovers) },
             ready: !counting && !planned.isEmpty, note: counting ? "Still looking for leftovers" : nil,
             perApp: perApp, dataWarnings: warnings, runningApps: runningNames, launchAgents: agents,
-            adminItems: adminTotal, adminNote: adminTotal > 0 ? "Needs the cleanup helper" : nil, totalBytes: total,
+            adminItems: adminTotal, adminNote: adminTotal > 0 ? UninstallerScreen.passwordNote : nil, totalBytes: total,
             limitedNote: canTakeOutOfTrash ? nil : CleanupGate.limitedNote, runningAppURLs: runningURLs,
             accessSkipped: accessSkipped)
     }
@@ -450,6 +458,9 @@ public final class UninstallerModel {
         itemsDone = 0
         progress = UninstallProgress(plan: confirmed.plan)
         var records: [RunRecord] = []
+        /// The app of each record, in the same order.
+        var attempted: [URL] = []
+        var jobs: [UninstallJob] = []
         var stopped: [String] = []
         for planned in confirmed.plan {
             let app = planned.app
@@ -457,20 +468,20 @@ public final class UninstallerModel {
                 stopped.append(app.displayName)
                 continue
             }
-            let record = await uninstallOne(
+            let (record, job) = await uninstallOne(
                 app, leftovers: planned.leftovers, quit: quit, confirmedRunning: confirmed.runningAppURLs.contains(app.url))
             progress?.finish(app.url, record: record)
             records.append(record)
-            if record.entries.first.map({ if case .movedToTrash = $0.outcome { true } else { false } }) == true {
-                selection.remove(app.url)
-                appList.removeAll { $0.url == app.url }
-                rows[app.url] = nil
-                counted.remove(app.url)
-                rebuildApps()
-            }
+            attempted.append(app.url)
+            if let job { jobs.append(job) }
+            if Self.appMoved(record) { removeFromList(app.url) }
             onRunCompleted()
         }
-        if stopRequested { progress?.stopRemaining() }
+        if stopRequested {
+            progress?.stopRemaining()
+        } else {
+            records = await moveSystemItems(records, apps: attempted, jobs: jobs)
+        }
         result = UninstallResult(records: records, stopped: stopped)
         isUninstalling = false
         if loadPending {
@@ -479,6 +490,42 @@ public final class UninstallerModel {
             Task { await self.load() }
         }
         return records
+    }
+
+    /// One password box for every item of the system the apps left (an app in a folder only an
+    /// administrator can change, a launch daemon), after the last app. Nothing asks without `admin`,
+    /// or when no record has such an item. A stopped uninstall never asks (Stop, or Quit).
+    /// Progress rows and the list follow the records it returns; `itemsDone` doesn't change: the
+    /// password step changes outcomes, not how many items there are.
+    private func moveSystemItems(_ records: [RunRecord], apps: [URL], jobs: [UninstallJob]) async -> [RunRecord] {
+        guard records.contains(where: { $0.entries.contains { $0.outcome == .needsAdmin } }),
+              let admin = admin() else { return records }
+        isWaitingForPassword = true
+        let updated = await uninstaller.with(admin: admin).moveSystemItems(records, jobs: jobs)
+        isWaitingForPassword = false
+        // The same records in the same order, each changed one with its entries replaced in place.
+        var changed = false
+        for (app, (old, new)) in zip(apps, zip(records, updated)) where old != new {
+            changed = true
+            progress?.finish(app, record: new)
+            if Self.appMoved(new) { removeFromList(app) }
+        }
+        if changed { onRunCompleted() }
+        return updated
+    }
+
+    private static func appMoved(_ record: RunRecord) -> Bool {
+        if case .movedToTrash = record.entries.first?.outcome { return true }
+        return false
+    }
+
+    /// An app that moved to the Trash leaves the list.
+    private func removeFromList(_ app: URL) {
+        selection.remove(app)
+        appList.removeAll { $0.url == app }
+        rows[app] = nil
+        counted.remove(app)
+        rebuildApps()
     }
 
     public static let accessRefusal = "Full Disk Access was turned off. Check the list again before moving anything."
@@ -498,7 +545,7 @@ public final class UninstallerModel {
     }
 
     func block(for leftover: Leftover) -> LeftoverBlock? {
-        if leftover.requiresAdmin { return .needsHelper }
+        if leftover.requiresAdmin { return .needsPassword }
         if mustSkip(leftover) { return .needsFullDiskAccess }
         return nil
     }
@@ -506,7 +553,8 @@ public final class UninstallerModel {
     // MARK: review all files
 
     /// Every file of the selected apps: the app first, then its leftovers, each with whether it moves
-    /// and, when it can't, why.
+    /// and, when it can't, why. An item of the system reads as in the detail list: ticked or not, and
+    /// toggleable, with "Needs your Mac password" under it; it is counted apart.
     public func review() -> UninstallReview {
         UninstallReview(sections: selectedApps.map { row in
             let isLink = row.app.linkTarget != nil
@@ -516,11 +564,13 @@ public final class UninstallerModel {
                 dataWarning: nil)]
             for leftover in leftovers(for: row.app) {
                 let block = block(for: leftover)
+                let password = block == .needsPassword
                 rows.append(.init(
                     url: leftover.id, title: UninstallerScreen.kindName(leftover.leftover.kind), isApp: false,
-                    bytes: leftover.leftover.bytes, badges: leftover.badges, disabledReason: block?.text,
-                    isIncluded: block == nil && leftover.checked,
-                    dataWarning: leftover.leftover.mayContainUserData ? Self.dataWarning(for: leftover.leftover) : nil))
+                    bytes: leftover.leftover.bytes, badges: leftover.badges, disabledReason: password ? nil : block?.text,
+                    isIncluded: (block == nil || password) && leftover.checked,
+                    dataWarning: leftover.leftover.mayContainUserData ? Self.dataWarning(for: leftover.leftover) : nil,
+                    note: password ? UninstallerScreen.passwordNote : nil, countsApart: password))
             }
             return UninstallReview.Section(app: row.app, rows: rows)
         })
@@ -535,8 +585,8 @@ public final class UninstallerModel {
     }
 
     /// Done in Review all files: an unticked app is deselected; every other row that can be ticked
-    /// takes the draft's state. Only `rows` (what the sheet showed) change; rows that can't move, or
-    /// that appeared since the sheet opened, stay as they are.
+    /// (items of the system too) takes the draft's state. Only `rows` (what the sheet showed) change;
+    /// rows that can't move, or that appeared since the sheet opened, stay as they are.
     public func applyReview(excluding: Set<URL>, rows shown: Set<URL>) {
         guard !isUninstalling, !isRestoring else { return }
         for row in selectedApps where shown.contains(row.app.url) {
@@ -545,7 +595,8 @@ public final class UninstallerModel {
                 continue
             }
             for leftover in leftovers(for: row.app)
-            where shown.contains(leftover.id) && !leftover.isDisabled && block(for: leftover.leftover) == nil {
+            where shown.contains(leftover.id) && !leftover.isDisabled
+                && [nil, .needsPassword].contains(block(for: leftover.leftover)) {
                 let on = !excluding.contains(leftover.id)
                 if on != leftover.checked { setChecked(on, leftover: leftover.leftover, in: row.app) }
             }
@@ -582,20 +633,22 @@ public final class UninstallerModel {
         restoreOutcomes = [:]
     }
 
+    /// The app's record, and what its uninstall was given (for the password step), nil when it was
+    /// never attempted.
     private func uninstallOne(
         _ app: InstalledApp, leftovers: [Leftover], quit: AppQuitter, confirmedRunning: Bool
-    ) async -> RunRecord {
+    ) async -> (RunRecord, UninstallJob?) {
         if running.isRunning(app) {
             // Never quit an app the user didn't see as running when they confirmed.
             guard confirmedRunning else {
-                return await recordStillRunning(app, leftovers: leftovers, reason: Self.openedAfterConfirmReason)
+                return (await recordStillRunning(app, leftovers: leftovers, reason: Self.openedAfterConfirmReason), nil)
             }
             progress?.quitting(app.url)
             _ = await Self.quitWithTimeout(app, quit: quit, timeout: quitTimeout)
-            if running.isRunning(app) { return await recordStillRunning(app, leftovers: leftovers) }
+            if running.isRunning(app) { return (await recordStillRunning(app, leftovers: leftovers), nil) }
         }
-        // The one rule: only what it calls "needs Full Disk Access" is held back here; helper-only
-        // items go to the core, which records them as needing admin.
+        // The one rule: only what it calls "needs Full Disk Access" is held back here; items of the
+        // system go to the core, which records them as needing admin until the password step.
         let skipped = leftovers.filter { block(for: $0) == .needsFullDiskAccess }
         let moving = leftovers.filter { block(for: $0) != .needsFullDiskAccess }
         progress?.begin(app.url)
@@ -610,14 +663,15 @@ public final class UninstallerModel {
         }
         do {
             // The uninstaller does its file work on its own GCD queue.
-            return try await uninstaller.uninstall(
+            let record = try await uninstaller.uninstall(
                 app, leftovers: moving, skipped: skipped, skipReason: Self.needsAccessReason
             ) { url, outcome in
                 sink.tick(url, outcome)
             }
+            return (record, UninstallJob(app: app, leftovers: moving))
         } catch {
             // The app opened between the check and the move.
-            return await recordStillRunning(app, leftovers: leftovers, error: error)
+            return (await recordStillRunning(app, leftovers: leftovers, error: error), nil)
         }
     }
 
@@ -660,10 +714,11 @@ public final class UninstallerModel {
         guard !paths.isEmpty else { throw RunJournalError.notRestorable(record.id) }
         let journal = self.journal
         let id = record.id
+        let admin = self.admin()
         isRestoring = true
         defer { isRestoring = false }
         do {
-            let outcomes = try await Blocking.run { try journal.restore(runID: id, paths: paths) }
+            let outcomes = try await Blocking.run { try journal.restore(runID: id, paths: paths, admin: admin) }
             restoreOutcomes[id] = outcomes
             onRunCompleted()
             Task { await self.load() }

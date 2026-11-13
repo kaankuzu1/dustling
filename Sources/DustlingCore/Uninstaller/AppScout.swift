@@ -3,7 +3,8 @@ import Security
 
 /// Finds installed applications in the configured application directories.
 public struct AppScout: Sendable {
-    private static let maxDepth = 3
+    /// How deep under an application folder apps are looked for (the folder's own entries are depth 1).
+    static let maxDepth = 3
     private static let maxScriptBytes = 64 * 1024
 
     private let environment: SystemEnvironment

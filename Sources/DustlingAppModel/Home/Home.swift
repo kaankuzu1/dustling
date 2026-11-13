@@ -261,23 +261,30 @@ public enum ScanAge {
 }
 
 /// The Home mosaic: everything Dustling could reclaim, one cell per quarter gigabyte. Unlike the
-/// storage mosaic it has no free or "other" cells.
+/// storage mosaic it has no free or "other" cells. What Dustling never cleans (System caches and
+/// logs, `CategoryTileModel.leftAlone`) is not reclaimable: it is never a cell and never counted.
 public enum HomeMosaic {
     /// `excluding`: categories a finished cleanup moved to the Trash (they now count in `trashBytes`).
     /// `lockedCells`: one hatched cell per place Dustling couldn't read or scan (`HomeFigures`).
     public static func layout(
         tiles: [CategoryTileModel], excluding: Set<JunkCategoryID>, trashBytes: UInt64?, lockedCells: Int
     ) -> MosaicLayout {
-        let shown = tiles.filter { !excluding.contains($0.id) && $0.id != .trash }
-        return MosaicLayout.make(
-            totalBytes: 0, availableBytes: 0, categories: shown.map { ($0.id, $0.bytes) },
+        MosaicLayout.make(
+            totalBytes: 0, availableBytes: 0,
+            categories: reclaimableTiles(tiles, excluding: excluding).map { ($0.id, $0.bytes) },
             inTrashBytes: trashBytes ?? 0, lockedPlaces: lockedCells)
     }
 
     public static func reclaimableBytes(
         tiles: [CategoryTileModel], excluding: Set<JunkCategoryID>, trashBytes: UInt64?
     ) -> UInt64 {
-        tiles.filter { !excluding.contains($0.id) && $0.id != .trash }.reduce(trashBytes ?? 0) { $0 + $1.bytes }
+        reclaimableTiles(tiles, excluding: excluding).reduce(trashBytes ?? 0) { $0 + $1.bytes }
+    }
+
+    /// The categories whose junk Dustling could still move: not the Trash (counted on its own), not
+    /// one a finished cleanup moved (`excluding`), and never one Dustling leaves alone.
+    static func reclaimableTiles(_ tiles: [CategoryTileModel], excluding: Set<JunkCategoryID>) -> [CategoryTileModel] {
+        tiles.filter { !excluding.contains($0.id) && $0.id != .trash && !$0.isNeverCleaned }
     }
 
     /// The categories a scan may open: only places that read as open, without their locked
@@ -343,8 +350,10 @@ public struct HomeFigures: Equatable, Sendable {
     /// The Trash as `TrashModel` last read it.
     public enum TrashReading: Equatable, Sendable {
         case unknown
-        /// `externalSkipped`: other volumes' Trash folders weren't opened (no Full Disk Access).
-        case read(bytes: UInt64, externalSkipped: Bool)
+        /// `externalSkipped`: other volumes' Trash folders weren't opened (no Full Disk Access): a
+        /// lower bound, shown with a locked cell. `systemUnread`: some items that belong to the system
+        /// couldn't be read (they are deleted with the Mac password): a lower bound, nothing locked.
+        case read(bytes: UInt64, externalSkipped: Bool, systemUnread: Bool = false)
         /// The Trash couldn't be read; `movedSinceLastEmpty` is what Dustling's own runs put there.
         case unreadable(movedSinceLastEmpty: UInt64)
     }
@@ -422,18 +431,19 @@ public struct HomeFigures: Equatable, Sendable {
         case .moving: finished = true; moving = selected
         case .done: finished = true; cleaned = selected
         }
-        let open = input.tiles.filter { !cleaned.contains($0.id) && $0.id != .trash }
+        let open = HomeMosaic.reclaimableTiles(input.tiles, excluding: cleaned)
 
         let trashBytes: UInt64?, trashLower: Bool
         switch input.trash {
         case .unknown: trashBytes = nil; trashLower = false
-        case .read(let bytes, let skipped): trashBytes = bytes; trashLower = skipped
+        case .read(let bytes, let skipped, let partial): trashBytes = bytes; trashLower = skipped || partial
         case .unreadable(let moved): trashBytes = moved; trashLower = true
         }
 
         let locked = lockedCells(
             places: input.places, trash: input.trash, scope: finished ? input.scanScope : nil)
-        let lower = input.tiles.contains { $0.stopped } || locked > 0 || trashLower
+        // A stopped scan of what Dustling never cleans hides nothing it could free.
+        let lower = input.tiles.contains { $0.stopped && !$0.isNeverCleaned } || locked > 0 || trashLower
         let reclaim = HomeMosaic.reclaimableBytes(tiles: input.tiles, excluding: cleaned, trashBytes: trashBytes)
         // Junk selected in a place that can't be read now is not offered: it may not be there.
         let selectedNow = input.selectedBytes.filter { !unreadableNow.contains($0.key) }.values.reduce(0, +)
@@ -459,11 +469,12 @@ public struct HomeFigures: Equatable, Sendable {
 
     /// One hatched cell per place Dustling couldn't read (locked or unreadable), per place the last
     /// scan covered only in part or not at all (it opened later), for an unreadable Trash in a place
-    /// that reads as open, and for other volumes' Trash folders it didn't open.
+    /// that reads as open, and for other volumes' Trash folders it didn't open. A place Dustling never
+    /// cleans (System caches and logs) hides nothing it could free, so it never adds a cell.
     public static func lockedCells(places: [Place]?, trash: TrashReading, scope: HomeScanScope?) -> Int {
         let places = places ?? []
         var count = 0
-        for place in places {
+        for place in places where !place.id.isNeverCleaned {
             if place.access != .readable { count += 1; continue }
             guard place.id != .trash, let scope else { continue }
             if !scope.full.contains(place.id) { count += 1 }
@@ -472,10 +483,16 @@ public struct HomeFigures: Equatable, Sendable {
         if trashPlaceOpen {
             switch trash {
             case .unreadable: count += 1
-            case .read(_, let skipped) where skipped: count += 1
+            case .read(_, let skipped, _) where skipped: count += 1
             default: break
             }
         }
         return count
     }
+}
+
+extension CategoryTileModel {
+    /// What macOS manages (System caches and logs): shown for its size, never counted as space
+    /// Dustling could free.
+    var isNeverCleaned: Bool { leftAlone || id.isNeverCleaned }
 }

@@ -80,7 +80,7 @@ public enum UninstallerScreen {
     public static func badge(_ badge: LeftoverBadge) -> (text: String, style: BadgeStyle) {
         switch badge {
         case .teamID: return ("Team ID match", .neutral)
-        case .helper: return ("Helper", .admin)
+        case .system: return ("System", .admin)
         case .nameMatch: return ("Name match", .neutral)
         case .yourData: return ("May contain your data", .warning)
         }
@@ -107,18 +107,20 @@ public enum UninstallerScreen {
     }
 
     public static let nameMatchNote = "Matched by name only, so it isn't checked"
-    public static let helperNote = "Needs the cleanup helper (coming in a later version)"
+    /// A leftover that belongs to the system. The Uninstaller lists apps only with Full Disk Access,
+    /// so the password step can always run for it.
+    public static let passwordNote = PasswordCopy.needed
 
     /// Why a row is disabled, unchecked or won't move now. The data warning is separate (`row.warning`).
     public static func note(for row: LeftoverRow) -> String? {
         if let reason = row.disabledReason { return sentence(reason) }
-        if row.leftover.requiresAdmin { return helperNote }
+        if row.leftover.requiresAdmin { return passwordNote }
         if row.leftover.match == .nameBased { return nameMatchNote }
         return nil
     }
 
     /// The detail header: what moves now (the app unless it is a link, plus checked leftovers that
-    /// don't need the helper) and everything found.
+    /// don't need the Mac password) and everything found.
     public static func totals(app: AppRow, leftovers: [LeftoverRow]) -> (selected: UInt64, found: UInt64) {
         let isLink = app.app.linkTarget != nil
         let moving = isLink ? 0 : leftovers
@@ -184,7 +186,7 @@ public struct ConfirmText: Equatable, Sendable {
     /// "1 item may contain your data:" when checked data items are included.
     public let dataHeading: String?
     public let dataLines: [String]
-    /// Running apps quit first, agents unloaded, helper-only items left in place.
+    /// Running apps quit first, agents unloaded, the password asked for items of the system.
     public let notes: [String]
     /// Set when Dustling can't take things back out of the Trash (no Full Disk Access).
     public let limitedNote: String?
@@ -237,11 +239,18 @@ public struct ConfirmText: Equatable, Sendable {
         } else if confirm.accessSkipped > 1 {
             notes.append("\(confirm.accessSkipped) items need Full Disk Access and stay where they are.")
         }
-        if confirm.adminItems == 1 {
-            notes.append("1 item needs the cleanup helper (coming in a later version) and stays where it is.")
-        } else if confirm.adminItems > 1 {
-            notes.append("\(confirm.adminItems) items need the cleanup helper (coming in a later version) "
-                + "and stay where they are.")
+        // Without Full Disk Access (the limited note) the password step can't run: no promise to ask.
+        let n = confirm.adminItems
+        if n > 0, confirm.limitedNote == nil {
+            notes.append(n == 1
+                ? "1 item belongs to the system. Dustling will ask for your Mac password to move it."
+                : "\(n) items belong to the system. Dustling will ask for your Mac password to move them.")
+        } else if n > 0 {
+            notes.append(n == 1
+                ? "1 item belongs to the system. It needs Full Disk Access, then your Mac password, "
+                    + "so it stays where it is."
+                : "\(n) items belong to the system. They need Full Disk Access, then your Mac password, "
+                    + "so they stay where they are.")
         }
         let button: String
         switch running.count {
@@ -295,7 +304,8 @@ public struct UninstallProgress: Equatable, Sendable {
         apps = plan.map { planned in
             let appItem = Item(url: planned.app.url, title: "Application", requiresAdmin: false,
                                bytes: planned.app.linkTarget == nil ? planned.app.bytes : 0, state: .waiting)
-            // The uninstaller moves the app, then the user's leftovers; helper-only items come last.
+            // The uninstaller moves the app, then the user's leftovers; items of the system come last
+            // (they move with the password, after the last app).
             let ordered = planned.leftovers.filter { !$0.requiresAdmin } + planned.leftovers.filter(\.requiresAdmin)
             return AppEntry(app: planned.app, items: [appItem] + ordered.map {
                 Item(url: $0.url, title: UninstallerScreen.kindName($0.kind), requiresAdmin: $0.requiresAdmin,
@@ -344,7 +354,8 @@ public struct UninstallProgress: Equatable, Sendable {
         }
     }
 
-    /// The app's record is the final word on every item, including helper-only ones.
+    /// The app's record is the final word on every item, including those of the system. Called again
+    /// with the record the password step changed.
     public mutating func finish(_ id: URL, record: RunRecord) {
         update(id) { entry in
             for index in entry.items.indices {
@@ -411,7 +422,10 @@ public struct UninstallSummary: Equatable, Sendable {
     public let sentence: String
     public let apps: [AppLine]
 
-    public static func make(records: [RunRecord], stopped: [String], home: URL) -> UninstallSummary {
+    /// `fullDiskAccess`: whether Dustling has it now, for how an item still needing the password reads.
+    public static func make(
+        records: [RunRecord], stopped: [String], home: URL, fullDiskAccess: Bool = true
+    ) -> UninstallSummary {
         var lines: [AppLine] = []
         var removedCount = 0
         var leftAlone: [String] = []
@@ -431,20 +445,20 @@ public struct UninstallSummary: Equatable, Sendable {
                 var status = moved.count == 1 ? "1 item moved" : "\(moved.count) items moved"
                 if skipped > 0 { status += ", \(skipped) skipped" }
                 if failed > 0 { status += ", \(failed) failed" }
-                if admin == 1 { status += ", 1 needs the cleanup helper" }
-                if admin > 1 { status += ", \(admin) need the cleanup helper" }
+                if admin > 0 { status += ", " + PasswordCopy.count(admin, fullDiskAccess: fullDiskAccess) }
                 let problems = record.entries.compactMap { entry -> Problem? in
                     if case .movedToTrash = entry.outcome { return nil }
                     let path = entry.originalPath.hasPrefix("/")
                         ? UninstallerScreen.path(URL(filePath: entry.originalPath), home: home) : entry.originalPath
-                    let reason = entry.outcome == .needsAdmin ? "needs the cleanup helper" : entry.outcome.label
+                    let reason = entry.outcome == .needsAdmin
+                        ? PasswordCopy.lowercased(fullDiskAccess: fullDiskAccess) : entry.outcome.label
                     return Problem(path: path, reason: reason)
                 }
                 lines.append(AppLine(
                     record: record, name: name, removed: true, movedBytes: bytes, status: status, problems: problems,
                     canPutBack: record.restorable && !moved.isEmpty))
             } else {
-                let reason = Self.reason(first.outcome)
+                let reason = Self.reason(first.outcome, fullDiskAccess: fullDiskAccess)
                 leftAlone.append("\(name) was left alone: \(reason).")
                 lines.append(AppLine(
                     record: record, name: name, removed: false, movedBytes: bytes, status: "Left alone: \(reason)",
@@ -466,10 +480,10 @@ public struct UninstallSummary: Equatable, Sendable {
             movedBytes: lines.reduce(0) { $0 + $1.movedBytes }, sentence: parts.joined(separator: " "), apps: lines)
     }
 
-    private static func reason(_ outcome: DeletionOutcome) -> String {
+    private static func reason(_ outcome: DeletionOutcome, fullDiskAccess: Bool) -> String {
         switch outcome {
         case .skipped(let reason), .failed(let reason): return reason
-        case .needsAdmin: return "needs the cleanup helper"
+        case .needsAdmin: return PasswordCopy.lowercased(fullDiskAccess: fullDiskAccess)
         case .movedToTrash, .deleted: return outcome.label
         }
     }

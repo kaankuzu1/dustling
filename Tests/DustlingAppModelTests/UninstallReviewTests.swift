@@ -154,8 +154,44 @@ struct UninstallReviewTests {
         #expect(rows.first { $0.id == support.url }?.checked == false)
     }
 
-    @Test func helperBlockReadsLikeTheRows() {
-        #expect(LeftoverBlock.needsHelper.text == UninstallerScreen.helperNote)
+    @Test func systemLeftoversAreTickedAndCanBeLeftOutInTheReview() async throws {
+        let rig = try ModelRig()
+        try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let daemons = rig.environment.systemLibrary.appending(path: "LaunchDaemons")
+        let plist = try rig.writeLaunchPlist(daemons, label: "com.test.alpha.daemon", program: "/x/y")
+        let model = rig.uninstallerModel()
+        model.canTakeOutOfTrash = true
+        defer { withExtendedLifetime(rig) {} }
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        let alpha = try #require(model.apps.first)
+        let daemon = try #require(model.leftovers(for: alpha.app).first { $0.leftover.requiresAdmin })
+        #expect(daemon.checked)
+
+        // As in the detail list: ticked, and the user may untick it. It moves with the password after
+        // the apps, so it is counted apart, like in the confirmation.
+        let review = model.review()
+        let row = try #require(review.sections.first?.rows.first { $0.url == daemon.id })
+        #expect(row.disabledReason == nil)
+        #expect(row.isIncluded)
+        #expect(row.note == "Needs your Mac password")
+        #expect(row.countsApart)
+        #expect(review.selectedBytes == model.confirmation.totalBytes)
+        #expect(!model.reviewExclusions.contains(daemon.id))
+
+        model.applyReview(excluding: [daemon.id], rows: Set(review.sections.flatMap(\.rows).map(\.url)))
+        #expect(model.leftovers(for: alpha.app).first { $0.id == daemon.id }?.checked == false)
+        #expect(model.confirmation.adminItems == 0)
+        #expect(model.reviewExclusions.contains(daemon.id))
+        #expect(model.review().sections.first?.rows.first { $0.url == daemon.id }?.isIncluded == false)
+        model.applyReview(excluding: [], rows: [alpha.app.url, daemon.id])
+        #expect(model.confirmation.adminItems == 1)
+        _ = plist
+    }
+
+    @Test func passwordBlockReadsLikeTheRows() {
+        #expect(LeftoverBlock.needsPassword.text == UninstallerScreen.passwordNote)
+        #expect(UninstallerScreen.passwordNote == "Needs your Mac password")
     }
 
     @Test func dataRowsCarryTheirWarning() async throws {

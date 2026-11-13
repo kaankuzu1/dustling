@@ -19,7 +19,9 @@ struct SummaryView: View {
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
-        let summary = JunkSummary.make(record) { AppModels.appName(bundleID: $0) }
+        let summary = JunkSummary.make(record, fullDiskAccess: models.health.fullDiskAccess == .granted) {
+            AppModels.appName(bundleID: $0)
+        }
         HStack(alignment: .top, spacing: 18) {
             MoteView(models.junk.restoreOutcomes == nil ? .happy : .idle, pixel: 3)
             VStack(alignment: .leading, spacing: 8) {
@@ -119,7 +121,7 @@ struct SummaryView: View {
     private var buttons: some View {
         let trash = models.trash
         let junk = models.junk
-        let size = trash.canEmpty && !trash.externalVolumesSkipped ? trash.contents?.size.bytes : nil
+        let size = trash.canEmpty && !trash.sizeIsLowerBound ? trash.contents?.size.bytes : nil
         return HStack(spacing: 8) {
             Button { confirmingEmptyTrash = true } label: {
                 HStack(spacing: 6) {
@@ -138,7 +140,9 @@ struct SummaryView: View {
                 Button(action: putEverythingBack) {
                     HStack(spacing: 6) {
                         PixelIconView(.undo, tint: .foreground)
-                        Text(junk.isRestoring ? "Putting back…" : "Put everything back")
+                        Text(junk.isRestoring
+                             ? (models.isWaitingForPassword ? PasswordCopy.waiting : "Putting back…")
+                             : "Put everything back")
                     }
                 }
                 .disabled(!junk.canPutBack || junk.isRestoring)

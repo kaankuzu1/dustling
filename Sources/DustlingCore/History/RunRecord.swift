@@ -7,19 +7,25 @@ public enum RunKind: Codable, Equatable, Sendable {
     case startupChange
 }
 
-/// Who the trashed item is, captured with `lstat` right after the move. A restore only moves an item
-/// back if the thing at the trashed path is still this one (the Trash may have been emptied and the
-/// name reused by a later run).
+/// Who the trashed item is, captured with `lstat` (right after a normal move; for a move with the
+/// password, when it was planned, since a rename keeps all of it). A restore only moves an item back
+/// if the thing at the trashed path is still this one (the Trash may have been emptied and the name
+/// reused by a later run).
 public struct TrashedIdentity: Codable, Equatable, Sendable {
     public var dev: UInt64
     public var ino: UInt64
     /// Birth time in seconds since 1970.
     public var birthtime: Double
+    /// Who owned the item. Put back with the password requires the item to still have this owner
+    /// (with `dev` and `ino`), so it needs it. Nil in records written before it existed: those
+    /// can be put back the normal way only.
+    public var owner: uid_t?
 
-    public init(dev: UInt64, ino: UInt64, birthtime: Double) {
+    public init(dev: UInt64, ino: UInt64, birthtime: Double, owner: uid_t? = nil) {
         self.dev = dev
         self.ino = ino
         self.birthtime = birthtime
+        self.owner = owner
     }
 
     /// The identity of whatever is at `path` (not following a final symlink), or nil if it can't be read.
@@ -27,10 +33,18 @@ public struct TrashedIdentity: Codable, Equatable, Sendable {
         var st = stat()
         guard lstat(path, &st) == 0 else { return nil }
         let birth = Double(st.st_birthtimespec.tv_sec) + Double(st.st_birthtimespec.tv_nsec) / 1_000_000_000
-        return TrashedIdentity(dev: UInt64(bitPattern: Int64(st.st_dev)), ino: UInt64(st.st_ino), birthtime: birth)
+        return TrashedIdentity(
+            dev: UInt64(bitPattern: Int64(st.st_dev)), ino: UInt64(st.st_ino), birthtime: birth, owner: st.st_uid)
     }
 
-    /// Same file: device and inode equal and the birth time equal (within JSON rounding).
+    /// What root's script compares before putting the item back: volume, inode and owner. Nil
+    /// without a recorded owner.
+    public var itemIdentity: ItemIdentity? {
+        owner.map { ItemIdentity(device: dev, inode: ino, owner: $0) }
+    }
+
+    /// Same file: device and inode equal and the birth time equal (within JSON rounding). The owner
+    /// isn't compared: only root can change it, and Put back checks it on its own.
     public func isSameItem(as other: TrashedIdentity) -> Bool {
         dev == other.dev && ino == other.ino && abs(birthtime - other.birthtime) < 0.000_01
     }

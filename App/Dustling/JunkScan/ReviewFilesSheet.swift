@@ -4,8 +4,8 @@ import DustlingCore
 import SwiftUI
 
 /// Review files: every file the cleanup would move, grouped by category in tile order. Unticking a
-/// file leaves it where it is. Files that can't move (in use, needs the helper, locked) are shown
-/// disabled with their reason and never count. Done keeps the changes; Cancel drops them.
+/// file leaves it where it is. Files that can't move (in use, locked) are shown disabled with their
+/// reason and never count. Done keeps the changes; Cancel drops them.
 struct ReviewFilesSheet: View {
     @Environment(AppModels.self) private var models
     @Environment(\.dismiss) private var dismiss
@@ -89,9 +89,16 @@ private struct FileList: View {
                         }
                     } header: {
                         HStack(spacing: 8) {
-                            Text(section.title)
-                                .font(DustlingTheme.Typography.rowTitle)
-                                .foregroundStyle(Palette.ink)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(section.title)
+                                    .font(DustlingTheme.Typography.rowTitle)
+                                    .foregroundStyle(Palette.ink)
+                                if let note = section.note {
+                                    Text(note)
+                                        .font(DustlingTheme.Typography.caption)
+                                        .foregroundStyle(Palette.muted)
+                                }
+                            }
                             Spacer(minLength: 8)
                             Text(Bytes.format(sectionTotals[section.id] ?? 0))
                                 .font(DustlingTheme.Typography.size)

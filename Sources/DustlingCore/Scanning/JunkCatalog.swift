@@ -1,6 +1,20 @@
 import Foundation
 
 public enum JunkCatalog {
+    /// What `dustling-cli clean` cleans from `scans`, in their order: every category selected by
+    /// default (`isSelectedByDefault`), plus the ones named in `including` (`--include <id>`). Never
+    /// the Trash, which is only ever emptied as a whole, and never a category Dustling leaves alone
+    /// (`isNeverCleaned`), even when named.
+    public static func cleanChoice(_ scans: [CategoryScan], including: [JunkCategoryID]) -> [CategoryScan] {
+        scans.filter { scan in
+            scan.category.id != .trash && !scan.category.isNeverCleaned
+                && (scan.category.isSelectedByDefault || including.contains(scan.category.id))
+        }
+    }
+
+    /// Why a category Dustling leaves alone is never cleaned, for the CLI.
+    public static let neverCleanedNote = "macOS manages these, so Dustling leaves them alone."
+
     /// Logical size at or above which a Downloads item counts as large (500 MB).
     public static let largeDownloadThreshold: UInt64 = 500 * 1024 * 1024
     /// Items in Downloads not accessed for longer than this count as old (90 days).
@@ -114,7 +128,7 @@ public enum JunkCatalog {
             JunkCategory(
                 id: .systemCachesAndLogs, title: "System caches and logs", selection: .preselected,
                 requiresAdmin: true,
-                roots: [env.systemLibrary.appending(path: "Caches"), env.systemLibrary.appending(path: "Logs")]),
+                roots: env.systemManagedFolders),
             JunkCategory(
                 id: .trash, title: "Trash", selection: .emptyTrashOnly, requiresAdmin: false,
                 roots: [env.userTrash],

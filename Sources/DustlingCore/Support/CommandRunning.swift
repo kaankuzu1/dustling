@@ -23,22 +23,42 @@ public struct ProcessCommandRunner: CommandRunning {
     public init() {}
 
     public func run(_ executable: String, _ arguments: [String]) throws -> CommandResult {
+        try run(executable, arguments, environment: nil)
+    }
+
+    /// Like `run(_:_:)`, but when `environment` is given the program gets exactly that environment
+    /// instead of a copy of Dustling's.
+    public func run(_ executable: String, _ arguments: [String], environment: [String: String]?) throws
+        -> CommandResult
+    {
+        try run(executable, arguments, environment: environment, started: { _ in })
+    }
+
+    /// `started` gets the process right after it launched, before its output is read (so a caller
+    /// can stop it from another thread).
+    func run(
+        _ executable: String, _ arguments: [String], environment: [String: String]?, started: (Process) -> Void
+    ) throws -> CommandResult {
         let process = Process()
         process.executableURL = URL(filePath: executable)
         process.arguments = arguments
+        if let environment { process.environment = environment }
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
         process.standardInput = FileHandle.nullDevice
         try process.run()
+        started(process)
 
-        // Drain both pipes concurrently so a full pipe buffer can never block the child.
+        // Drain both pipes concurrently so a full pipe buffer can never block the child. Dedicated
+        // threads, not the global queue: when callers block every Swift concurrency thread in here
+        // (parallel tests do), GCD starts no thread for the global queue and the wait never ends.
         let box = OutputBox()
         let group = DispatchGroup()
         for (pipe, isOut) in [(outPipe, true), (errPipe, false)] {
             group.enter()
-            DispatchQueue.global().async {
+            Thread.detachNewThread {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 box.store(data, isOut: isOut)
                 group.leave()

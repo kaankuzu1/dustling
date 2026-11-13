@@ -6,16 +6,30 @@ public struct CleanupRunner: Sendable {
     private let journal: RunJournal
     private let logger: RunLogger
     private let sizer: DirectorySizer
+    /// Moves what belongs to the system with the Mac password, or nil (the CLI): such items are then
+    /// recorded as needing admin and never attempted.
+    let admin: AdminMover?
 
     /// The guard every move goes through; other code that acts before moving (e.g. booting out a launch
     /// agent) must use this one so it can't disagree with the mover.
     public var protectedPaths: ProtectedPaths { mover.protectedPaths }
 
-    public init(mover: TrashMover, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer) {
+    /// `admin`: pass one only when Dustling has Full Disk Access (planning must open `~/.Trash`).
+    /// Without it nothing asks for the password and every run behaves as before.
+    public init(
+        mover: TrashMover, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer, admin: AdminMover? = nil
+    ) {
         self.mover = mover
         self.journal = journal
         self.logger = logger
         self.sizer = sizer
+        self.admin = admin
+    }
+
+    /// This runner with `admin` in place of its own: the app decides per action whether the password
+    /// step may run (only while Dustling has Full Disk Access). nil: nothing asks for the password.
+    public func with(admin: AdminMover?) -> CleanupRunner {
+        CleanupRunner(mover: mover, journal: journal, logger: logger, sizer: sizer, admin: admin)
     }
 
     /// `extraEntries` (e.g. launch-agent unload failures) are appended after the runner's own entries.
@@ -29,6 +43,19 @@ public struct CleanupRunner: Sendable {
     /// `.skipped(reason: "cleanup stopped")` in one save, and the run ends normally with `inProgress == false`.
     /// `onItemStart` fires before each move, `onItem` after it. The work runs on a GCD queue
     /// (`FileWork`), so the callbacks arrive on that queue.
+    ///
+    /// With `admin`, an item that needs admin is held: neither recorded nor reported yet, its identity
+    /// (owner included) taken right after the attempt. After the last item, the held items are
+    /// journaled as needing admin, after the run's other items and in their order (one save, so a
+    /// crash or a quit while the password step runs still lists them), each gets its name in the
+    /// Trash (only now, so a later item of the run that moved the normal way can't take it) and one
+    /// password box moves them all (`AdminMover.movePrompt`); then each entry is updated in place,
+    /// saved and logged, and `onItem` fires for it, once, with what happened: moved to the Trash (with that identity, for
+    /// Put back), still needing admin (it can't be renamed into the Trash, the box was closed, or
+    /// Dustling can't open a folder the move needs, such as `~/.Trash` without Full Disk Access),
+    /// skipped if already gone, or failed with the script's reason. A run stopped before then never
+    /// asks: its held items are recorded (and reported) as `.skipped(reason: "cleanup stopped")`,
+    /// ahead of the items never attempted.
     public func run(
         _ urls: [URL],
         kind: RunKind,
@@ -103,18 +130,59 @@ public struct CleanupRunner: Sendable {
 
         log(nil)
         save()
+        let stopped = DeletionOutcome.skipped(reason: "cleanup stopped")
+        var held: [(url: URL, entry: JournalEntry, identity: TrashedIdentity)] = []
+        var notAttempted: ArraySlice<URL> = []
         for (index, url) in urls.enumerated() {
             if isCancelled() {
-                addBatch(urls[index...].map {
-                    JournalEntry(originalPath: $0.path(percentEncoded: false), bytes: 0, outcome: .skipped(reason: "cleanup stopped"))
-                })
+                notAttempted = urls[index...]
                 break
             }
             onItemStart(url)
             let entry = attempt(url, allowedRoots: allowedRoots)
+            if entry.outcome == .needsAdmin, admin != nil, let identity = AdminMover.identity(of: url) {
+                held.append((url, entry, identity))
+                continue
+            }
             add(entry)
             onItem(url, entry.outcome)
         }
+        if let admin, !held.isEmpty {
+            if !notAttempted.isEmpty || isCancelled() {
+                addBatch(held.map { item in
+                    var entry = item.entry
+                    entry.outcome = stopped
+                    return entry
+                })
+                for item in held { onItem(item.url, stopped) }
+            } else {
+                // Journaled as needing admin before the password step (one save), so a crash or a
+                // quit while root's script runs still lists them; each is updated in place after.
+                let first = record.entries.count
+                record.entries.append(contentsOf: held.map(\.entry))
+                save()
+                var taken = Set<String>()
+                let moves = held.map { admin.trashMove(for: $0.url, identity: $0.identity, taken: &taken) }
+                var results = admin.performOpenable(moves.compactMap { $0?.step }, prompt: AdminMover.movePrompt)
+                    .makeIterator()
+                for (offset, (item, move)) in zip(held, moves).enumerated() {
+                    var entry = item.entry
+                    if let move {
+                        let result = results.next() ?? nil
+                        entry.outcome = AdminMover.trashOutcome(result, destination: move.destination)
+                        if result == .done { entry.trashedIdentity = move.identity }
+                    }
+                    record.entries[first + offset] = entry
+                    if case .movedToTrash = entry.outcome { record.restorable = true }
+                    save()
+                    log(entry)
+                    onItem(item.url, entry.outcome)
+                }
+            }
+        }
+        addBatch(notAttempted.map {
+            JournalEntry(originalPath: $0.path(percentEncoded: false), bytes: 0, outcome: stopped)
+        })
         addBatch(extraEntries)
 
         record.inProgress = false
@@ -186,6 +254,33 @@ public struct CleanupRunner: Sendable {
             entry.trashedIdentity = TrashedIdentity.of(path: trashed)
         }
         return entry
+    }
+
+    /// Journals and logs a run that changed after it was finished (an uninstall's password step):
+    /// `restorable` is recomputed, the journal file replaced, and the log gets the run's header again,
+    /// the entries that changed and the new totals. A journal or log failure is appended as a failed
+    /// `<history>` / `<log>` entry, as `finish` does.
+    func update(_ record: RunRecord, changed: [JournalEntry]) -> RunRecord {
+        var record = record
+        record.restorable = record.entries.contains { if case .movedToTrash = $0.outcome { !$0.restored } else { false } }
+        var journalSaved = true
+        do { try journal.save(record) } catch {
+            journalSaved = false
+            record.entries.append(Self.failure("<history>", error))
+        }
+        do {
+            try logger.writeHeader(record)
+            try logger.append(changed, to: record)
+            try logger.writeTotals(record)
+        } catch {
+            record.entries.append(Self.failure("<log>", error))
+            if journalSaved {
+                do { try journal.save(record) } catch {
+                    record.entries.append(Self.failure("<history>", error))
+                }
+            }
+        }
+        return record
     }
 
     /// Journals and logs a finished run (one record per run).

@@ -48,7 +48,7 @@ struct TrashTile: View {
                     .font(.custom(DustlingTheme.Typography.pixelFamily, size: 18))
                     .foregroundStyle(Palette.ink)
                     .monospacedDigit()
-                if trash.externalVolumesSkipped {
+                if trash.sizeIsLowerBound {
                     Text("or more")
                         .font(DustlingTheme.Typography.caption)
                         .foregroundStyle(Palette.muted)

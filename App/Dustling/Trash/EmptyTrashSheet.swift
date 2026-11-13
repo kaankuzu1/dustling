@@ -1,5 +1,6 @@
 import DustlingAppModel
 import DustlingCore
+import AppKit
 import SwiftUI
 
 /// The Empty Trash confirmation: the single permanent delete, always confirmed in a sheet with the
@@ -11,6 +12,13 @@ struct EmptyTrashSheet: View {
     @Environment(AppModels.self) private var models
     @Environment(\.dismiss) private var dismiss
     @State private var refusal: String?
+    /// Set once Empty Trash ran and left items behind: the sheet stays open and says what is left.
+    @State private var leftBehind: Outcome?
+
+    private struct Outcome {
+        let deletedBytes: UInt64
+        let problems: EmptyTrashProblems
+    }
 
     private typealias Palette = DustlingTheme.Palette
 
@@ -25,20 +33,35 @@ struct EmptyTrashSheet: View {
                     .font(.system(size: 22))
                     .foregroundStyle(Palette.ink2)
                     .accessibilityHidden(true)
-                Text("Empty the Trash?")
+                Text(leftBehind?.problems.title ?? "Empty the Trash?")
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 15).weight(.semibold))
                     .foregroundStyle(Palette.ink)
                     .accessibilityAddTraits(.isHeader)
             }
             .frame(maxHeight: CGFloat(layout.headerHeight))
             SheetMiddle(layout: layout, spacing: 14) {
-            if let shown {
-                Text(Bytes.format(shown))
+            if let leftBehind {
+                Text("Deleted \(Bytes.format(leftBehind.deletedBytes)).")
+                    .font(DustlingTheme.Typography.figure)
+                    .foregroundStyle(Palette.ink)
+                Text(leftBehind.problems.message)
+                    .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
+                    .foregroundStyle(Palette.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let shown {
+                // Items of the system Dustling can't look inside: what they hold isn't counted.
+                Text(Bytes.format(shown) + (trash.unreadableSystemItems > 0 ? " or more" : ""))
                     .font(DustlingTheme.Typography.figure)
                     .foregroundStyle(Palette.danger)
                 Text("Everything in the Trash is deleted for good. It can't be put back.")
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 13))
                     .foregroundStyle(Palette.ink2)
+                if trash.unreadableSystemItems > 0 {
+                    Text("Some items belong to the system and Dustling can't look inside them, so they may hold more. Dustling asks for your Mac password to delete them.")
+                        .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
+                        .foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if trash.externalVolumesSkipped {
                     Text("Trash folders on other disks aren't included without Full Disk Access.")
                         .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
@@ -46,7 +69,7 @@ struct EmptyTrashSheet: View {
                 }
                 ItemList(listing: TrashListing.make(trash.items), home: models.homeDirectory)
             }
-            if let reason = refusal ?? trash.disabledReason {
+            if leftBehind == nil, let reason = refusal ?? trash.disabledReason {
                 Text(reason)
                     .font(.custom(DustlingTheme.Typography.sansFamily, size: 12.5))
                     .foregroundStyle(Palette.warning)
@@ -54,13 +77,37 @@ struct EmptyTrashSheet: View {
             }
             }
             HStack(spacing: 8) {
+                if leftBehind == nil && trash.isEmptying && models.isWaitingForPassword {
+                    BusyLabel(text: PasswordCopy.waiting)
+                }
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Empty Trash", role: .destructive) { if let shown { empty(confirmed: shown) } }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Palette.danger)
-                    .disabled(shown == nil || trash.isEmptying)
+                if let leftBehind {
+                    if leftBehind.problems.needsAdmin > 0 {
+                        Button("Open Trash in Finder") {
+                            NSWorkspace.shared.open(models.homeDirectory.appending(path: ".Trash"))
+                        }
+                    }
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                        // Escape closes it too; the button itself stays out of Tab, clicks and VoiceOver.
+                        .background(
+                            Button("") { dismiss() }
+                                .keyboardShortcut(.cancelAction)
+                                .opacity(0)
+                                .focusable(false)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true))
+                        .dustlingPrimary()
+                } else {
+                    Button("Cancel", role: .cancel) { dismiss() }
+                        .keyboardShortcut(.cancelAction)
+                        .disabled(trash.isEmptying)
+                        .help(trash.isEmptying && models.isWaitingForPassword ? PasswordCopy.answerToFinish : "")
+                    Button("Empty Trash", role: .destructive) { if let shown { empty(confirmed: shown) } }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Palette.danger)
+                        .disabled(shown == nil || trash.isEmptying)
+                }
             }
             .frame(height: CGFloat(SheetLayout.buttonRowHeight))
         }
@@ -69,15 +116,26 @@ struct EmptyTrashSheet: View {
         .frame(width: 560)
         .background(Palette.ground)
         // Show what is in the Trash now, not what it held when the screen last looked.
-        .task { models.refreshTrash() }
+        .task {
+            models.refreshTrash()
+            #if DEBUG
+            if HomeFixture.state == "emptytrashproblems" { leftBehind = Self.outcome(of: HomeFixture.emptyTrashProblemRecord()) }
+            #endif
+        }
+    }
+
+    private static func outcome(of record: RunRecord) -> Outcome? {
+        guard let problems = EmptyTrashProblems.of(record) else { return nil }
+        let deleted = record.entries.reduce(UInt64(0)) { $1.outcome == .deleted ? $0 + $1.bytes : $0 }
+        return Outcome(deletedBytes: deleted, problems: problems)
     }
 
     private func empty(confirmed: UInt64) {
         Task {
             // Deletes only if the Trash still holds exactly what this sheet showed.
             switch await models.trash.emptyTrash(confirmedBytes: confirmed) {
-            case .emptied:
-                dismiss()
+            case .emptied(let record):
+                if let outcome = Self.outcome(of: record) { leftBehind = outcome } else { dismiss() }
             case .refused(let reason):
                 refusal = reason
             }

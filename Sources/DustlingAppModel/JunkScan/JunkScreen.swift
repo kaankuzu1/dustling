@@ -45,8 +45,8 @@ public struct JunkTile: Identifiable, Equatable, Sendable {
         case unreadable
         /// Its place opened after the last scan.
         case notScannedYet
-        /// Only the cleanup helper could move it.
-        case needsHelper
+        /// macOS manages it (System caches and logs): its size, for information; never cleaned.
+        case leftAlone
         /// Selected for the cleanup in progress, not started yet.
         case queued
         /// Its items are moving right now.
@@ -94,7 +94,7 @@ public struct JunkTile: Identifiable, Equatable, Sendable {
         case .locked: state = "locked"
         case .unreadable: state = "can't be read"
         case .notScannedYet: state = "not scanned yet"
-        case .needsHelper: state = "needs the cleanup helper"
+        case .leftAlone: state = "left alone"
         case .queued: state = "waiting to move"
         case .moving: state = "moving to the Trash"
         case .moved: state = "done"
@@ -112,6 +112,9 @@ public enum JunkScreen {
         case safe
         /// "Review first": unchecked categories, then the Trash tile.
         case review
+        /// Apart from both: what Dustling never cleans (System caches and logs). Shown as one quiet
+        /// line under the sections (`leftAloneLine`), never as a tile, never in a section's total.
+        case leftAlone
     }
 
     public enum Phase: Equatable, Sendable { case notScanned, scanning, ready, moving, done }
@@ -138,10 +141,14 @@ public enum JunkScreen {
         public var scope: HomeScanScope?
         public var progress: [JunkCategoryID: CategoryProgress]
         public var outcomes: [JunkCategoryID: CategoryOutcome]
+        /// Whether Dustling has Full Disk Access now: an item still needing the password reads "needs
+        /// your Mac password" with it, "needs Full Disk Access, then your Mac password" without.
+        public var fullDiskAccess: Bool
 
         public init(
             catalog: [Entry], phase: Phase, tiles: [CategoryTileModel], places: [Place]?, scope: HomeScanScope?,
-            progress: [JunkCategoryID: CategoryProgress], outcomes: [JunkCategoryID: CategoryOutcome]
+            progress: [JunkCategoryID: CategoryProgress], outcomes: [JunkCategoryID: CategoryOutcome],
+            fullDiskAccess: Bool = true
         ) {
             self.catalog = catalog
             self.phase = phase
@@ -150,10 +157,12 @@ public enum JunkScreen {
             self.scope = scope
             self.progress = progress
             self.outcomes = outcomes
+            self.fullDiskAccess = fullDiskAccess
         }
     }
 
-    public static let helperNote = "Needs the cleanup helper (coming in a later version)"
+    /// The System caches and logs tile: shown with its size, never cleaned.
+    public static let leftAloneNote = JunkCatalog.neverCleanedNote
     public static let lockedNote = "Couldn't scan, needs Full Disk Access"
     public static let unreadableNote = "Couldn't scan, Dustling can't open this folder"
     public static let notScannedNote = "Not scanned yet. Scan again to include it"
@@ -174,7 +183,9 @@ public enum JunkScreen {
             : nil
 
         return input.catalog.compactMap { entry -> JunkTile? in
-            guard entry.id != .trash, let section = section(for: entry.selection) else { return nil }
+            guard entry.id != .trash,
+                  let section = entry.id.isNeverCleaned ? Section.leftAlone : section(for: entry.selection)
+            else { return nil }
             let place = places[entry.id]
             let tile = byID[entry.id]
 
@@ -189,7 +200,7 @@ public enum JunkScreen {
                 return JunkTile(
                     id: entry.id, title: entry.title, section: section, status: allBack ? .putBack : .cleaned,
                     bytes: outcome.movedBytes, isLowerBound: false, isSelected: true, canToggle: false,
-                    note: cleanedNote(outcome),
+                    note: cleanedNote(outcome, fullDiskAccess: input.fullDiskAccess),
                     cells: MiniMosaic(count: MiniMosaic.cells(bytes: outcome.movedBytes), kind: allBack ? .selected : .inTrash))
             }
 
@@ -226,8 +237,8 @@ public enum JunkScreen {
                 }
                 return make(.stopped, bytes: tile.bytes, lower: true, note: stoppedNote, cells: cells)
             }
-            if tile.needsHelper {
-                return make(.needsHelper, bytes: tile.bytes, note: helperNote, cells: cells)
+            if tile.leftAlone {
+                return make(.leftAlone, bytes: tile.bytes, note: leftAloneNote, cells: cells)
             }
             var status = JunkTile.Status.scanned
             if input.phase == .moving, tile.isSelected {
@@ -239,7 +250,8 @@ public enum JunkScreen {
             }
             return make(
                 status, bytes: shownBytes, lower: partial, selected: tile.isSelected,
-                toggle: input.phase == .ready, note: scannedNote(tile, selection: entry.selection, partial: partial),
+                toggle: input.phase == .ready,
+                note: scannedNote(tile, selection: entry.selection, partial: partial),
                 cells: cells, foundNothing: !partial && tile.itemCount == 0 && tile.bytes == 0)
         }
     }
@@ -278,20 +290,22 @@ public enum JunkScreen {
     }
 
     /// The scan finished and found nothing a clean could move: every tile was read in full and holds
-    /// nothing (tiles that need the helper don't count). The header then says "All clean".
+    /// nothing (what Dustling leaves alone doesn't count, whatever it holds or however far it was
+    /// read). The header then says "All clean".
     public static func isAllClean(_ tiles: [JunkTile]) -> Bool {
         guard !tiles.isEmpty else { return false }
         return tiles.allSatisfy { tile in
+            if tile.section == .leftAlone { return true }
             switch tile.status {
             // Files left out in Review files are still there: only a place that held nothing counts.
             case .scanned: return tile.foundNothing
-            case .needsHelper: return true
+            case .leftAlone: return true
             default: return false
             }
         }
     }
 
-    private static func cleanedNote(_ outcome: CategoryOutcome) -> String {
+    private static func cleanedNote(_ outcome: CategoryOutcome, fullDiskAccess: Bool) -> String {
         let back = min(outcome.restoredCount, outcome.movedCount)
         var parts: [String]
         if back == 0 {
@@ -304,9 +318,20 @@ public enum JunkScreen {
         if outcome.skippedCount > 0 { parts.append("\(outcome.skippedCount) skipped") }
         if outcome.failedCount > 0 { parts.append("\(outcome.failedCount) failed") }
         if outcome.needsAdminCount > 0 {
-            parts.append("\(outcome.needsAdminCount) \(outcome.needsAdminCount == 1 ? "needs" : "need") the cleanup helper")
+            parts.append(PasswordCopy.count(outcome.needsAdminCount, fullDiskAccess: fullDiskAccess))
         }
         return parts.joined(separator: ", ")
+    }
+
+    /// What Dustling never cleans, as one quiet line under the sections: "System caches and logs take
+    /// up 6.41 GB. macOS manages these, so Dustling leaves them alone." Only why, when the size isn't
+    /// known. nil while its place is being scanned, when it holds nothing, and in the summary (which
+    /// lists only what moved). Its size is never part of anything Dustling could free.
+    public static func leftAloneLine(_ tiles: [JunkTile]) -> String? {
+        guard let tile = tiles.first(where: { $0.section == .leftAlone && $0.status != .pending }) else { return nil }
+        guard let bytes = tile.bytes else { return "\(tile.title): \(leftAloneNote)" }
+        guard bytes > 0 || tile.isLowerBound else { return nil }
+        return "\(tile.title) take up \(Bytes.format(bytes))\(tile.isLowerBound ? " or more" : ""). \(leftAloneNote)"
     }
 
     /// A section's size: what its tiles hold (or, in the summary, what moved), "or more" when any tile
@@ -373,7 +398,10 @@ public struct JunkSummary: Equatable, Sendable {
     public let reasons: [Reason]
 
     /// `appName` turns a bundle ID into the app's name, nil when unknown.
-    public static func make(_ record: RunRecord, appName: (String) -> String? = { _ in nil }) -> JunkSummary {
+    /// `fullDiskAccess`: whether Dustling has it now, for how an item still needing the password reads.
+    public static func make(
+        _ record: RunRecord, fullDiskAccess: Bool = true, appName: (String) -> String? = { _ in nil }
+    ) -> JunkSummary {
         var moved = 0, skipped = 0, failed = 0, admin = 0
         var groups: [(kind: Reason.Kind, reason: String, paths: [String])] = []
         func add(_ kind: Reason.Kind, _ reason: String, _ path: String) {
@@ -395,7 +423,7 @@ public struct JunkSummary: Equatable, Sendable {
         var parts = [moved == 1 ? "1 item moved" : "\(moved.formatted(.number.locale(Locale(identifier: "en_US")))) items moved"]
         if skipped > 0 { parts.append("\(skipped) skipped") }
         if failed > 0 { parts.append("\(failed) failed") }
-        if admin > 0 { parts.append("\(admin) \(admin == 1 ? "needs" : "need") the cleanup helper") }
+        if admin > 0 { parts.append(PasswordCopy.count(admin, fullDiskAccess: fullDiskAccess)) }
 
         let reasons = groups.map { group -> Reason in
             let n = group.paths.count
@@ -410,7 +438,7 @@ public struct JunkSummary: Equatable, Sendable {
                     text = "\(n) skipped: \(group.reason)"
                 }
             case .failed: text = "\(n) failed: \(group.reason)"
-            case .needsAdmin: text = "\(n) \(n == 1 ? "needs" : "need") the cleanup helper"
+            case .needsAdmin: text = PasswordCopy.count(n, fullDiskAccess: fullDiskAccess)
             }
             return Reason(kind: group.kind, text: text, paths: group.paths)
         }

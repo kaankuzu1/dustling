@@ -3,7 +3,7 @@ import DustlingAppModel
 import DustlingCore
 import Foundation
 
-/// DEBUG only. `-DustlingHomeFixture ready|scanning|done|limited|emptytrash|reviewfiles|closeapps` shows Home and the Junk scan with
+/// DEBUG only. `-DustlingHomeFixture ready|scanning|moving|done|limited|emptytrash|emptytrashproblems|reviewfiles|closeapps` shows Home and the Junk scan with
 /// the approved mockup's sample numbers (`DISK`, `CATS` and `TRASH` in screens.html), for screenshots
 /// without anyone's real files:
 /// - Full Disk Access reads as on (`limited`: off, with the consent places locked), in memory only.
@@ -13,6 +13,7 @@ import Foundation
 ///   count) stay in their loading skeletons. `loadingscan`: the disk is read but the scan has
 ///   finished no place yet, so Home shows the hero with the scan's skeletons.
 /// - `done` shows the summary of a sample cleanup that was never run.
+/// - `moving` shows a cleanup of the selected tiles part way through (it never moves anything).
 /// - `closeapps` is `ready` with the "Close apps to include their files?" sheet for two sample apps
 ///   (its buttons do nothing).
 /// - `emptytrash` and `reviewfiles` are `ready` with the Junk scan's Empty Trash or Review files sheet
@@ -119,6 +120,19 @@ enum HomeFixture {
                       bytes: UInt64(0.62 * gb), itemCount: 2),
     ]
 
+    /// A finished Empty Trash that left five installer-owned apps and one protected item behind.
+    /// Never run: the paths are the fixture's.
+    static func emptyTrashProblemRecord() -> RunRecord {
+        var entries = [JournalEntry(originalPath: "/sample/Screen Recording.mov", bytes: UInt64(1.9 * gb), outcome: .deleted),
+                       JournalEntry(originalPath: "/sample/old-project.zip", bytes: UInt64(0.82 * gb), outcome: .deleted)]
+        entries += (1...5).map { JournalEntry(originalPath: "/sample/TI App \($0)", bytes: 0, outcome: .needsAdmin) }
+        entries.append(JournalEntry(originalPath: "/sample/Protected", bytes: 0, outcome: .failed(reason: "protected by macOS")))
+        entries.append(JournalEntry(
+            originalPath: "/sample/com.apple.sample.store", bytes: 0,
+            outcome: .failed(reason: AdminScript.partlyDeletedReason(bridge: "/Library/.dustling-Ab12Cd34"))))
+        return RunRecord(startedAt: Date(), kind: .emptyTrash, entries: entries, restorable: false)
+    }
+
     static func trashItems(home: URL) -> [TrashItem] {
         let trash = home.appending(path: ".Trash")
         return [
@@ -133,7 +147,7 @@ enum HomeFixture {
     /// is in use. Never run: the paths are the fixture's.
     static func cleanup(of scans: [CategoryScan]) -> RunRecord {
         var entries: [JournalEntry] = []
-        for scan in scans where scan.category.selection == .preselected && !scan.category.requiresAdmin {
+        for scan in scans where scan.category.isSelectedByDefault {
             for item in scan.items {
                 let path = item.url.path(percentEncoded: false)
                 let outcome: DeletionOutcome = item.inUseByBundleID.map { .skipped(reason: "in use by \($0)") }

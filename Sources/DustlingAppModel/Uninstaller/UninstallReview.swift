@@ -5,15 +5,16 @@ import Foundation
 public enum LeftoverBlock: Equatable, Sendable {
     /// Excluded in Settings, or only the link of a shortcut is removed.
     case excluded(String)
-    /// Only the cleanup helper could move it.
-    case needsHelper
+    /// It belongs to the system: it moves only with the Mac password, asked once after the last app,
+    /// so totals count it apart.
+    case needsPassword
     /// Its folder can't be read without Full Disk Access.
     case needsFullDiskAccess
 
     public var text: String {
         switch self {
         case .excluded(let reason): UninstallerScreen.sentence(reason)
-        case .needsHelper: UninstallerScreen.helperNote
+        case .needsPassword: UninstallerScreen.passwordNote
         case .needsFullDiskAccess: "Needs Full Disk Access"
         }
     }
@@ -35,6 +36,11 @@ public struct UninstallReview: Equatable, Sendable {
         public let isIncluded: Bool
         /// "This is your data. …", shown while a data row is ticked.
         public let dataWarning: String?
+        /// A note under a row that can be ticked: "Needs your Mac password" for an item of the system.
+        public var note: String? = nil
+        /// It belongs to the system: it moves with the Mac password after the last app, so the totals
+        /// count it apart, as the confirmation does.
+        public var countsApart = false
         public var id: URL { url }
     }
 
@@ -46,17 +52,21 @@ public struct UninstallReview: Equatable, Sendable {
 
     public let sections: [Section]
 
-    public var selectedBytes: UInt64 { sections.reduce(0) { $0 + $1.rows.filter(\.isIncluded).reduce(0) { $0 + $1.bytes } } }
-    public var selectedCount: Int { sections.reduce(0) { $0 + $1.rows.filter(\.isIncluded).count } }
+    /// What moves without the password (items of the system are counted apart).
+    public var selectedBytes: UInt64 {
+        sections.reduce(0) { $0 + $1.rows.filter { $0.isIncluded && !$0.countsApart }.reduce(0) { $0 + $1.bytes } }
+    }
+    public var selectedCount: Int { sections.reduce(0) { $0 + $1.rows.filter { $0.isIncluded && !$0.countsApart }.count } }
 
     /// Live totals for a draft: an unticked app counts nothing; otherwise the rows that can move and
-    /// aren't left out.
+    /// aren't left out (items of the system counted apart).
     public func totals(excluding: Set<URL>) -> (sections: [URL: UInt64], count: Int, bytes: UInt64) {
         var perSection: [URL: UInt64] = [:], count = 0, bytes: UInt64 = 0
         for section in sections {
             var sum: UInt64 = 0
             if !excluding.contains(section.id) {
-                for row in section.rows where row.disabledReason == nil && !excluding.contains(row.url) {
+                for row in section.rows
+                where row.disabledReason == nil && !row.countsApart && !excluding.contains(row.url) {
                     sum += row.bytes
                     count += 1
                 }

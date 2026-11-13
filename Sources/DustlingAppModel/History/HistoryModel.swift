@@ -104,6 +104,10 @@ public final class HistoryModel {
     /// True while another tool is working (a cleanup, uninstall, startup change or retry): Put back
     /// waits, and runs still marked in progress read "Still running" instead of "Interrupted".
     @ObservationIgnored public var isOtherWorkBusy: @MainActor () -> Bool = { false }
+    /// What puts items back into folders Dustling's user can't change, with the Mac password: one box
+    /// per run put back. The app passes one only while Dustling has Full Disk Access (and never in its
+    /// QA copy); nil: such items fail as before.
+    @ObservationIgnored public var admin: @MainActor () -> AdminMover? = { nil }
     #if DEBUG
     @ObservationIgnored public private(set) var isFixture = false
     #endif
@@ -282,8 +286,9 @@ public final class HistoryModel {
             row.record.entries.filter { RunJournal.isRestorable($0) }.count
         } ?? 0
         let journal = self.journal
+        let admin = self.admin()
         let result = await Blocking.run { () -> Result<[RestoreOutcome], Error> in
-            Result { try journal.restore(runID: runID, paths: paths) }
+            Result { try journal.restore(runID: runID, paths: paths, admin: admin) }
         }
         isRestoring = false
         if case .success(let outcomes) = result { lastRestore = HistoryScreen.restoreSummary(outcomes) }
@@ -311,6 +316,7 @@ public final class HistoryModel {
         let byRun = Dictionary(grouping: items, by: \.runID)
         let emptied = lastEmptyTrash
         let journal = self.journal
+        let admin = self.admin()
         var outcomes: [RestoreOutcome] = []
         for (runID, chosen) in byRun.sorted(by: { $0.value[0].runDate > $1.value[0].runDate }) {
             let paths = Set(chosen.map(\.path))
@@ -325,7 +331,7 @@ public final class HistoryModel {
                 continue
             }
             let result = await Blocking.run { () -> Result<[RestoreOutcome], Error> in
-                Result { try journal.restore(runID: runID, paths: paths) }
+                Result { try journal.restore(runID: runID, paths: paths, admin: admin) }
             }
             switch result {
             case .success(let done): outcomes += done

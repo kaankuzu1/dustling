@@ -31,6 +31,8 @@ public enum BusyWork: String, CaseIterable, Sendable, Hashable {
     case retry
     case restore
     case emptyTrash
+    /// The macOS password box is up for one of the above, or its script is running as root.
+    case passwordStep
 
     /// True when quitting stops it early. Otherwise Dustling waits for it to finish.
     public var stopsEarly: Bool { self == .cleanup }
@@ -50,6 +52,9 @@ public enum BusyWork: String, CaseIterable, Sendable, Hashable {
             "Dustling is putting files back from the Trash. It finishes putting them back first."
         case .emptyTrash:
             "Dustling is emptying the Trash. It finishes emptying it first."
+        case .passwordStep:
+            "Dustling is asking for your Mac password. It finishes once you answer or cancel the password box; "
+                + "a box still open closes when Dustling quits."
         }
     }
 }

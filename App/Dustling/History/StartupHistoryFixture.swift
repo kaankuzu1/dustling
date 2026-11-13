@@ -6,7 +6,8 @@ import Foundation
 /// DEBUG only. Sample data from the approved mockups (`SU` and `RUNS` in screens.html) for screenshots
 /// of states this Mac can't show safely:
 /// - `-DustlingStartupFixture normal|remove|changed|loading`
-/// - `-DustlingHistoryFixture runs|items|log|restored|loading|loading-items|loading-log`
+/// - `-DustlingHistoryFixture runs|items|log|restored|restoring|loading|loading-items|loading-log`
+///   (`restoring`: Put back of 2 items is running, and never finishes)
 ///
 /// `loading` shows the screen still reading, with nothing found yet (the loading skeleton);
 /// `loading-items` and `loading-log` do so on History's other tabs.
@@ -151,6 +152,9 @@ extension AppModels {
                 .restored(home + "/Library/Containers/com.docker.docker"),
                 .conflict("/Applications/Docker.app"),
             ]))
+        case "restoring":
+            StartupHistoryFixture.historyTab = .runs
+            history.showFixtureRestore(nil, restoring: 2)
         default: StartupHistoryFixture.historyTab = .runs
         }
     }

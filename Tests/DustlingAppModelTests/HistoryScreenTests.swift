@@ -33,8 +33,11 @@ struct HistoryScreenTests {
 
     private func context(lastEmpty: Date? = nil, trash: Bool = true) -> HistoryScreen.Context {
         HistoryScreen.Context(
-            lastEmptyTrash: lastEmpty, canTakeOutOfTrash: trash, home: "/Users/k", now: now, calendar: calendar,
-            locale: locale)
+            lastEmptyTrash: lastEmpty, canTakeOutOfTrash: trash,
+            environment: SystemEnvironment(
+                home: URL(filePath: "/Users/k"), applicationDirectories: [], systemLibrary: URL(filePath: "/Library"),
+                volumesDirectory: URL(filePath: "/Volumes"), userID: 501),
+            now: now, calendar: calendar, locale: locale)
     }
 
     // MARK: dates
@@ -71,7 +74,16 @@ struct HistoryScreenTests {
             JournalEntry(originalPath: "/y", bytes: 0, outcome: .needsAdmin),
         ], restorable: true), c)
         #expect(apps.title == "Uninstaller: Docker Desktop")
-        #expect(apps.caption == "3 items, 1 failed, 1 needs the helper")
+        #expect(apps.caption == "3 items, 1 failed, 1 needs your Mac password")
+        let limited = HistoryScreen.runLine(row(.junkClean, at(8, 18, 40), [
+            JournalEntry(originalPath: "/y", bytes: 0, outcome: .needsAdmin),
+            JournalEntry(originalPath: "/z", bytes: 0, outcome: .needsAdmin),
+        ]), context(trash: false))
+        #expect(limited.caption == "2 items, 2 need Full Disk Access, then your Mac password")
+        let daemon = HistoryScreen.runLine(row(.startupChange, at(8, 18, 40), [
+            JournalEntry(originalPath: "/Library/LaunchDaemons/x.plist", bytes: 0, outcome: .needsAdmin),
+        ]), c)
+        #expect(daemon.caption.hasSuffix("1 needs the helper"))
     }
 
     @Test func startupTogglesReadTurnedOffNeverSkipped() {
@@ -171,20 +183,58 @@ struct HistoryScreenTests {
         let record = RunRecord(startedAt: at(8, 19, 4), kind: .junkClean, entries: [
             moved("/Users/k/Library/Caches/A", 3_410_000_000),
             JournalEntry(originalPath: "/Users/k/Library/Mail/x", bytes: 0, outcome: .skipped(reason: "in use by Mail")),
-            JournalEntry(originalPath: "/Library/Caches/y", bytes: 0, outcome: .needsAdmin),
+            JournalEntry(originalPath: "/Library/Application Support/y", bytes: 0, outcome: .needsAdmin),
             JournalEntry(originalPath: "/Users/k/z", bytes: 0, outcome: .failed(reason: "disk exploded")),
             moved("/Users/k/back", 10, restored: true),
             JournalEntry(originalPath: "<log>", bytes: 0, outcome: .failed(reason: "disk full")),
         ], restorable: true)
         let rows = HistoryScreen.logRows(record, context())
-        #expect(rows.map(\.result) == ["moved", "skipped", "needs helper", "failed", "put back", "failed"])
+        #expect(rows.map(\.result) == ["moved", "skipped", "needs password", "failed", "put back", "failed"])
         #expect(rows.map(\.tone) == [.done, .skipped, .skipped, .failed, .done, .failed])
         #expect(rows.map(\.path) == [
-            "~/Library/Caches/A", "~/Library/Mail/x", "/Library/Caches/y", "~/z", "~/back", "Dustling's log file",
+            "~/Library/Caches/A", "~/Library/Mail/x", "/Library/Application Support/y", "~/z", "~/back", "Dustling's log file",
         ])
         #expect(rows.map(\.note) == [
-            "3.41 GB", "in use by Mail", "needs the cleanup helper", "disk exploded", "10 bytes", "disk full",
+            "3.41 GB", "in use by Mail", "needs your Mac password", "disk exploded", "10 bytes", "disk full",
         ])
+        // Without Full Disk Access the password step can't run: access comes first.
+        #expect(HistoryScreen.logRows(record, context(trash: false))[2].note
+            == "needs Full Disk Access, then your Mac password")
+        // Switching startup items is still the cleanup helper's job.
+        let startup = RunRecord(startedAt: at(8, 19, 4), kind: .startupChange, entries: [
+            JournalEntry(originalPath: "/Library/LaunchDaemons/x.plist", bytes: 0, outcome: .needsAdmin),
+        ], restorable: false)
+        #expect(HistoryScreen.logRows(startup, context())[0].result == "needs helper")
+        #expect(HistoryScreen.logRows(startup, context())[0].note == "needs the cleanup helper")
+    }
+
+    @Test func olderRunsSystemCachesAndLogsReadAsLeftAloneNeverAsNeedingThePassword() {
+        // Dustling never cleans what macOS manages. A run from before that listed items in the
+        // system's caches and logs as needing the password: they read as today's runs record them.
+        let record = RunRecord(startedAt: at(8, 19, 4), kind: .junkClean, entries: [
+            moved("/Users/k/Library/Caches/A", 10),
+            JournalEntry(originalPath: "/Library/Caches/com.apple.iconservices.store", bytes: 0, outcome: .needsAdmin),
+            JournalEntry(originalPath: "/Library/Logs/install.log", bytes: 0, outcome: .needsAdmin),
+            JournalEntry(originalPath: "/Library/Application Support/com.vendor", bytes: 0, outcome: .needsAdmin),
+        ], restorable: true)
+        let rows = HistoryScreen.logRows(record, context())
+        #expect(rows.map(\.result) == ["moved", "skipped", "skipped", "needs password"])
+        #expect(rows[1].note == "macOS manages it, so Dustling leaves it alone")
+        #expect(rows[1].tone == .skipped)
+        #expect(rows[3].note == "needs your Mac password")
+        #expect(HistoryScreen.logFilters(record, context()).map(\.label) == ["All 4", "Moved 1", "Skipped 3", "Failed 0"])
+        let line = HistoryScreen.runLine(row(.junkClean, at(8, 19, 4), record.entries, restorable: true), context())
+        #expect(line.caption == "4 items, 2 skipped, 1 needs your Mac password")
+        let status = HistoryScreen.itemStatus(
+            record.entries[1], kind: .junkClean, runDate: at(8, 19, 4), restorable: true, context())
+        #expect(status == HistoryScreen.ItemStatus(text: "Skipped: macOS manages it, so Dustling leaves it alone", tone: .warning))
+        #expect(!HistoryScreen.itemStatus(
+            record.entries[1], kind: .junkClean, runDate: at(8, 19, 4), restorable: true, context(trash: false))
+            .text.contains("password"))
+        // Only the environment's own system Library counts.
+        var elsewhere = context()
+        elsewhere.environment.systemLibrary = URL(filePath: "/Volumes/Other/Library")
+        #expect(HistoryScreen.logRows(record, elsewhere)[1].result == "needs password")
     }
 
     @Test func logRowsForStartupAndEmptyTrash() {
@@ -312,7 +362,11 @@ struct HistoryScreenTests {
         #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .skipped(reason: "in use")))
             == HistoryScreen.ItemStatus(text: "Skipped: in use", tone: .warning))
         #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .failed(reason: "x"))).tone == .warning)
-        #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .needsAdmin)).text == "Needs the cleanup helper")
+        #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .needsAdmin)).text == "Needs your Mac password")
+        #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .needsAdmin), in: context(trash: false)).text
+            == "Needs Full Disk Access, then your Mac password")
+        #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .needsAdmin), .startupChange).text
+            == "Needs the cleanup helper")
         #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .skipped(reason: "disabled")), .startupChange)
             == HistoryScreen.ItemStatus(text: "Turned off", tone: .neutral))
         #expect(status(JournalEntry(originalPath: "/a", bytes: 9, outcome: .deleted), .emptyTrash).text == "Deleted")

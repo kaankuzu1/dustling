@@ -8,20 +8,25 @@ public enum HistoryScreen {
     /// What the screen needs besides the runs. `canTakeOutOfTrash` is false without Full Disk Access.
     public struct Context: Sendable {
         public var lastEmptyTrash: Date?
+        /// True while Dustling has Full Disk Access (macOS lets it take things out of the Trash then,
+        /// and an item needing admin rights can move with the Mac password).
         public var canTakeOutOfTrash: Bool
-        /// The home folder's path, shown as `~`.
-        public var home: String
+        /// The home folder and the system's caches and logs folders.
+        public var environment: SystemEnvironment
         public var now: Date
         public var calendar: Calendar
         public var locale: Locale
 
+        /// The home folder's path without a trailing slash, shown as `~`.
+        public var home: String { HistoryScreen.homeKey(environment.home.path(percentEncoded: false)) }
+
         public init(
-            lastEmptyTrash: Date?, canTakeOutOfTrash: Bool, home: String, now: Date = .now,
+            lastEmptyTrash: Date?, canTakeOutOfTrash: Bool, environment: SystemEnvironment, now: Date = .now,
             calendar: Calendar = .current, locale: Locale = .current
         ) {
             self.lastEmptyTrash = lastEmptyTrash
             self.canTakeOutOfTrash = canTakeOutOfTrash
-            self.home = home
+            self.environment = environment
             self.now = now
             self.calendar = calendar
             self.locale = locale
@@ -143,6 +148,17 @@ public enum HistoryScreen {
         if case .movedToTrash = entry.outcome { true } else { false }
     }
 
+    /// How an entry's outcome reads. Runs from before Dustling left System caches and logs alone
+    /// recorded items in the system's caches and logs as needing the password; they read as today's
+    /// runs record them, and as the Dustling health page shows them: skipped, because macOS manages
+    /// them (`ProtectedPaths.systemManagedReason`). Nothing offers to retry them.
+    static func shownOutcome(_ entry: JournalEntry, in kind: RunKind, _ c: Context) -> DeletionOutcome {
+        if entry.outcome == .needsAdmin, kind != .startupChange, c.environment.isSystemManaged(entry.originalPath) {
+            return .skipped(reason: ProtectedPaths.systemManagedReason)
+        }
+        return entry.outcome
+    }
+
     /// The startup item a startup run touched, from its plist's file name.
     private static func startupName(_ record: RunRecord) -> String? {
         guard let path = record.entries.first(where: { !$0.originalPath.hasPrefix("<") })?.originalPath else { return nil }
@@ -164,9 +180,10 @@ public enum HistoryScreen {
         let real = record.entries.filter { !$0.originalPath.hasPrefix("<") }
         let toggles = record.entries.filter { OutcomePresentation.isSuccessfulToggle($0.outcome, in: record.kind) }
         let moved = real.filter(isMove)
+        let outcomes = record.entries.map { shownOutcome($0, in: record.kind, c) }
         let failed = record.failedCount
-        let helper = record.needsAdminCount
-        let skipped = record.skippedCount - toggles.count
+        let helper = outcomes.filter { $0 == .needsAdmin }.count
+        let skipped = outcomes.filter { if case .skipped = $0 { true } else { false } }.count - toggles.count
 
         // The timeline's header already says when.
         var parts: [String] = []
@@ -177,7 +194,11 @@ public enum HistoryScreen {
         }
         if skipped > 0 { parts.append("\(skipped) skipped") }
         if failed > 0 { parts.append("\(failed) failed") }
-        if helper > 0 { parts.append("\(helper) \(helper == 1 ? "needs" : "need") the helper") }
+        if helper > 0 {
+            parts.append(record.kind == .startupChange
+                ? "\(helper) \(helper == 1 ? "needs" : "need") the helper"
+                : PasswordCopy.count(helper, fullDiskAccess: c.canTakeOutOfTrash))
+        }
 
         var chip: Chip?
         var action: RunAction?
@@ -314,8 +335,9 @@ public enum HistoryScreen {
             if !c.canTakeOutOfTrash { return ItemStatus(text: "Moved to Trash", tone: .neutral) }
             return ItemStatus(text: "No longer in the Trash", tone: .neutral)
         }
-        let text = OutcomePresentation.text(entry.outcome, in: kind)
-        switch entry.outcome {
+        let outcome = shownOutcome(entry, in: kind, c)
+        let text = OutcomePresentation.text(outcome, in: kind, fullDiskAccess: c.canTakeOutOfTrash)
+        switch outcome {
         case .skipped where OutcomePresentation.isSuccessfulToggle(entry.outcome, in: kind):
             return ItemStatus(text: text, tone: .neutral)
         case .skipped, .failed, .needsAdmin: return ItemStatus(text: text, tone: .warning)
@@ -366,7 +388,8 @@ public enum HistoryScreen {
     public struct LogRow: Identifiable, Equatable, Sendable {
         public enum Tone: Equatable, Sendable { case done, skipped, failed }
         public let id: Int
-        /// "moved", "skipped", "failed", "needs helper", "deleted", "turned off", "put back".
+        /// "moved", "skipped", "failed", "needs password", "needs helper" (startup items), "deleted",
+        /// "turned off", "put back".
         public let result: String
         public let tone: Tone
         public let path: String
@@ -378,7 +401,7 @@ public enum HistoryScreen {
         record.entries.enumerated().map { index, entry in
             let path = displayPath(entry.originalPath, home: c.home)
             let size = Bytes.format(entry.bytes)
-            switch entry.outcome {
+            switch shownOutcome(entry, in: record.kind, c) {
             case .movedToTrash:
                 return LogRow(id: index, result: entry.restored ? "put back" : "moved", tone: .done, path: path, note: size)
             case .deleted:
@@ -389,8 +412,11 @@ public enum HistoryScreen {
                     return LogRow(id: index, result: text, tone: .done, path: path, note: "")
                 }
                 return LogRow(id: index, result: "skipped", tone: .skipped, path: path, note: reason)
-            case .needsAdmin:
+            case .needsAdmin where record.kind == .startupChange:
                 return LogRow(id: index, result: "needs helper", tone: .skipped, path: path, note: "needs the cleanup helper")
+            case .needsAdmin:
+                return LogRow(id: index, result: "needs password", tone: .skipped, path: path,
+                              note: PasswordCopy.lowercased(fullDiskAccess: c.canTakeOutOfTrash))
             case .failed(let reason):
                 return LogRow(id: index, result: "failed", tone: .failed, path: path, note: reason)
             }

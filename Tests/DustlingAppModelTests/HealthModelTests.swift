@@ -234,8 +234,15 @@ struct HealthModelTests {
         await model.refresh()
         let light = model.lights.first { $0.kind == .lastRun }
         #expect(light?.state == .warning)
-        #expect(light?.fix == nil)  // needs admin rights: nothing to retry without the helper
+        // Needs admin rights: a retry asks for the Mac password, with Full Disk Access.
+        #expect(light?.fix == .retryItems(count: 1))
+        #expect(light?.detail == "1 needs your Mac password")
         #expect(model.lastRunProblem != nil)
+        let noAccess = HealthModel(probe: { .denied }, clock: ManualClock(), lastRunSummary: { bad })
+        await noAccess.refresh()
+        let waiting = noAccess.lights.first { $0.kind == .lastRun }
+        #expect(waiting?.fix == nil)   // access first: the password step can't open the Trash without it
+        #expect(waiting?.detail == "1 needs Full Disk Access, then your Mac password")
 
         let clean = HealthModel(probe: { .granted }, clock: ManualClock(), lastRunSummary: { nil })
         await clean.refresh()

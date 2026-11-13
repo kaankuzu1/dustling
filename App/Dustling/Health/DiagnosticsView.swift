@@ -191,7 +191,10 @@ private struct LastRunProblems: View {
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
-        let problems = LastRunReview.problems(in: run, home: models.homeDirectory) { AppModels.appName(bundleID: $0) }
+        let access = models.health.fullDiskAccess == .granted
+        let problems = LastRunReview.problems(in: run, environment: models.systemEnvironment, fullDiskAccess: access) {
+            AppModels.appName(bundleID: $0)
+        }
         if !problems.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -205,8 +208,10 @@ private struct LastRunProblems: View {
                             .monospacedDigit()
                     }
                     Spacer()
-                    let count = LastRunReview.retryableCount(in: run)
-                    if models.retry.isRetrying {
+                    let count = LastRunReview.retryableCount(in: run, environment: models.systemEnvironment, fullDiskAccess: access)
+                    if models.retry.isRetrying && models.isWaitingForPassword {
+                        BusyLabel(text: PasswordCopy.waiting)
+                    } else if models.retry.isRetrying {
                         BusyIndicator(label: "Retrying…")
                     } else if count > 0 {
                         Button(RepairCase.itemsDidNotMove(count: count).copy.fix) {
@@ -239,7 +244,9 @@ private struct LastRunProblems: View {
         var parts = ["\(moved.formatted()) moved to the Trash"]
         if run.skippedCount > 0 { parts.append("\(run.skippedCount.formatted()) skipped") }
         if run.failedCount > 0 { parts.append("\(run.failedCount.formatted()) failed") }
-        if run.needsAdminCount > 0 { parts.append("\(run.needsAdminCount.formatted()) need admin rights") }
+        if run.needsAdminCount > 0 {
+            parts.append(PasswordCopy.count(run.needsAdminCount, fullDiskAccess: models.health.fullDiskAccess == .granted))
+        }
         return parts.joined(separator: ", ")
     }
 }

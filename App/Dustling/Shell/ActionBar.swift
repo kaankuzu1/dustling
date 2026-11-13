@@ -46,6 +46,28 @@ extension ActionBar where Buttons == EmptyView {
     }
 }
 
+/// A small spinner with its text beside it, for work that waits where a bar has no room for a title
+/// ("Waiting for your Mac password"). Under Reduce Motion only the text.
+struct BusyLabel: View {
+    let text: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if !reduceMotion {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityHidden(true)
+            }
+            Text(text)
+                .font(.custom(DustlingTheme.Typography.sansFamily, size: 12))
+                .foregroundStyle(DustlingTheme.Palette.muted)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// A 1 pt `line`-coloured rule.
 struct Hairline: View {
     var body: some View {

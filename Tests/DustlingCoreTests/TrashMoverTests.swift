@@ -10,6 +10,70 @@ struct TrashMoverTests {
         func trash(_ url: URL) throws -> URL { throw Boom() }
     }
 
+    struct FailingBackend: TrashBackend {
+        let error: Error
+        func trash(_ url: URL) throws -> URL { throw error }
+    }
+
+    @Test func trashRefusedWithEPERMIsProtected() throws {
+        let sandbox = try TestSandbox()
+        let root = try sandbox.directory("home/Library/Caches")
+        let file = try sandbox.file("home/Library/Caches/a.log")
+        let error = CocoaError(.fileWriteNoPermission, userInfo: [NSUnderlyingErrorKey: POSIXError(.EPERM)])
+        let (mover, _) = make(sandbox, backend: FailingBackend(error: error))
+        #expect(mover.moveToTrash(file, allowedRoots: [root]) == .failed(reason: "protected by macOS"))
+        #expect(TrashMover.protectedReason == TrashUnlocker.protectedReason)
+    }
+
+    /// A mover whose lstat of `blocked` fails with `code`, as for a folder macOS keeps to itself.
+    private func mover(_ sandbox: TestSandbox, blocked: URL, code: Int32) -> TrashMover {
+        let blockedPath = blocked.path(percentEncoded: false)
+        return TrashMover(
+            backend: DirectoryTrashBackend(directory: sandbox.root.appending(path: "trash", directoryHint: .isDirectory)),
+            protectedPaths: ProtectedPaths(environment: sandbox.environment),
+            inspectItem: { path in
+                if path == blockedPath { return .failed(code) }
+                var info = stat()
+                return lstat(path, &info) == 0 ? .found(info) : .failed(errno)
+            })
+    }
+
+    @Test func anItemMacOSWontLetDustlingEvenLookAtIsProtected() throws {
+        // A data folder macOS keeps to itself (like /Library/Caches/com.apple.aned): the folder lists,
+        // but even lstat of the item fails with EPERM, with or without Full Disk Access. Nothing
+        // Dustling or the user does changes that.
+        let sandbox = try TestSandbox()
+        let caches = try sandbox.directory("home/Library/Caches")
+        let vault = try sandbox.directory("home/Library/Caches/com.apple.aned")
+        let mover = mover(sandbox, blocked: vault, code: EPERM)
+        #expect(mover.moveToTrash(vault, allowedRoots: [caches]) == .failed(reason: "protected by macOS"))
+        #expect(FileManager.default.fileExists(atPath: vault.path(percentEncoded: false)))
+    }
+
+    @Test func anItemInAFolderDustlingCantOpenStillNeedsAccess() throws {
+        // The folder itself can't be opened (as a folder macOS keeps private without Full Disk
+        // Access): access may help, so it stays "no access". EACCES is never "protected".
+        let sandbox = try TestSandbox()
+        let locked = try sandbox.directory("home/Library/Containers/x")
+        let item = try sandbox.file("home/Library/Containers/x/data", bytes: 2)
+        let root = locked
+        FolderMode.set(locked, 0o000)
+        defer { FolderMode.unlock(locked) }
+        let noAccess = DeletionOutcome.failed(reason: "no access (Full Disk Access may be needed)")
+        #expect(mover(sandbox, blocked: item, code: EPERM).moveToTrash(item, allowedRoots: [root]) == noAccess)
+        FolderMode.unlock(locked)
+        #expect(mover(sandbox, blocked: item, code: EACCES).moveToTrash(item, allowedRoots: [root]) == noAccess)
+    }
+
+    @Test func trashRefusedWithEACCESKeepsDescription() throws {
+        let sandbox = try TestSandbox()
+        let root = try sandbox.directory("home/Library/Caches")
+        let file = try sandbox.file("home/Library/Caches/a.log")
+        let error = CocoaError(.fileWriteNoPermission, userInfo: [NSUnderlyingErrorKey: POSIXError(.EACCES)])
+        let (mover, _) = make(sandbox, backend: FailingBackend(error: error))
+        #expect(mover.moveToTrash(file, allowedRoots: [root]) == .failed(reason: error.localizedDescription))
+    }
+
     private func make(_ sandbox: TestSandbox, backend: TrashBackend? = nil) -> (TrashMover, URL) {
         let trash = sandbox.root.appending(path: "trash", directoryHint: .isDirectory)
         let mover = TrashMover(

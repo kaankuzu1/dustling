@@ -38,8 +38,12 @@ trap 'rm -rf "$WORK"; defaults delete $QA_ID >/dev/null 2>&1 || true' EXIT
 
 echo "Building the QA copy…"
 (cd "$ROOT/App" && xcodegen generate --quiet)
+# Whole-module, like Release. An incremental Debug build can compile a file against the concrete type
+# behind another file's `some View` (e.g. `skeleton(_:index:)`), then not recompile it when that
+# function's body changes; the stale object reads the new layout wrong and the QA copy crashes.
 xcodebuild -project "$ROOT/App/Dustling.xcodeproj" -scheme Dustling -configuration Debug \
-  -derivedDataPath "$BUILD" PRODUCT_BUNDLE_IDENTIFIER=$QA_ID build -quiet > "$OUT/xcodebuild.log" 2>&1 \
+  -derivedDataPath "$BUILD" PRODUCT_BUNDLE_IDENTIFIER=$QA_ID SWIFT_COMPILATION_MODE=wholemodule \
+  build -quiet > "$OUT/xcodebuild.log" 2>&1 \
   || { tail -30 "$OUT/xcodebuild.log"; exit 1; }
 APP=$BUILD/Build/Products/Debug/Dustling.app
 
@@ -82,9 +86,13 @@ STATES=(
   "home-limited||-DustlingHomeFixture limited"
   "junk-scanning||-DustlingHomeFixture scanning"
   "junk-empty-trash||-DustlingHomeFixture emptytrash"
+  "junk-empty-trash-problems||-DustlingHomeFixture emptytrashproblems"
   "junk-review-files||-DustlingHomeFixture reviewfiles"
   "junk-close-apps||-DustlingHomeFixture closeapps"
   "junk-done||-DustlingHomeFixture done"
+  "junk-moving-password||-DustlingHomeFixture moving -DustlingPasswordFixture YES"
+  "junk-putback-password||-DustlingHomeFixture done -DustlingPasswordFixture YES"
+  "junk-empty-trash-password||-DustlingHomeFixture emptytrash -DustlingPasswordFixture YES"
   "uninstaller-list||-DustlingUninstallerFixture list"
   "uninstaller-detail||-DustlingUninstallerFixture detail"
   "uninstaller-review||-DustlingUninstallerFixture review"
@@ -93,6 +101,7 @@ STATES=(
   "uninstaller-confirm-limited||-DustlingUninstallerFixture confirm-limited"
   "uninstaller-removing||-DustlingUninstallerFixture removing"
   "uninstaller-done||-DustlingUninstallerFixture done"
+  "uninstaller-removing-password||-DustlingUninstallerFixture removing -DustlingPasswordFixture YES"
   "startup-normal||-DustlingStartupFixture normal"
   "startup-remove||-DustlingStartupFixture remove"
   "startup-changed||-DustlingStartupFixture changed"
@@ -100,9 +109,11 @@ STATES=(
   "history-items||-DustlingHistoryFixture items"
   "history-log||-DustlingHistoryFixture log"
   "history-restored||-DustlingHistoryFixture restored"
+  "history-restoring-password||-DustlingHistoryFixture restoring -DustlingPasswordFixture YES"
   "repair-helper||-DustlingRepairFixture helper"
   "repair-fda||-DustlingRepairFixture fda"
   "repair-results||-DustlingRepairFixture results"
+  "repair-retrying-password||-DustlingRepairFixture results -DustlingPasswordFixture YES"
   "onboarding-1||-DustlingOnboardingStep 1 -DustlingHomeFixture ready"
   "onboarding-2||-DustlingOnboardingStep 2 -DustlingHomeFixture ready"
   "onboarding-3||-DustlingOnboardingStep 3 -DustlingHomeFixture ready"

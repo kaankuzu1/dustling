@@ -36,6 +36,25 @@ struct ProtectedPathsTests {
         #expect(p.verdict(for: URL(filePath: "/usr"), allowedRoots: [URL(filePath: "/")]) == .denied(reason: "protected location"))
     }
 
+    @Test func theSystemsCachesAndLogsNeverMove() throws {
+        // macOS manages them: nothing in them moves, whatever the allowed roots, and excluding
+        // something there in Settings would change nothing.
+        let (sb, p) = try make()
+        let caches = try sb.directory("Library/Caches")
+        let logs = try sb.directory("Library/Logs")
+        let managed = PathVerdict.denied(reason: "macOS manages it, so Dustling leaves it alone")
+        #expect(p.verdict(for: caches.appending(path: "com.apple.iconservices.store"), allowedRoots: [caches]) == managed)
+        #expect(p.verdict(for: logs.appending(path: "DiagnosticReports/x"), allowedRoots: [sb.root]) == managed)
+        #expect(p.verdict(for: caches, allowedRoots: [sb.root]) == managed)
+        #expect(p.isProtectedTree(logs.appending(path: "x")))
+        // Other folders of the system Library, and the user's own caches, are not.
+        let support = try sb.directory("Library/Application Support")
+        #expect(p.verdict(for: support.appending(path: "x"), allowedRoots: [support]) == .allowed)
+        let mine = try sb.directory("home/Library/Caches")
+        #expect(p.verdict(for: mine.appending(path: "x"), allowedRoots: [mine]) == .allowed)
+        #expect(!p.isProtectedTree(mine.appending(path: "x")))
+    }
+
     @Test func deniesOtherUsersHome() throws {
         let (_, p) = try make()
         let url = URL(filePath: "/Users/someoneelse/Library/Caches/x")

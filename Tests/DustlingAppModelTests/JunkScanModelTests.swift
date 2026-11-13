@@ -216,24 +216,42 @@ struct JunkScanModelTests {
         #expect(!model.hasItemsToMove)
     }
 
-    @Test func adminCategoriesStartUncheckedAndCantBeToggled() async throws {
+    @Test func systemCachesAreShownButNeverChosenOrCleaned() async throws {
+        // macOS manages them: the tile shows their size, can't be ticked, and a clean never touches
+        // them or asks for the password, even with access and the password step at hand.
         let rig = try ModelRig()
-        let sys = rig.root.appending(path: "Library/Caches", directoryHint: .isDirectory)
-        try rig.file(sys.appending(path: "x/blob"), bytes: 4096)
+        let sys = rig.environment.systemLibrary.appending(path: "Caches", directoryHint: .isDirectory)
+        let rootOwned = sys.appending(path: "com.root.cache")
+        try rig.file(rootOwned.appending(path: "blob"), bytes: 4096)
+        try FileManager.default.createDirectory(at: rig.environment.userTrash, withIntermediateDirectories: true)
         let categories = [JunkCategory(
             id: .systemCachesAndLogs, title: "System caches and logs", selection: .preselected,
             requiresAdmin: true, roots: [sys])]
+        let shell = FakeAdminShell(.cancelled)
         let model = JunkScanModel(
             scanner: rig.scanner(), runner: rig.runner(), journal: rig.journal,
             environment: rig.environment, options: rig.options, categories: { categories })
+        model.canTakeOutOfTrash = true
+        model.admin = { rig.admin(shell) }
         await scanned(model)
         let tile = try #require(model.categories.first)
         #expect(!tile.isSelected)
-        #expect(tile.bytes > 0)
-        #expect(tile.note == "Needs the cleanup helper")
+        #expect(tile.leftAlone)
+        #expect(tile.bytes == 4096)
+        #expect(model.selectedBytes == 0)
+
         model.toggle(.systemCachesAndLogs)
         #expect(!model.categories[0].isSelected)
         #expect(model.selectedBytes == 0)
+        #expect(!model.hasItemsToMove)
+        #expect(Unmovable.check(
+            JunkItem(url: rootOwned, bytes: 4096, category: .systemCachesAndLogs), category: categories[0],
+            skipping: .none, inUseBy: nil) == .leftAlone)
+        #expect(Unmovable.leftAlone.outcome == .skipped(reason: "macOS manages it, so Dustling leaves it alone"))
+
+        await model.clean()
+        #expect(shell.prompts.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: rootOwned.appending(path: "blob").path(percentEncoded: false)))
     }
 
     @Test func putEverythingBackRestoresOnlyMovedItems() async throws {
@@ -479,6 +497,82 @@ extension JunkScanModelTests {
         #expect(outcome.skippedCount == 1)
         #expect(outcome.failedCount == 1)
         #expect(model.categoryOutcomes[.iosBackups] == nil)
+    }
+
+    // MARK: the password step
+
+    @Test func cleanAsksOnceForWhatBelongsToTheSystem() async throws {
+        let rig = try ModelRig()
+        try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        // Folders only an administrator could move (Dustling's user can't change them).
+        let first = rig.cachesDirectory.appending(path: "com.root.one")
+        let second = rig.cachesDirectory.appending(path: "com.root.two")
+        try rig.file(first.appending(path: "blob"), bytes: 4096)
+        try rig.file(second.appending(path: "blob"), bytes: 4096)
+        try FileManager.default.createDirectory(at: rig.environment.userTrash, withIntermediateDirectories: true)
+        let shell = FakeAdminShell(.cancelled)
+        let model = makeModel(rig)
+        model.canTakeOutOfTrash = true
+        model.admin = { rig.admin(shell) }
+        await scanned(model)
+        try rig.lockFolder(first)
+        try rig.lockFolder(second)
+        defer {
+            rig.unlockFolder(first)
+            rig.unlockFolder(second)
+        }
+
+        await model.clean()
+
+        #expect(shell.prompts == [AdminMover.movePrompt(count: 2)])
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+        #expect(record.needsAdminCount == 2)
+        #expect(record.bytesMovedToTrash == 4096)
+        #expect(model.categoryOutcomes[.userCaches]?.needsAdminCount == 2)
+        #expect(JunkSummary.make(record).sentence == "1 item moved, 2 need your Mac password.")
+    }
+
+    @Test func cleanWithoutThePasswordStepNeverAsks() async throws {
+        let rig = try ModelRig()
+        let folder = rig.cachesDirectory.appending(path: "com.root.one")
+        try rig.file(folder.appending(path: "blob"), bytes: 4096)
+        let shell = FakeAdminShell(.cancelled)
+        let model = makeModel(rig)
+        model.canTakeOutOfTrash = true
+        // What the app passes without Full Disk Access (and in the QA copy).
+        model.admin = { nil }
+        await scanned(model)
+        try rig.lockFolder(folder)
+        defer { rig.unlockFolder(folder) }
+
+        await model.clean()
+
+        #expect(shell.prompts.isEmpty)
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+        #expect(record.needsAdminCount == 1)
+    }
+
+    @Test func putEverythingBackAsksForThePasswordForAFolderTheUserCantChange() async throws {
+        let rig = try ModelRig()
+        let a = try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        let shell = FakeAdminShell(.cancelled)
+        let model = makeModel(rig)
+        model.canTakeOutOfTrash = true
+        model.admin = { rig.admin(shell) }
+        await scanned(model)
+        await model.clean()
+        #expect(shell.prompts.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: a.path))
+        guard case .done(let record) = model.state, let moved = record.entries.first else {
+            Issue.record("expected done"); return
+        }
+        try rig.lockFolder(rig.cachesDirectory)
+        defer { rig.unlockFolder(rig.cachesDirectory) }
+
+        let outcomes = try await model.putEverythingBack()
+
+        #expect(shell.prompts == [AdminMover.restorePrompt(count: 1)])
+        #expect(outcomes == [.failed(moved.originalPath, reason: RunJournal.putBackNeedsPasswordReason)])
     }
 }
 

@@ -22,7 +22,7 @@ struct PermissionsStep: View {
                 }
                 PermissionRow(
                     icon: .lock, title: "Cleanup helper",
-                    detail: "Moves system caches and logs that belong to macOS."
+                    detail: "Turns system startup items on and off."
                 ) {
                     Chip(text: "Not available yet", onPanel: true)
                 }

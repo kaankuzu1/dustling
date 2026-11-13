@@ -47,7 +47,7 @@ struct JunkScanView: View {
         .sheet(isPresented: $confirmingEmptyTrash) { EmptyTrashSheet() }
         .dismissedOnQuit($confirmingEmptyTrash)
         #if DEBUG
-        .task { if HomeFixture.state == "emptytrash" { confirmingEmptyTrash = true } }
+        .task { if HomeFixture.state == "emptytrash" || HomeFixture.state == "emptytrashproblems" { confirmingEmptyTrash = true } }
         #endif
     }
 
@@ -113,13 +113,18 @@ struct JunkScanView: View {
         let isDone: Bool = { if case .done = models.junk.state { return true } else { return false } }()
         let isReady: Bool = { if case .ready = models.junk.state { return true } else { return false } }()
         if isReady && JunkScreen.isAllClean(tiles) {
-            // "All clean": no row of empty places, only the Trash while it holds something to empty.
-            if (models.trash.contents?.size.bytes ?? 0) > 0 {
+            // "All clean": no row of empty places, only the Trash while it holds something to empty
+            // (by its items: one of 0 bytes, or of the system that can't be measured, is still there).
+            if !models.trash.items.isEmpty {
                 TileGrid { TrashTile(confirmingEmptyTrash: $confirmingEmptyTrash) }
                     .padding(.top, 6)
             }
         } else {
             categorySections(tiles, isDone: isDone)
+        }
+        // System caches and logs: never cleaned, so never a tile in a section; its size as a footnote.
+        if let line = JunkScreen.leftAloneLine(tiles) {
+            LeftAloneNote(text: line)
         }
     }
 
@@ -178,6 +183,29 @@ private struct SectionHeader: View {
     }
 }
 
+/// What Dustling never cleans (System caches and logs), as one muted line under the sections: its
+/// size, for information, and why it stays. It is never ticked and never in a section's total.
+private struct LeftAloneNote: View {
+    let text: String
+
+    private typealias Palette = DustlingTheme.Palette
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            PixelIconView(.info, color: Palette.muted)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 3 }
+                .accessibilityHidden(true)
+            Text(text)
+                .font(DustlingTheme.Typography.caption)
+                .foregroundStyle(Palette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 14)
+        .padding(.leading, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// The 3-column tile grid with 10 pt gaps (`.tiles`).
 private struct TileGrid<Content: View>: View {
     @ViewBuilder var content: () -> Content
@@ -227,10 +255,12 @@ private struct SelectionHeader: View {
     }
 
     /// Free space first, then the categories (largest first), then one hatched cell per locked place.
+    /// What Dustling never cleans (System caches and logs) is left out: it can't be selected.
     private func layout(_ figures: HomeFigures) -> MosaicLayout {
-        let shown = models.junkTiles.filter { $0.bytes != nil && $0.status != .cleaned }
+        let tiles = models.junkTiles.filter { $0.section != .leftAlone }
+        let shown = tiles.filter { $0.bytes != nil && $0.status != .cleaned }
         // One hatched cell per place with no known size: locked, unreadable, or not reached by the scan.
-        let locked = models.junkTiles.filter { $0.bytes == nil && $0.status != .pending }.count
+        let locked = tiles.filter { $0.bytes == nil && $0.status != .pending }.count
         return MosaicLayout.make(
             totalBytes: 0, availableBytes: figures.available ?? 0,
             categories: shown.map { ($0.id, $0.bytes ?? 0) }, inTrashBytes: 0, lockedPlaces: locked)
@@ -378,12 +408,16 @@ private struct JunkActionBar: View {
             .sheet(item: $closingApps) { run in CloseAppsSheet(run: run) }
             .dismissedOnQuit($closingApps)
         case .moving(let done, let total, let bytes):
+            // The items of the system move last, after one password box: say so, or the bar looks stalled.
+            let waiting = models.isWaitingForPassword
             ActionBar(
-                title: "Moving to the Trash",
+                title: waiting ? PasswordCopy.waiting : "Moving to the Trash",
                 caption: "\(done) of \(total) \(total == 1 ? "item" : "items"), \(Bytes.format(bytes)) moved",
-                busyLabel: "Moving…"
+                busyLabel: waiting ? "Waiting…" : "Moving…"
             ) {
                 Button("Stop", action: junk.stop)
+                    .disabled(waiting)
+                    .help(waiting ? PasswordCopy.answerToFinish : "")
             }
         case .done(let record):
             ActionBar(

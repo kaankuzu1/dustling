@@ -142,6 +142,10 @@ private struct ReviewRow: View {
                     DataWarningBlock(text: warning)
                         .lineLimit(nil)
                         .padding(.top, 4)
+                } else if let note = row.note {
+                    Text(note)
+                        .font(DustlingTheme.Typography.caption)
+                        .foregroundStyle(Palette.muted)
                 } else if row.isApp && excluded.contains(row.url) {
                     Text("This app stays, with all its files")
                         .font(DustlingTheme.Typography.caption)

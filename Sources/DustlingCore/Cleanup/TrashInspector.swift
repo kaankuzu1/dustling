@@ -15,17 +15,30 @@ public struct TrashItem: Equatable, Sendable {
 public struct TrashContents: Sendable {
     public var items: [TrashItem] = []
     public var size = SizeResult()
+    /// What keeps Dustling from knowing what Empty Trash would delete: a Trash location it can't read
+    /// (or that is a link), and an item macOS's privacy protection hides (EPERM, Full Disk Access).
     public var issues: [ScanIssue] = []
+    /// Places inside Trash items that belong to another account (the system, an installer) and that
+    /// Dustling can't read, such as a System caches folder only its own account may list. They are
+    /// in `size.unreadable` but not in `issues`: Empty Trash deletes them with the Mac password, so
+    /// they don't keep it from emptying, but `size` doesn't include what is inside them, so it is a
+    /// lower bound.
+    public var systemUnreadable: [URL] = []
 
-    public init(items: [TrashItem] = [], size: SizeResult = SizeResult(), issues: [ScanIssue] = []) {
+    public init(
+        items: [TrashItem] = [], size: SizeResult = SizeResult(), issues: [ScanIssue] = [], systemUnreadable: [URL] = []
+    ) {
         self.items = items
         self.size = size
         self.issues = issues
+        self.systemUnreadable = systemUnreadable
     }
 }
 
 /// Sizes the Trash and empties it. Emptying is the one permanent delete in Dustling; callers must
-/// confirm with the user first. Every child is reported as `.deleted` or `.failed`.
+/// confirm with the user first. Every child is reported as `.deleted`, `.needsAdmin` (belongs to another account) or `.failed`.
+/// With an `AdminMover`, what belongs to another account is deleted with the Mac password, once per
+/// Empty Trash.
 public struct TrashInspector: Sendable {
     private let environment: SystemEnvironment
     private let journal: RunJournal
@@ -33,25 +46,35 @@ public struct TrashInspector: Sendable {
     private let sizer: DirectorySizer
     private let inspect: @Sendable (URL) -> Kind
     private let includeExternalVolumes: Bool
+    private let blocker: @Sendable (URL, uid_t) -> TrashBlocker?
+    private let admin: AdminMover?
 
     static let noAccessReason = "no access, grant Full Disk Access"
+    static let symlinkReason = "trash location is a symbolic link, not emptied"
 
-    /// `includeExternalVolumes: false` limits sizing and emptying to `~/.Trash`.
+    /// `includeExternalVolumes: false` limits sizing and emptying to `~/.Trash`. `admin`: pass one
+    /// only when Dustling has Full Disk Access; without it, what belongs to another account stays
+    /// `.needsAdmin` and nothing asks for the password.
     public init(
         environment: SystemEnvironment, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer,
-        includeExternalVolumes: Bool = true
+        includeExternalVolumes: Bool = true, admin: AdminMover? = nil
     ) {
         self.init(
             environment: environment, journal: journal, logger: logger, sizer: sizer,
-            includeExternalVolumes: includeExternalVolumes, inspect: Self.lstatKind)
+            includeExternalVolumes: includeExternalVolumes, inspect: Self.lstatKind,
+            blocker: { TrashUnlocker.blocker(of: $0, userID: $1) }, admin: admin)
     }
 
     /// Test seam: replaces the `lstat` classification so error branches can be exercised.
     init(
         environment: SystemEnvironment, journal: RunJournal, logger: RunLogger, sizer: DirectorySizer,
         includeExternalVolumes: Bool = true,
-        inspect: @escaping @Sendable (URL) -> Kind
+        inspect: @escaping @Sendable (URL) -> Kind,
+        blocker: @escaping @Sendable (URL, uid_t) -> TrashBlocker? = { TrashUnlocker.blocker(of: $0, userID: $1) },
+        admin: AdminMover? = nil
     ) {
+        self.admin = admin
+        self.blocker = blocker
         self.includeExternalVolumes = includeExternalVolumes
         self.inspect = inspect
         self.environment = environment
@@ -79,7 +102,8 @@ public struct TrashInspector: Sendable {
     }
 
     /// Like `size()`, plus why each unreadable location or item couldn't be read: EPERM/EACCES become
-    /// `.missingFullDiskAccess`, anything else `.unreadable`.
+    /// `.missingFullDiskAccess`, anything else `.unreadable`. What belongs to another account isn't an
+    /// issue (`TrashContents.systemUnreadable`).
     public func sizeWithIssues() -> (size: SizeResult, issues: [ScanIssue]) {
         let found = contents()
         return (found.size, found.issues)
@@ -108,7 +132,13 @@ public struct TrashInspector: Sendable {
                         found.size.bytes += r.bytes
                         found.size.fileCount += r.fileCount
                         found.size.unreadable += r.unreadable
-                        found.issues += r.unreadable.map(Self.classifyUnreadable)
+                        for url in r.unreadable {
+                            if Self.belongsToAnotherAccount(url, in: child, userID: environment.userID) {
+                                found.systemUnreadable.append(url)
+                            } else {
+                                found.issues.append(Self.classifyUnreadable(url))
+                            }
+                        }
                     }
                 }
             }
@@ -117,10 +147,12 @@ public struct TrashInspector: Sendable {
     }
 
     /// Permanently deletes everything in the Trash. Journal/log failures are appended to the
-    /// returned record as `<history>` / `<log>` entries.
+    /// returned record as `<history>` / `<log>` entries. With `admin`, the children that belong to
+    /// another account (`.needsAdmin`) are then deleted in one password step (`deleteWithPassword`).
     public func emptyTrash() -> RunRecord {
         let startedAt = Date()
         var entries: [JournalEntry] = []
+        var system: [SystemChild] = []
 
         for item in discover() {
             switch item {
@@ -138,11 +170,12 @@ public struct TrashInspector: Sendable {
                     for child in children {
                         let bytes = sizer.measure(child).bytes
                         let outcome: DeletionOutcome
-                        do {
-                            try FileManager.default.removeItem(at: child)   // never follows symlinks
-                            outcome = .deleted
-                        } catch {
-                            outcome = .failed(reason: error.localizedDescription)
+                        outcome = remove(child)
+                        if outcome == .needsAdmin, admin != nil {
+                            // Who it is now, after the failed delete: root deletes this very item or nothing.
+                            system.append(SystemChild(
+                                entry: entries.count, location: location, name: child.lastPathComponent,
+                                identity: ItemIdentity.of(child)))
                         }
                         entries.append(JournalEntry(
                             originalPath: child.path, bytes: bytes, outcome: outcome))
@@ -150,6 +183,7 @@ public struct TrashInspector: Sendable {
                 }
             }
         }
+        deleteWithPassword(system, into: &entries)
 
         var record = RunRecord(startedAt: startedAt, kind: .emptyTrash, entries: entries, restorable: false)
 
@@ -170,6 +204,87 @@ public struct TrashInspector: Sendable {
             record.entries.append(Self.marker("<history>", error))
         }
         return record
+    }
+
+    /// A child of a Trash location that belongs to another account: `entries[entry]` is its
+    /// `.needsAdmin` entry, `name` its name in `location`, `identity` the item seen after the
+    /// failed delete.
+    struct SystemChild: Sendable {
+        let entry: Int
+        let location: URL
+        let name: String
+        let identity: ItemIdentity?
+    }
+
+    /// Deletes `children` with the Mac password, all in one script (`AdminMover.deletePrompt`), and
+    /// writes what happened into their entries. Only `<location>/<name>` of a Trash location this
+    /// inspector finds now (looked up again, so every folder on the way is still a real directory)
+    /// is ever in the script, and only the item seen after the failed delete (`identity`, the step's
+    /// `expectedSource`). Any other child, one whose identity couldn't be read, one on another volume
+    /// than the script's bridge (an external disk's Trash: root only renames, so it would be refused)
+    /// and one in a folder Dustling can't open stays `.needsAdmin`, without a password box for it.
+    /// Deleted: `.deleted`; the password box closed: `.needsAdmin`; otherwise `.failed` with the
+    /// script's reason. Without `admin` nothing changes.
+    func deleteWithPassword(_ children: [SystemChild], into entries: inout [JournalEntry]) {
+        guard let admin, !children.isEmpty else { return }
+        func key(_ url: URL) -> String { AdminPath.trimmingTrailingSlashes(url.path(percentEncoded: false)) }
+        let locations = Set(trashLocations().map(key))
+        let sent = children.filter { child in
+            guard let identity = child.identity, admin.isOnBridgeVolume(identity) else { return false }
+            return entries.indices.contains(child.entry) && locations.contains(key(child.location))
+                && !child.name.isEmpty && !child.name.contains("/") && child.name != "." && child.name != ".."
+        }
+        let steps = sent.map {
+            AdminStep(op: .delete($0.location.appending(path: $0.name)), expectedSource: $0.identity)
+        }
+        let results = admin.performOpenable(steps, prompt: AdminMover.deletePrompt)
+        for (child, result) in zip(sent, results) {
+            switch result {
+            case .done?: entries[child.entry].outcome = .deleted
+            case .cancelled?, nil: entries[child.entry].outcome = .needsAdmin
+            case .notDone(let reason)?: entries[child.entry].outcome = .failed(reason: reason)
+            }
+        }
+    }
+
+    /// Deletes one Trash child. When that fails, unlocks the user's own locked items (the user
+    /// confirmed emptying) and tries once more; what still fails is explained, not guessed at.
+    private func remove(_ child: URL) -> DeletionOutcome {
+        let fm = FileManager.default
+        do {
+            try fm.removeItem(at: child)   // never follows symlinks
+            return .deleted
+        } catch {
+            _ = TrashUnlocker.unlockOwnItems(in: child, userID: environment.userID)
+        }
+        do {
+            try fm.removeItem(at: child)
+            return .deleted
+        } catch {
+            switch blocker(child, environment.userID) {
+            case .otherOwner?: return .needsAdmin
+            case .protectedByMacOS?: return .failed(reason: TrashUnlocker.protectedReason)
+            case nil:
+                return .failed(reason: Self.isPermissionDenied(error)
+                    ? TrashUnlocker.protectedReason : error.localizedDescription)
+            }
+        }
+    }
+
+    /// True when the error, or one it wraps, is POSIX EPERM ("Operation not permitted").
+    static func isPermissionDenied(_ error: Error) -> Bool {
+        var current: NSError? = error as NSError
+        while let e = current {
+            if e.domain == NSPOSIXErrorDomain, e.code == Int(EPERM) { return true }
+            current = e.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
+    }
+
+    /// True for an entry that reports a Trash location that couldn't be emptied, not an item in it.
+    public static func isLocationFailure(_ entry: JournalEntry) -> Bool {
+        guard case .failed(let reason) = entry.outcome else { return false }
+        return reason == noAccessReason || reason == symlinkReason
     }
 
     // MARK: - Discovery
@@ -266,6 +381,29 @@ public struct TrashInspector: Sendable {
         }
     }
 
+    /// Whether `url`, which the sizer couldn't read inside the Trash item `item`, belongs to another
+    /// account: it, or a folder it is in up to and including `item`, has another owner than `userID`
+    /// (lstat; a folder that can't be listed for lack of permission keeps what is inside it from
+    /// being looked at, so its own owner decides). Not when `url` itself can't even be looked at
+    /// because of macOS's privacy protection (EPERM): that is missing Full Disk Access.
+    static func belongsToAnotherAccount(_ url: URL, in item: URL, userID: uid_t) -> Bool {
+        let top = AdminPath.trimmingTrailingSlashes(item.path(percentEncoded: false))
+        var path = AdminPath.trimmingTrailingSlashes(url.path(percentEncoded: false))
+        var info = stat()
+        if lstat(path, &info) == 0 {
+            if info.st_uid != userID { return true }
+        } else if errno == EPERM {
+            return false
+        }
+        // The folders above it inside the item, then the item itself.
+        while path.hasPrefix(top + "/") {
+            path = (path as NSString).deletingLastPathComponent
+            if lstat(path, &info) == 0, info.st_uid != userID { return true }
+        }
+        if path != top, lstat(top, &info) == 0, info.st_uid != userID { return true }
+        return false
+    }
+
     /// The sizer reports unreadable paths without a reason; ask the file system again for the errno.
     private static func classifyUnreadable(_ url: URL) -> ScanIssue {
         let path = url.path(percentEncoded: false)
@@ -289,7 +427,7 @@ public struct TrashInspector: Sendable {
         let reason: String
         switch failure {
         case .denied: reason = noAccessReason
-        case .symlink: reason = "trash location is a symbolic link, not emptied"
+        case .symlink: reason = symlinkReason
         case .other(let text): reason = text
         }
         return JournalEntry(originalPath: url.path, bytes: 0, outcome: .failed(reason: reason))

@@ -24,8 +24,9 @@ struct LeftoverRowView: View {
             Toggle(isOn: Binding(get: { row.checked }, set: { value in onToggle(value) })) { EmptyView() }
                 .toggleStyle(.checkbox)
                 .labelsHidden()
-                // Helper-only items can't move until the helper exists; excluded ones never move.
-                .disabled(isLocked || row.isDisabled || row.leftover.requiresAdmin)
+                // Excluded ones never move. Items of the system move with the Mac password after the
+                // last app, so the user can leave them out here too.
+                .disabled(isLocked || row.isDisabled)
                 .accessibilityLabel(UninstallerScreen.kindName(row.leftover.kind))
         } badges: {
             ForEach(Array(row.badges.enumerated()), id: \.offset) { _, badge in

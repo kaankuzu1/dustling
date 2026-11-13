@@ -83,7 +83,7 @@ public enum Diagnostics {
         switch status {
         case .notAvailable:
             return Check(kind: .helper, title: title,
-                         detail: "Coming in a later version. System caches and launch daemons stay as they are.",
+                         detail: "Coming in a later version. Until then, system startup items can't be turned on or off.",
                          state: .info, chip: "Not available yet", repair: nil)
         case .ok:
             return Check(kind: .helper, title: title, detail: "Registered and responding", state: .ok, chip: "OK", repair: nil)
@@ -235,15 +235,25 @@ public enum DiagnosticsReport {
         var set: Set<String> = [
             TrashMover.noAccessReason, "already gone", "excluded in Settings",
             "contains a folder excluded in Settings", "protected location", "another user's files",
-            "outside the cleanup area", "cleanup stopped", CleanupSkip.reason,
+            "outside the cleanup area", "cleanup stopped", CleanupSkip.reason, ProtectedPaths.systemManagedReason,
+            TrashMover.protectedReason,
+            // The password step's own reasons.
+            AdminScript.refusedReason, AdminScript.unsafeReason, AdminScript.putBackUnsafeReason,
+            AdminScript.movedAwayReason, AdminScript.existsReason, AdminScript.noResultReason,
+            AdminScript.skippedReason, OsascriptAdminShell.tooManyItemsReason, OsascriptAdminShell.stoppedReason,
+            OsascriptAdminShell.passwordNotAcceptedReason, RunJournal.putBackNeedsPasswordReason,
         ]
         for code in Int32(1)...Int32(106) { set.insert(TrashMover.describe(code)) }
         return set
     }()
 
-    /// The reason if it is in the fixed vocabulary (or "in use by <bundle id>"), else nil.
+    /// The reason if it is in the fixed vocabulary (or "in use by <bundle id>"), else nil. An item
+    /// the password step kept in a hidden folder in /Library is known by how its reason starts (the
+    /// folder's name changes every time) and reported without the folder.
     static func knownReason(_ reason: String) -> String? {
         if fixedReasons.contains(reason) { return reason }
+        if reason.hasPrefix(AdminScript.heldPrefix) { return AdminScript.heldReason(bridge: nil) }
+        if reason.hasPrefix(AdminScript.partlyDeletedPrefix) { return AdminScript.partlyDeletedReason(bridge: nil) }
         if let id = LastRunReview.inUseBundleID(reason),
            id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_") }) {
             return reason

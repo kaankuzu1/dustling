@@ -11,7 +11,9 @@ struct BlockerSheet: View {
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
-        let copy = repair.copy
+        let copy = repair == .fullDiskAccessLost
+            ? RepairCase.fullDiskAccessLostCopy(models.fullDiskAccessLoss ?? .unknown)
+            : repair.copy
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 12) {
                 // The mockup's 40 pt Mote at the nearest integer scale.

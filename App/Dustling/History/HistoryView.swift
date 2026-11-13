@@ -25,7 +25,7 @@ struct HistoryView: View {
     private var context: HistoryScreen.Context {
         HistoryScreen.Context(
             lastEmptyTrash: models.history.lastEmptyTrash, canTakeOutOfTrash: models.history.canTakeOutOfTrash,
-            home: models.homePath)
+            environment: models.systemEnvironment)
     }
 
     private var selectedRun: RunRow? {
@@ -160,7 +160,7 @@ struct HistoryView: View {
         let chosen = checkedItems
         if history.isRestoring {
             ActionBar(
-                title: "Putting items back",
+                title: models.isWaitingForPassword ? PasswordCopy.waiting : "Putting items back",
                 caption: "\(history.restoringCount) \(history.restoringCount == 1 ? "item goes" : "items go") back where \(history.restoringCount == 1 ? "it was" : "they were")",
                 busyLabel: "Moving…") { EmptyView() }
         } else if tab == .allItems && !chosen.isEmpty {

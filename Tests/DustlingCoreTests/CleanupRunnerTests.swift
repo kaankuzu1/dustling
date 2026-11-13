@@ -455,4 +455,286 @@ struct CleanupRunnerTests {
         #expect(last.contains("0 failed, 0 need admin, 2 skipped"))
         #expect(lines.filter { $0.contains("skipped: cleanup stopped") }.count == 2)
     }
+
+    // MARK: - Items that belong to the system: one password box per run
+
+    /// A runner whose normal moves go to the sandbox's Trash (where password moves go too).
+    private func adminRunner(_ sandbox: TestSandbox, admin: AdminMover?) -> CleanupRunner {
+        CleanupRunner(
+            mover: TrashMover(backend: DirectoryTrashBackend(directory: sandbox.environment.userTrash),
+                              protectedPaths: ProtectedPaths(environment: sandbox.environment)),
+            journal: RunJournal(directory: sandbox.environment.historyDirectory),
+            logger: RunLogger(directory: sandbox.environment.logsDirectory),
+            sizer: DirectorySizer(), admin: admin)
+    }
+
+    /// `a` (a file) and `b` (a folder) in a folder of the system the user can't write, so both need
+    /// admin; `c` in the user's own caches. Callers unlock `system` in a `defer`.
+    private struct SystemItems: Sendable {
+        let system: URL
+        let user: URL
+        let a: URL
+        let b: URL
+        let c: URL
+        var roots: [URL] { [system, user] }
+    }
+
+    private func systemItems(_ sandbox: TestSandbox) throws -> SystemItems {
+        try sandbox.directory("home/.Trash")
+        let a = try sandbox.file("Library/Application Support/Vendor/a.log", bytes: 10)
+        try sandbox.file("Library/Application Support/Vendor/com.example.b/data", bytes: 10)
+        let c = try sandbox.file("home/Library/Caches/c.log", bytes: 10)
+        let system = sandbox.root.appending(path: "Library/Application Support/Vendor")
+        FolderMode.lock(system)
+        return SystemItems(
+            system: system, user: sandbox.root.appending(path: "home/Library/Caches"), a: a,
+            b: sandbox.root.appending(path: "Library/Application Support/Vendor/com.example.b"), c: c)
+    }
+
+    private func path(_ url: URL) -> String { url.path(percentEncoded: false) }
+
+    private func trashed(_ sandbox: TestSandbox, _ name: String) -> DeletionOutcome {
+        .movedToTrash(trashedPath: path(sandbox.environment.userTrash.appending(path: name)))
+    }
+
+    @Test func runnerMovesNeedsAdminItemsWithOnePrompt() async throws {
+        let sandbox = try TestSandbox()
+        let items = try systemItems(sandbox)
+        defer { FolderMode.unlock(items.system) }
+        // The script runs as the user: the folder opens again only after planning, as root would find it.
+        let shell = UserShell(beforeRun: { FolderMode.unlock(items.system) })
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let seen = Collector()
+        let record = await adminRunner(sandbox, admin: admin).run(
+            [items.a, items.c, items.b], kind: .junkClean, allowedRoots: items.roots) { seen.add($0, $1) }
+
+        #expect(shell.calls.count == 1)
+        #expect(shell.calls.first?.prompt == AdminMover.movePrompt(count: 2))
+        // c moved at once; a and b after the loop, in one script, each reported once with what happened.
+        #expect(record.entries.map(\.originalPath) == [path(items.c), path(items.a), path(items.b)])
+        let expected = [trashed(sandbox, "c.log"), trashed(sandbox, "a.log"), trashed(sandbox, "com.example.b")]
+        #expect(record.entries.map(\.outcome) == expected)
+        #expect(seen.all.map(\.0) == [items.c, items.a, items.b])
+        #expect(seen.all.map(\.1) == expected)
+        #expect(!FileManager.default.fileExists(atPath: path(items.a)))
+        #expect(FileManager.default.fileExists(atPath: path(sandbox.environment.userTrash.appending(path: "com.example.b/data"))))
+        // Put back can tell the item from another with the same name: who it is, owner included.
+        let identity = try #require(record.entries[1].trashedIdentity)
+        #expect(identity == TrashedIdentity.of(path: path(sandbox.environment.userTrash.appending(path: "a.log"))))
+        #expect(identity.owner == getuid())
+        #expect(record.restorable && record.needsAdminCount == 0 && !record.inProgress)
+        let saved = try #require(try RunJournal(directory: sandbox.environment.historyDirectory).all().first)
+        #expect(saved.entries == record.entries && !saved.inProgress)
+        let text = try logText(sandbox)
+        #expect(!text.contains("needs admin"))
+        #expect(text.contains("\(path(items.a)) -> \(path(sandbox.environment.userTrash.appending(path: "a.log")))"))
+        #expect(text.contains("0 failed, 0 need admin, 0 skipped"))
+    }
+
+    @Test func heldItemsAreJournaledBeforeThePasswordStep() async throws {
+        // Dustling crashes (or quits at its time limit) while root's script runs: the journal on disk
+        // at that moment already lists the held items, as needing admin, after the run's other items.
+        let sandbox = try TestSandbox()
+        let items = try systemItems(sandbox)
+        defer { FolderMode.unlock(items.system) }
+        let history = sandbox.environment.historyDirectory
+        let snapshot = sandbox.root.appending(path: "history-at-the-password-step", directoryHint: .isDirectory)
+        let shell = UserShell(beforeRun: {
+            try FileManager.default.copyItem(at: history, to: snapshot)
+            FolderMode.unlock(items.system)
+        })
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let record = await adminRunner(sandbox, admin: admin).run(
+            [items.a, items.c, items.b], kind: .junkClean, allowedRoots: items.roots) { _, _ in }
+        #expect(shell.calls.count == 1)
+
+        let crashed = RunJournal(directory: snapshot)
+        let atTheStep = try #require(try crashed.all().first)
+        #expect(atTheStep.id == record.id && atTheStep.inProgress)
+        #expect(atTheStep.entries.map(\.originalPath) == [path(items.c), path(items.a), path(items.b)])
+        #expect(atTheStep.entries.map(\.outcome) == [trashed(sandbox, "c.log"), .needsAdmin, .needsAdmin])
+        // The next launch closes the interrupted run with them in it.
+        #expect(try CleanupRunner.recoverInterrupted(journal: crashed, quietFor: 0) == [record.id])
+        let recovered = try #require(try crashed.all().first)
+        #expect(!recovered.inProgress && recovered.needsAdminCount == 2)
+        // The run itself updated them in place, in the same order.
+        #expect(record.entries.map(\.originalPath) == [path(items.c), path(items.a), path(items.b)])
+        #expect(record.entries.map(\.outcome)
+            == [trashed(sandbox, "c.log"), trashed(sandbox, "a.log"), trashed(sandbox, "com.example.b")])
+        let saved = try #require(try RunJournal(directory: history).all().first)
+        #expect(saved.entries == record.entries && !saved.inProgress)
+    }
+
+    @Test func anItemMacOSProtectsIsNeverSentToThePasswordStep() async throws {
+        // Even lstat of a data folder macOS keeps to itself fails with EPERM while its folder lists:
+        // protected by macOS, recorded as such, and the password box never comes up for it.
+        let sandbox = try TestSandbox()
+        try sandbox.directory("home/.Trash")
+        let caches = try sandbox.directory("home/Library/Caches")
+        let vault = try sandbox.directory("home/Library/Caches/com.apple.aned")
+        let vaultPath = path(vault)
+        let mover = TrashMover(
+            backend: DirectoryTrashBackend(directory: sandbox.environment.userTrash),
+            protectedPaths: ProtectedPaths(environment: sandbox.environment),
+            inspectItem: { $0 == vaultPath ? .failed(EPERM) : .failed(ENOENT) })
+        let shell = CannedShell(.finished(output: "R\t0\tok\n"))
+        let runner = CleanupRunner(
+            mover: mover, journal: RunJournal(directory: sandbox.environment.historyDirectory),
+            logger: RunLogger(directory: sandbox.environment.logsDirectory), sizer: DirectorySizer(),
+            admin: AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning()))
+        let record = await runner.run([vault], kind: .junkClean, allowedRoots: [caches]) { _, _ in }
+        #expect(record.entries.map(\.outcome) == [.failed(reason: TrashMover.protectedReason)])
+        #expect(shell.calls.isEmpty)
+    }
+
+    @Test func systemCachesAndLogsNeverMoveNorReachThePasswordStep() async throws {
+        // Dustling never cleans what macOS manages: an item in the system's caches or logs is left
+        // where it is, whether the user could move it or only the password could, and nothing asks.
+        let sandbox = try TestSandbox()
+        try sandbox.directory("home/.Trash")
+        let caches = try sandbox.directory("Library/Caches")
+        let logs = try sandbox.directory("Library/Logs")
+        let locked = try sandbox.file("Library/Caches/com.apple.iconservices.store", bytes: 4)
+        let open = try sandbox.file("Library/Logs/install.log", bytes: 4)
+        FolderMode.lock(caches)
+        defer { FolderMode.unlock(caches) }
+        let shell = CannedShell(.finished(output: "R\t0\tok\n"))
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let record = await adminRunner(sandbox, admin: admin).run(
+            [locked, open], kind: .junkClean, allowedRoots: [caches, logs]) { _, _ in }
+        let managed = DeletionOutcome.skipped(reason: ProtectedPaths.systemManagedReason)
+        #expect(record.entries.map(\.outcome) == [managed, managed])
+        #expect(shell.calls.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: path(locked)))
+        #expect(FileManager.default.fileExists(atPath: path(open)))
+    }
+
+    @Test func runnerKeepsNeedsAdminWhenPasswordCancelled() async throws {
+        let sandbox = try TestSandbox()
+        let items = try systemItems(sandbox)
+        defer { FolderMode.unlock(items.system) }
+        let shell = CannedShell(.cancelled)
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let seen = Collector()
+        let record = await adminRunner(sandbox, admin: admin).run(
+            [items.a, items.c, items.b], kind: .junkClean, allowedRoots: items.roots) { seen.add($0, $1) }
+        #expect(shell.calls.count == 1)
+        #expect(record.entries.map(\.outcome) == [trashed(sandbox, "c.log"), .needsAdmin, .needsAdmin])
+        #expect(seen.all.map(\.0) == [items.c, items.a, items.b])
+        #expect(seen.all.map(\.1) == [trashed(sandbox, "c.log"), .needsAdmin, .needsAdmin])
+        #expect(FileManager.default.fileExists(atPath: path(items.a)))
+        #expect(FileManager.default.fileExists(atPath: path(items.b)))
+        #expect(record.needsAdminCount == 2)
+        #expect(try logText(sandbox).contains("0 failed, 2 need admin, 0 skipped"))
+    }
+
+    @Test func runnerWithoutAdminIsUnchanged() async throws {
+        let sandbox = try TestSandbox()
+        let items = try systemItems(sandbox)
+        defer { FolderMode.unlock(items.system) }
+        let seen = Collector()
+        let record = await adminRunner(sandbox, admin: nil).run(
+            [items.a, items.c, items.b], kind: .junkClean, allowedRoots: items.roots) { seen.add($0, $1) }
+        #expect(record.entries.map(\.originalPath) == [path(items.a), path(items.c), path(items.b)])
+        #expect(record.entries.map(\.outcome) == [.needsAdmin, trashed(sandbox, "c.log"), .needsAdmin])
+        #expect(seen.all.map(\.0) == [items.a, items.c, items.b])
+        #expect(FileManager.default.fileExists(atPath: path(items.a)))
+    }
+
+    @Test func stoppedRunNeverAsksForPassword() throws {
+        // Stopped before the last item, and stopped during the last item (before the password step).
+        for (stopAt, urls) in [(3, ["a", "c", "b"]), (3, ["a", "c"])] {
+            let sandbox = try TestSandbox()
+            let items = try systemItems(sandbox)
+            defer { FolderMode.unlock(items.system) }
+            let byName = ["a": items.a, "b": items.b, "c": items.c]
+            let shell = CannedShell(.finished(output: ""))
+            let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+            var checks = 0
+            var reported: [(URL, DeletionOutcome)] = []
+            let record = adminRunner(sandbox, admin: admin).runBlocking(
+                urls.compactMap { byName[$0] }, kind: .junkClean, allowedRoots: items.roots, extraEntries: [],
+                isCancelled: { checks += 1; return checks >= stopAt }, onItemStart: { _ in },
+                onItem: { reported.append(($0, $1)) })
+            let stopped = DeletionOutcome.skipped(reason: "cleanup stopped")
+            #expect(shell.calls.isEmpty)
+            #expect(FileManager.default.fileExists(atPath: path(items.a)))
+            // The held item is recorded as stopped (reported once), before the items never attempted.
+            var expected = [trashed(sandbox, "c.log"), stopped]
+            if urls.count == 3 { expected.append(stopped) }
+            #expect(record.entries.map(\.outcome) == expected)
+            #expect(record.entries.prefix(2).map(\.originalPath) == [path(items.c), path(items.a)])
+            #expect(reported.map(\.0) == [items.c, items.a])
+            #expect(reported.map(\.1) == [trashed(sandbox, "c.log"), stopped])
+            #expect(!record.inProgress)
+        }
+    }
+
+    @Test func runnerKeepsNeedsAdminWhenAFolderCantBeOpened() async throws {
+        // Planning reads every folder a step acts in through a descriptor. A folder Dustling can't
+        // open (here search-only; for ~/.Trash, missing Full Disk Access) means the password can't
+        // help yet: nothing is asked and the item still needs admin, never "macOS refused".
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        let sealed = try sandbox.directory("Library/Sealed")
+        let hidden = try sandbox.file("Library/Sealed/a.log")
+        let items = try systemItems(sandbox)
+        FolderMode.set(sealed, 0o111)
+        defer {
+            FolderMode.unlock(sealed)
+            FolderMode.unlock(items.system)
+            FolderMode.unlock(trash)
+        }
+        let shell = CannedShell(.finished(output: ""))
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let roots = items.roots + [sealed]
+        let first = await adminRunner(sandbox, admin: admin).run([hidden], kind: .junkClean, allowedRoots: roots) { _, _ in }
+        #expect(first.entries.map(\.outcome) == [.needsAdmin])
+        // The Trash itself can't be opened.
+        FolderMode.set(trash, 0o111)
+        let second = await adminRunner(sandbox, admin: admin).run([items.a], kind: .junkClean, allowedRoots: roots) { _, _ in }
+        #expect(second.entries.map(\.outcome) == [.needsAdmin])
+        #expect(shell.calls.isEmpty)
+    }
+
+    @Test func runnerSaysWhatThePasswordStepReported() async throws {
+        let sandbox = try TestSandbox()
+        let items = try systemItems(sandbox)
+        defer { FolderMode.unlock(items.system) }
+        let d = items.system.appending(path: "d.log")
+        FolderMode.unlock(items.system)
+        try Data(count: 1).write(to: d)
+        FolderMode.lock(items.system)
+        let shell = CannedShell(.finished(output: "R\t0\terr\nB\t/Library/.dustling-test\nR\t1\theld\nR\t2\tgone\n"))
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let record = await adminRunner(sandbox, admin: admin).run(
+            [items.a, items.b, d], kind: .junkClean, allowedRoots: items.roots) { _, _ in }
+        #expect(record.entries.map(\.outcome) == [
+            .failed(reason: "macOS refused, even with your password"),
+            .failed(reason: "Something changed while it was moving, so Dustling stopped. It is untouched in /Library/.dustling-test."),
+            .skipped(reason: "already gone"),
+        ])
+        #expect(!record.restorable)
+    }
+
+    @Test func heldItemGetsItsTrashNameOnlyRightBeforeThePasswordStep() async throws {
+        // A system item held early in the run must not lose its name in the Trash to a later item
+        // of the run that moves the normal way: names are chosen right before the password step.
+        let sandbox = try TestSandbox()
+        try sandbox.directory("home/.Trash")
+        let system = try sandbox.file("Library/Application Support/Vendor/x.log", bytes: 3)
+        let mine = try sandbox.file("home/Library/Caches/x.log", bytes: 3)
+        let folder = system.deletingLastPathComponent()
+        FolderMode.lock(folder)
+        defer { FolderMode.unlock(folder) }
+        let shell = UserShell(beforeRun: { FolderMode.unlock(folder) })
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let record = await adminRunner(sandbox, admin: admin).run(
+            [system, mine], kind: .junkClean,
+            allowedRoots: [folder, mine.deletingLastPathComponent()]) { _, _ in }
+        #expect(shell.calls.count == 1)
+        #expect(record.entries.map(\.originalPath) == [path(mine), path(system)])
+        #expect(record.entries.map(\.outcome) == [trashed(sandbox, "x.log"), trashed(sandbox, "x 2.log")])
+        #expect(!FileManager.default.fileExists(atPath: path(system)))
+    }
 }
