@@ -79,7 +79,14 @@ struct EmptyTrashSheet: View {
                     }
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.defaultAction)
-                        .background(Button("") { dismiss() }.keyboardShortcut(.cancelAction).opacity(0).accessibilityHidden(true))
+                        // Escape closes it too; the button itself stays out of Tab, clicks and VoiceOver.
+                        .background(
+                            Button("") { dismiss() }
+                                .keyboardShortcut(.cancelAction)
+                                .opacity(0)
+                                .focusable(false)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true))
                         .dustlingPrimary()
                 } else {
                     Button("Cancel", role: .cancel) { dismiss() }
