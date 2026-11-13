@@ -63,6 +63,8 @@ public final class HealthModel {
     @ObservationIgnored private let clock: any Clock<Duration>
     /// Reads the newest run. Blocking (it reads the history), so it runs off the main actor.
     @ObservationIgnored private let lastRunSummary: @Sendable () -> RunRecord?
+    /// Where the system's caches and logs are: an older run's items there are never retried.
+    @ObservationIgnored private let environment: SystemEnvironment
     /// Bumped before every last-run read, so a slow older read never overwrites a newer one.
     @ObservationIgnored private var lastRunGeneration = 0
     @ObservationIgnored private var pollingTask: Task<Void, Never>?
@@ -74,11 +76,13 @@ public final class HealthModel {
     public init(
         probe: @escaping @Sendable () -> FullDiskAccessStatus,
         clock: some Clock<Duration>,
-        lastRunSummary: @escaping @Sendable () -> RunRecord? = { nil }
+        lastRunSummary: @escaping @Sendable () -> RunRecord? = { nil },
+        environment: SystemEnvironment = .current
     ) {
         self.probe = probe
         self.clock = clock
         self.lastRunSummary = lastRunSummary
+        self.environment = environment
     }
 
     public var lights: [HealthLight] {
@@ -122,7 +126,7 @@ public final class HealthModel {
     private var lastRunLight: HealthLight {
         let access = fullDiskAccess == .granted
         if let run = lastRun, let detail = LastRunReview.summary(of: run, fullDiskAccess: access) {
-            let retry = LastRunReview.retryableCount(in: run, fullDiskAccess: access)
+            let retry = LastRunReview.retryableCount(in: run, environment: environment, fullDiskAccess: access)
             return HealthLight(
                 kind: .lastRun, state: .warning, detail: detail, fix: retry > 0 ? .retryItems(count: retry) : nil)
         }

@@ -128,7 +128,7 @@ public enum JunkCatalog {
             JunkCategory(
                 id: .systemCachesAndLogs, title: "System caches and logs", selection: .preselected,
                 requiresAdmin: true,
-                roots: [env.systemLibrary.appending(path: "Caches"), env.systemLibrary.appending(path: "Logs")]),
+                roots: env.systemManagedFolders),
             JunkCategory(
                 id: .trash, title: "Trash", selection: .emptyTrashOnly, requiresAdmin: false,
                 roots: [env.userTrash],

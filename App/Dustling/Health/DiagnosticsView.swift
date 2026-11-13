@@ -192,7 +192,7 @@ private struct LastRunProblems: View {
 
     var body: some View {
         let access = models.health.fullDiskAccess == .granted
-        let problems = LastRunReview.problems(in: run, home: models.homeDirectory, fullDiskAccess: access) {
+        let problems = LastRunReview.problems(in: run, environment: models.systemEnvironment, fullDiskAccess: access) {
             AppModels.appName(bundleID: $0)
         }
         if !problems.isEmpty {
@@ -208,7 +208,7 @@ private struct LastRunProblems: View {
                             .monospacedDigit()
                     }
                     Spacer()
-                    let count = LastRunReview.retryableCount(in: run, fullDiskAccess: access)
+                    let count = LastRunReview.retryableCount(in: run, environment: models.systemEnvironment, fullDiskAccess: access)
                     if models.retry.isRetrying && models.isWaitingForPassword {
                         BusyLabel(text: PasswordCopy.waiting)
                     } else if models.retry.isRetrying {

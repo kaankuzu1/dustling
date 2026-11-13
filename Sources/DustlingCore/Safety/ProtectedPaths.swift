@@ -72,7 +72,7 @@ public struct ProtectedPaths: Sendable {
             $0.isEmpty ? environment.home : environment.home.appending(path: $0)
         })
         // Listed here, not read from the catalog: the catalog's filters are built from this guard.
-        systemManaged = Self.keys(for: ["Caches", "Logs"].map { environment.systemLibrary.appending(path: $0) })
+        systemManaged = Self.keys(for: environment.systemManagedFolders)
         fixedExcluded = Self.keys(for: extraDenied, textualUnder: textualUnder)
         self.liveExclusions = liveExclusions
     }

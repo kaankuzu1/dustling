@@ -25,7 +25,7 @@ struct HistoryView: View {
     private var context: HistoryScreen.Context {
         HistoryScreen.Context(
             lastEmptyTrash: models.history.lastEmptyTrash, canTakeOutOfTrash: models.history.canTakeOutOfTrash,
-            home: models.homePath)
+            environment: models.systemEnvironment)
     }
 
     private var selectedRun: RunRow? {

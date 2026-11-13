@@ -144,13 +144,15 @@ public enum LastRunReview {
     /// The problem rows in journal order. Items skipped by choice (excluded, already gone, stopped)
     /// aren't problems and aren't listed. `fullDiskAccess`: whether Dustling has it now. An item
     /// needing admin rights moves with the Mac password then (retry); without it, access comes first.
+    /// `environment` gives the home folder (shown as `~`) and the system's caches and logs folders.
     public static func problems(
-        in run: RunRecord, home: URL, fullDiskAccess: Bool, appName: (String) -> String?
+        in run: RunRecord, environment: SystemEnvironment, fullDiskAccess: Bool, appName: (String) -> String?
     ) -> [Problem] {
         let retryable = isRetryable(run.kind)
         return run.entries.enumerated().compactMap { index, entry in
-            let display = displayPath(entry.originalPath, home: home)
-            let fix: Problem.Fix? = retryable && isRetryableEntry(entry, fullDiskAccess: fullDiskAccess) ? .retry : nil
+            let display = displayPath(entry.originalPath, home: environment.home)
+            let fix: Problem.Fix? = retryable
+                && isRetryableEntry(entry, environment: environment, fullDiskAccess: fullDiskAccess) ? .retry : nil
             switch entry.outcome {
             case .skipped(let reason):
                 guard let bundleID = inUseBundleID(reason) else { return nil }
@@ -161,7 +163,7 @@ public enum LastRunReview {
                 return Problem(id: index, display: display, result: .failed, reason: sentence(reason), fix: fix)
             case .needsAdmin:
                 // An older run's System caches and logs: shown, never retried (Dustling leaves them alone).
-                let reason = isSystemManaged(entry.originalPath)
+                let reason = environment.isSystemManaged(entry.originalPath)
                     ? ProtectedPaths.systemManagedReason : PasswordCopy.reason(fullDiskAccess: fullDiskAccess)
                 return Problem(id: index, display: display, result: .needsAdmin, reason: reason, fix: fix)
             case .movedToTrash, .deleted:
@@ -172,9 +174,9 @@ public enum LastRunReview {
 
     /// How many items "Retry N items" would try again: a cleanup's in-use and failed items, and with
     /// Full Disk Access those needing admin rights (the retry asks for the Mac password once).
-    public static func retryableCount(in run: RunRecord, fullDiskAccess: Bool) -> Int {
+    public static func retryableCount(in run: RunRecord, environment: SystemEnvironment, fullDiskAccess: Bool) -> Int {
         guard isRetryable(run.kind) else { return 0 }
-        return run.entries.filter { isRetryableEntry($0, fullDiskAccess: fullDiskAccess) }.count
+        return run.entries.filter { isRetryableEntry($0, environment: environment, fullDiskAccess: fullDiskAccess) }.count
     }
 
     /// "2 items in use, 2 failed, 1 needs your Mac password", or nil when the run had no problems.
@@ -213,13 +215,13 @@ public enum LastRunReview {
     /// run may list it).
     public static func retryPlan(
         for run: RunRecord, catalog: [JunkCategory], running: Set<String>, skipping: CleanupSkip = .none,
-        fullDiskAccess: Bool
+        environment: SystemEnvironment, fullDiskAccess: Bool
     ) -> RetryPlan {
         var plan = RetryPlan()
         guard isRetryable(run.kind) else { return plan }
         // System caches and logs are never cleaned, so never retried.
         let catalog = catalog.filter { !$0.isNeverCleaned }
-        for entry in run.entries where isRetryableEntry(entry, fullDiskAccess: fullDiskAccess) {
+        for entry in run.entries where isRetryableEntry(entry, environment: environment, fullDiskAccess: fullDiskAccess) {
             let url = URL(filePath: entry.originalPath)
             var owner: String?
             if case .skipped(let reason) = entry.outcome, let id = inUseBundleID(reason), running.contains(id) {
@@ -256,21 +258,17 @@ public enum LastRunReview {
 
     private static func isRetryable(_ kind: RunKind) -> Bool { kind == .junkClean }
 
-    private static func isRetryableEntry(_ entry: JournalEntry, fullDiskAccess: Bool) -> Bool {
-        if isSystemManaged(entry.originalPath) { return false }
+    /// Never what is in the system's caches or logs (`SystemEnvironment.isSystemManaged`): macOS
+    /// manages it, and Dustling never cleans it (`JunkCategory.isNeverCleaned`). Runs from before that
+    /// may still list such items; they are shown, never retried.
+    private static func isRetryableEntry(_ entry: JournalEntry, environment: SystemEnvironment, fullDiskAccess: Bool) -> Bool {
+        if environment.isSystemManaged(entry.originalPath) { return false }
         switch entry.outcome {
         case .skipped(let reason): return inUseBundleID(reason) != nil
         case .failed(let reason): return !entry.originalPath.hasPrefix("<") && !isFinal(reason)
         case .needsAdmin: return fullDiskAccess
         case .movedToTrash, .deleted: return false
         }
-    }
-
-    /// In the system's caches or logs (`/Library/Caches`, `/Library/Logs`): macOS manages what is
-    /// there, and Dustling never cleans it (`JunkCategory.isNeverCleaned`). Runs from before that
-    /// may still list such items; they are shown, never retried.
-    static func isSystemManaged(_ path: String) -> Bool {
-        ["/Library/Caches/", "/Library/Logs/"].contains { path.hasPrefix($0) }
     }
 
     /// Failures a retry can't change: macOS protects the item, macOS refused even with the
@@ -334,6 +332,8 @@ public final class LastRunRetry {
     @ObservationIgnored private let skipping: () -> CleanupSkip
     @ObservationIgnored private let isBusy: () -> Bool
     @ObservationIgnored private let fullDiskAccess: () -> Bool
+    /// Where the system's caches and logs are, which a retry never touches.
+    @ObservationIgnored private let environment: SystemEnvironment
     @ObservationIgnored private let run: @Sendable ([URL], [URL]) async -> RunRecord
     @ObservationIgnored private let onRunCompleted: () -> Void
 
@@ -345,9 +345,11 @@ public final class LastRunRetry {
         skipping: @escaping () -> CleanupSkip,
         isBusy: @escaping () -> Bool,
         fullDiskAccess: @escaping () -> Bool,
+        environment: SystemEnvironment,
         run: @escaping @Sendable ([URL], [URL]) async -> RunRecord,
         onRunCompleted: @escaping () -> Void
     ) {
+        self.environment = environment
         self.catalog = catalog
         self.running = running
         self.appName = appName
@@ -387,7 +389,8 @@ public final class LastRunRetry {
             break
         }
         let plan = LastRunReview.retryPlan(
-            for: record, catalog: catalog(), running: running(), skipping: skipping(), fullDiskAccess: fullDiskAccess())
+            for: record, catalog: catalog(), running: running(), skipping: skipping(), environment: environment,
+            fullDiskAccess: fullDiskAccess())
         let open = plan.stillOpen.map { appName($0) ?? $0 }
         let openList = ListFormatter.localizedString(byJoining: open)
         var notes: [String] = []

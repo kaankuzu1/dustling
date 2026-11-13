@@ -127,7 +127,8 @@ final class AppModels {
                 if let sample = AppModels.sampleLastRun { return sample }
                 #endif
                 return AppModels.latestRun(in: journal)
-            })
+            },
+            environment: environment)
         self.health = health
         let storage = storageRead.map { StorageModel(read: $0) } ?? StorageModel(commands: commands)
         self.storage = storage
@@ -242,6 +243,7 @@ final class AppModels {
             skipping: { owner.models?.cleanupSkip ?? .none },
             isBusy: { owner.models?.junk.isBusy ?? true },
             fullDiskAccess: { owner.models?.health.fullDiskAccess == .granted },
+            environment: environment,
             run: { urls, roots in
                 let admin = await owner.admin
                 return await runner.with(admin: admin).run(urls, kind: .junkClean, allowedRoots: roots, onItem: { _, _ in })
@@ -558,6 +560,9 @@ final class AppModels {
 
     /// The home folder, for shortening paths on screen.
     var homeDirectory: URL { environment.home }
+    /// The folders Dustling reads, for the screens that need more than the home folder (which of an
+    /// older run's items are in the system's caches and logs).
+    var systemEnvironment: SystemEnvironment { environment }
     /// The home folder's path without a trailing slash (`/Users/k`), for the path helpers.
     var homePath: String { HistoryScreen.homeKey(environment.home.path(percentEncoded: false)) }
     /// Where run logs are written (`~/Library/Logs/Dustling`).
