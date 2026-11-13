@@ -121,6 +121,10 @@ struct JunkScanView: View {
         } else {
             categorySections(tiles, isDone: isDone)
         }
+        // System caches and logs: never cleaned, so never a tile in a section; its size as a footnote.
+        if let line = JunkScreen.leftAloneLine(tiles) {
+            LeftAloneNote(text: line)
+        }
     }
 
     @ViewBuilder private func categorySections(_ tiles: [JunkTile], isDone: Bool) -> some View {
@@ -178,6 +182,29 @@ private struct SectionHeader: View {
     }
 }
 
+/// What Dustling never cleans (System caches and logs), as one muted line under the sections: its
+/// size, for information, and why it stays. It is never ticked and never in a section's total.
+private struct LeftAloneNote: View {
+    let text: String
+
+    private typealias Palette = DustlingTheme.Palette
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            PixelIconView(.info, color: Palette.muted)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 3 }
+                .accessibilityHidden(true)
+            Text(text)
+                .font(DustlingTheme.Typography.caption)
+                .foregroundStyle(Palette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 14)
+        .padding(.leading, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// The 3-column tile grid with 10 pt gaps (`.tiles`).
 private struct TileGrid<Content: View>: View {
     @ViewBuilder var content: () -> Content
@@ -227,10 +254,12 @@ private struct SelectionHeader: View {
     }
 
     /// Free space first, then the categories (largest first), then one hatched cell per locked place.
+    /// What Dustling never cleans (System caches and logs) is left out: it can't be selected.
     private func layout(_ figures: HomeFigures) -> MosaicLayout {
-        let shown = models.junkTiles.filter { $0.bytes != nil && $0.status != .cleaned }
+        let tiles = models.junkTiles.filter { $0.section != .leftAlone }
+        let shown = tiles.filter { $0.bytes != nil && $0.status != .cleaned }
         // One hatched cell per place with no known size: locked, unreadable, or not reached by the scan.
-        let locked = models.junkTiles.filter { $0.bytes == nil && $0.status != .pending }.count
+        let locked = tiles.filter { $0.bytes == nil && $0.status != .pending }.count
         return MosaicLayout.make(
             totalBytes: 0, availableBytes: figures.available ?? 0,
             categories: shown.map { ($0.id, $0.bytes ?? 0) }, inTrashBytes: 0, lockedPlaces: locked)

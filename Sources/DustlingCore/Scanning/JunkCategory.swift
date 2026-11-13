@@ -4,6 +4,10 @@ public enum JunkCategoryID: String, CaseIterable, Codable, Sendable {
     case browserCaches, xcodeJunk, packageManagerCaches, userCaches, userLogs
     case systemCachesAndLogs, trash, oldInstallers, iosBackups, xcodeArchives
     case largeOldDownloads, mailDownloads
+
+    /// System caches and logs: macOS manages what is in them, so Dustling shows their size and never
+    /// cleans them (`JunkCategory.isNeverCleaned`). Nothing it holds counts as space Dustling can free.
+    public var isNeverCleaned: Bool { self == .systemCachesAndLogs }
 }
 
 public enum Selection: Sendable {
@@ -63,7 +67,7 @@ public struct JunkCategory: Sendable {
     /// ticked, not even by choice, never retried, never moved with the Mac password, and refused by
     /// `dustling-cli clean --include`. The guard every move goes through (`ProtectedPaths`) refuses
     /// what is in its folders too.
-    public var isNeverCleaned: Bool { id == .systemCachesAndLogs }
+    public var isNeverCleaned: Bool { id.isNeverCleaned }
 
     /// True when `folder` is one of this category's fixed roots, or one root an expansion produces
     /// (`<expansion.parent>/<one child>/<expansion.subpath>`). Cleaning uses only these folders as the

@@ -86,7 +86,7 @@ The password box runs Dustling's script as root through `osascript`. Root must b
 
 Before you start, make a cache folder that only an administrator can change: `sudo mkdir -p ~/Library/Caches/com.dustling.qa/data && sudo touch ~/Library/Caches/com.dustling.qa/data/x`.
 
-- [ ] Junk scan: the System caches and logs tile shows its size, can't be ticked and says macOS manages it; `dustling-cli clean --include systemCachesAndLogs` is refused.
+- [ ] Junk scan: System caches and logs is one line under the categories with its size, saying macOS manages them, and is in neither "Safe to remove" nor Home's "Dustling could reclaim"; `dustling-cli clean --include systemCachesAndLogs` is refused.
 - [ ] Clean App caches with `com.dustling.qa` in it: one password box, it moves to the Trash, still owned by root.
 - [ ] Uninstall an app installed with a `.pkg` that has a launch daemon in `/Library/LaunchDaemons`: one password box, the app and the daemon move to the Trash and the daemon stops (`sudo launchctl print system/<label>` no longer finds it).
 - [ ] Put back both runs from History: one password box per run, and everything is back where it was, still owned by root; the daemon loads again after a restart.

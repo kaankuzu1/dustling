@@ -112,6 +112,9 @@ public enum JunkScreen {
         case safe
         /// "Review first": unchecked categories, then the Trash tile.
         case review
+        /// Apart from both: what Dustling never cleans (System caches and logs). Shown as one quiet
+        /// line under the sections (`leftAloneLine`), never as a tile, never in a section's total.
+        case leftAlone
     }
 
     public enum Phase: Equatable, Sendable { case notScanned, scanning, ready, moving, done }
@@ -180,7 +183,9 @@ public enum JunkScreen {
             : nil
 
         return input.catalog.compactMap { entry -> JunkTile? in
-            guard entry.id != .trash, let section = section(for: entry.selection) else { return nil }
+            guard entry.id != .trash,
+                  let section = entry.id.isNeverCleaned ? Section.leftAlone : section(for: entry.selection)
+            else { return nil }
             let place = places[entry.id]
             let tile = byID[entry.id]
 
@@ -285,10 +290,12 @@ public enum JunkScreen {
     }
 
     /// The scan finished and found nothing a clean could move: every tile was read in full and holds
-    /// nothing (what Dustling leaves alone doesn't count). The header then says "All clean".
+    /// nothing (what Dustling leaves alone doesn't count, whatever it holds or however far it was
+    /// read). The header then says "All clean".
     public static func isAllClean(_ tiles: [JunkTile]) -> Bool {
         guard !tiles.isEmpty else { return false }
         return tiles.allSatisfy { tile in
+            if tile.section == .leftAlone { return true }
             switch tile.status {
             // Files left out in Review files are still there: only a place that held nothing counts.
             case .scanned: return tile.foundNothing
@@ -314,6 +321,17 @@ public enum JunkScreen {
             parts.append(PasswordCopy.count(outcome.needsAdminCount, fullDiskAccess: fullDiskAccess))
         }
         return parts.joined(separator: ", ")
+    }
+
+    /// What Dustling never cleans, as one quiet line under the sections: "System caches and logs take
+    /// up 6.41 GB. macOS manages these, so Dustling leaves them alone." Only why, when the size isn't
+    /// known. nil while its place is being scanned, when it holds nothing, and in the summary (which
+    /// lists only what moved). Its size is never part of anything Dustling could free.
+    public static func leftAloneLine(_ tiles: [JunkTile]) -> String? {
+        guard let tile = tiles.first(where: { $0.section == .leftAlone && $0.status != .pending }) else { return nil }
+        guard let bytes = tile.bytes else { return "\(tile.title): \(leftAloneNote)" }
+        guard bytes > 0 || tile.isLowerBound else { return nil }
+        return "\(tile.title) take up \(Bytes.format(bytes))\(tile.isLowerBound ? " or more" : ""). \(leftAloneNote)"
     }
 
     /// A section's size: what its tiles hold (or, in the summary, what moved), "or more" when any tile

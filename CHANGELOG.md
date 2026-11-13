@@ -14,7 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
-- Dustling never cleans System caches and logs: macOS manages them. Their tile shows how much space they take but can't be ticked, a retry leaves them alone, and `dustling-cli clean` no longer picks them, even with `--include systemCachesAndLogs`.
+- Dustling never cleans System caches and logs: macOS manages them. The Junk scan no longer lists them under "Safe to remove" or adds them to its total: a line under the categories says how much space they take. Home leaves them out of what Dustling could reclaim, a retry leaves them alone, and `dustling-cli clean --include systemCachesAndLogs` is refused (exit status 1).
 - Files that need administrator rights in a cleanup, an uninstall or History now say "Needs your Mac password" instead of "Needs the cleanup helper (coming in a later version)". Retry on the Dustling health page tries them again, asking for your password once. In the Uninstaller such leftovers are marked System instead of Helper and can be unticked like any other, and before an uninstall the confirmation says how many items belong to the system and that Dustling will ask for your Mac password to move them.
 - If you quit while the password box is open, Dustling says it is waiting for your answer, and a box still open closes when Dustling quits, so answering it after Dustling quits can't move anything.
 

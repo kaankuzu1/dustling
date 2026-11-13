@@ -221,7 +221,7 @@ private func tile(
 ) -> CategoryTileModel {
     CategoryTileModel(
         id: id, title: "\(id)", note: nil, bytes: bytes, itemCount: 1, selection: selection,
-        isSelected: selected, stopped: stopped, issues: [], inUseCount: 0)
+        isSelected: selected, stopped: stopped, issues: [], inUseCount: 0, leftAlone: id.isNeverCleaned)
 }
 
 private let quarter: UInt64 = 268_435_456
@@ -264,6 +264,19 @@ struct HomeMosaicTests {
         let places = [Place(id: .userCaches, access: .readable, lockedExpansions: true)]
         let scanned = try #require(HomeMosaic.scannable(catalog, places: places).first)
         #expect(scanned.id == .userCaches && scanned.expansions.isEmpty)
+    }
+
+    @Test func systemCachesAndLogsAreNeverReclaimable() {
+        // Dustling never cleans what macOS manages: its size is shown on the Junk scan, never as a cell
+        // or as space Dustling could reclaim.
+        let tiles = [tile(.userCaches, 2 * quarter), tile(.systemCachesAndLogs, 3 * quarter, selected: false)]
+        let layout = HomeMosaic.layout(tiles: tiles, excluding: [], trashBytes: quarter, lockedCells: 0)
+        #expect(layout.cells == [.category(.userCaches), .category(.userCaches), .inTrash])
+        #expect(HomeMosaic.reclaimableBytes(tiles: tiles, excluding: [], trashBytes: quarter) == 3 * quarter)
+        // Even when it is the only place holding anything.
+        let only = [tile(.systemCachesAndLogs, 24 * quarter, selected: false)]
+        #expect(HomeMosaic.layout(tiles: only, excluding: [], trashBytes: 0, lockedCells: 0).cells.isEmpty)
+        #expect(HomeMosaic.reclaimableBytes(tiles: only, excluding: [], trashBytes: 0) == 0)
     }
 
     @Test func accessibilitySummaryReadsAsOneSentence() {
@@ -341,6 +354,41 @@ struct HomeFiguresTests {
         #expect(done.safeJunk == 0)
         #expect(!done.mosaic.cells.contains(.category(.userLogs)))
         #expect(done.isLowerBound)   // the stopped tile
+    }
+
+    @Test func systemCachesAndLogsAreLeftOutOfEveryFigure() {
+        let places = [
+            Place(id: .userLogs, access: .readable), Place(id: .systemCachesAndLogs, access: .readable),
+        ]
+        let figures = HomeFigures.make(input(
+            tiles: [tile(.userLogs, quarter), tile(.systemCachesAndLogs, 24 * quarter, selected: false)],
+            selected: [.userLogs: quarter], trash: .read(bytes: 1000, externalSkipped: false), places: places,
+            scope: HomeScanScope(full: [.userLogs, .systemCachesAndLogs])))
+        #expect(figures.reclaimable == quarter + 1000)
+        #expect(!figures.mosaic.cells.contains(.category(.systemCachesAndLogs)))
+        #expect(figures.mosaicSummary == "Reclaimable: 268.4 MB in 1 category")
+        #expect(figures.reviewJunk == 0)
+
+        // Only System caches hold anything: nothing to reclaim, as the Junk scan's "All clean" says.
+        let onlySystem = HomeFigures.make(input(
+            tiles: [tile(.userLogs, 0), tile(.systemCachesAndLogs, 24 * quarter, selected: false)], places: places,
+            scope: HomeScanScope(full: [.userLogs, .systemCachesAndLogs])))
+        #expect(onlySystem.reclaimable == 0)
+        #expect(onlySystem.mosaic.cells.isEmpty)
+        #expect(onlySystem.mosaicSummary == "Reclaimable: 0 bytes in 0 categories")
+
+        // A stopped scan of it, or a place of it Dustling can't read, hides nothing Dustling could free.
+        let stopped = HomeFigures.make(input(
+            tiles: [tile(.userLogs, quarter), tile(.systemCachesAndLogs, quarter, selected: false, stopped: true)],
+            places: places, scope: HomeScanScope(full: [.userLogs, .systemCachesAndLogs])))
+        #expect(!stopped.isLowerBound)
+        let locked = HomeFigures.make(input(
+            tiles: [tile(.userLogs, quarter)],
+            places: [Place(id: .userLogs, access: .readable), Place(id: .systemCachesAndLogs, access: .unreadable)],
+            scope: HomeScanScope(full: [.userLogs])))
+        #expect(locked.lockedCells == 0)
+        #expect(!locked.isLowerBound)
+        #expect(locked.reclaimable == quarter)
     }
 
     @Test func notScannedYetHasNoTotals() {
