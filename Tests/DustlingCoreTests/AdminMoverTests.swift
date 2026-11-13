@@ -72,7 +72,7 @@ struct AdminMoverTests {
         let a = try sandbox.file("Library/Caches/a", bytes: 2)
         let b = try sandbox.file("Library/Caches/b", bytes: 2)
         let shell = UserShell()
-        let mover = AdminMover(shell: shell, environment: sandbox.environment)
+        let mover = AdminMover(shell: shell, environment: sandbox.environment, rootOnly: sandbox.rootOnlyOutsideHome)
         let prompt = AdminMover.movePrompt(count: 2)
         let steps = try [a, b].map { url in
             AdminStep(op: .move(from: url, to: try #require(mover.trashDestination(for: url)), bootOutDaemon: false),
@@ -118,9 +118,12 @@ struct AdminMoverTests {
         #expect(shell.calls.isEmpty)
     }
 
+
     // MARK: - Folders and items swapped between planning and running
 
     private let refused = AdminStepResult.notDone(reason: "macOS refused, even with your password")
+    private let unsafe = AdminStepResult.notDone(
+        reason: "Dustling can't safely move this with your password. Move it to the Trash in Finder.")
 
     private func size(_ url: URL) -> Int64 {
         var st = stat()
@@ -135,6 +138,12 @@ struct AdminMoverTests {
         AdminStep(op: .move(from: from, to: to, bootOutDaemon: false), expectedSource: expected)
     }
 
+    /// A mover whose planning counts the sandbox's folders outside `home` as root-only chains (a
+    /// test can't make root-owned folders): `Library/…` plays `/Library`, `home/.Trash` the Trash.
+    private func mover(_ shell: any AdminShell, _ sandbox: TestSandbox) -> AdminMover {
+        AdminMover(shell: shell, environment: sandbox.environment, rootOnly: sandbox.rootOnlyOutsideHome)
+    }
+
     @Test func trashSwappedForALinkIsRefused() throws {
         let sandbox = try TestSandbox()
         let trash = try sandbox.directory("home/.Trash")
@@ -147,8 +156,8 @@ struct AdminMoverTests {
             try FileManager.default.moveItem(at: trash, to: realTrash)
             try FileManager.default.createSymbolicLink(at: trash, withDestinationURL: elsewhere)
         })
-        let mover = AdminMover(shell: shell, environment: sandbox.environment)
-        #expect(mover.perform([moveStep(item, destination)], prompt: "p") == [refused])
+        #expect(mover(shell, sandbox).perform([moveStep(item, destination)], prompt: "p") == [refused])
+        #expect(shell.calls.first?.script.contains("\nmove_out_ 0 ") == true)
         #expect(size(item) == 4)
         #expect(contents(elsewhere).isEmpty)
         #expect(contents(realTrash).isEmpty)
@@ -164,8 +173,7 @@ struct AdminMoverTests {
         let shell = UserShell(beforeRun: {
             try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: elsewhere)
         })
-        let mover = AdminMover(shell: shell, environment: sandbox.environment)
-        #expect(mover.perform([moveStep(item, destination)], prompt: "p")
+        #expect(mover(shell, sandbox).perform([moveStep(item, destination)], prompt: "p")
             == [.notDone(reason: "something with the same name is already there")])
         #expect(size(item.appending(path: "data")) == 4)
         #expect(contents(elsewhere).isEmpty)
@@ -177,9 +185,8 @@ struct AdminMoverTests {
         try fm.createSymbolicLink(at: sandbox.environment.userTrash, withDestinationURL: elsewhere)
         let item = try sandbox.file("Library/Caches/a", bytes: 4)
         let shell = UserShell()
-        let mover = AdminMover(shell: shell, environment: sandbox.environment)
-        #expect(mover.perform([moveStep(item, sandbox.environment.userTrash.appending(path: "a"))], prompt: "p")
-            == [refused])
+        #expect(mover(shell, sandbox).perform(
+            [moveStep(item, sandbox.environment.userTrash.appending(path: "a"))], prompt: "p") == [refused])
         #expect(shell.calls.first?.script.hasSuffix("\nreport_ 0 err\nexit 0\n") == true)
         #expect(size(item) == 4)
         #expect(contents(elsewhere).isEmpty)
@@ -233,8 +240,9 @@ struct AdminMoverTests {
         let original = sandbox.root.appending(path: "Library/LaunchDaemons/com.x.plist")
         let recorded = try #require(ItemIdentity.of(trashed))
         let shell = UserShell(beforeRun: { try Self.swap(trashed, bytes: 7) })
-        let mover = AdminMover(shell: shell, environment: sandbox.environment)
-        #expect(mover.perform([moveStep(trashed, original, expected: recorded)], prompt: "p") == [refused])
+        #expect(mover(shell, sandbox).perform([moveStep(trashed, original, expected: recorded)], prompt: "p")
+            == [refused])
+        #expect(shell.calls.first?.script.contains("\nmove_in_ 0 ") == true)
         #expect(size(trashed) == 7)
         #expect(ItemIdentity.of(trashed) != recorded)
         #expect(size(original) == -1)
@@ -246,8 +254,8 @@ struct AdminMoverTests {
         try sandbox.directory("Library/LaunchDaemons")
         let original = sandbox.root.appending(path: "Library/LaunchDaemons/com.x.plist")
         let recorded = try #require(ItemIdentity.of(trashed))
-        let mover = AdminMover(shell: UserShell(), environment: sandbox.environment)
-        #expect(mover.perform([moveStep(trashed, original, expected: recorded)], prompt: "p") == [.done])
+        #expect(mover(UserShell(), sandbox).perform([moveStep(trashed, original, expected: recorded)], prompt: "p")
+            == [.done])
         #expect(ItemIdentity.of(original) == recorded)
         #expect(size(trashed) == -1)
     }
@@ -258,17 +266,24 @@ struct AdminMoverTests {
         let folder = try sandbox.directory("Library/PrivilegedHelperTools")
         #expect(chmod(folder.path(percentEncoded: false), 0o555) == 0)
         defer { _ = chmod(folder.path(percentEncoded: false), 0o755) }
-        let shell = UserShell()
-        let mover = AdminMover(shell: shell, environment: sandbox.environment)
         let destination = folder.appending(path: "helper")
-        #expect(mover.perform([moveStep(trashed, destination)], prompt: "p") == [refused])
+        // With the real check, a folder the user owns is never root-only (they can chmod it back),
+        // and neither is the Trash: refused before anything runs.
+        let realShell = UserShell()
+        #expect(AdminMover(shell: realShell, environment: sandbox.environment)
+            .perform([moveStep(trashed, destination)], prompt: "p") == [unsafe])
+        #expect(realShell.calls.first?.script.hasSuffix("\nreport_ 0 unsafe\nexit 0\n") == true)
+        // Planned as root-only: without the recorded identity it never runs…
+        let shell = UserShell()
+        #expect(mover(shell, sandbox).perform([moveStep(trashed, destination)], prompt: "p") == [refused])
         #expect(shell.calls.first?.script.hasSuffix("\nreport_ 0 err\nexit 0\n") == true)
         #expect(size(trashed) == 4)
-        // With the recorded identity it is planned as a staged move (which the user-level shell
-        // then can't perform; root could).
+        // …with it, it is planned as a move into the folder (which the user-level shell then can't
+        // perform; root could).
         let recorded = try #require(ItemIdentity.of(trashed))
-        #expect(mover.perform([moveStep(trashed, destination, expected: recorded)], prompt: "p") == [refused])
-        #expect(shell.calls.last?.script.contains("\nmove_ 0 - 0 \(recorded.stamp) 1 '") == true)
+        #expect(mover(shell, sandbox).perform([moveStep(trashed, destination, expected: recorded)], prompt: "p")
+            == [refused])
+        #expect(shell.calls.last?.script.contains("\nmove_in_ 0 - 0 \(recorded.stamp) 1 '") == true)
         #expect(size(trashed) == 4)
         #expect(contents(folder).isEmpty)
     }
@@ -286,12 +301,38 @@ struct AdminMoverTests {
             try FileManager.default.moveItem(at: trash, to: realTrash)
             try FileManager.default.createSymbolicLink(at: trash, withDestinationURL: elsewhere)
         })
-        let mover = AdminMover(shell: shell, environment: sandbox.environment)
-        #expect(mover.perform([moveStep(trashed, folder.appending(path: "helper"), expected: recorded)], prompt: "p")
-            == [refused])
+        #expect(mover(shell, sandbox).perform(
+            [moveStep(trashed, folder.appending(path: "helper"), expected: recorded)], prompt: "p") == [refused])
         #expect(size(victim) == 6)
         #expect(size(realTrash.appending(path: "helper")) == 4)
         #expect(contents(folder).isEmpty)
+    }
+
+    @Test func moveFromAFolderTheUserCanWriteIsRefused() throws {
+        // r3review poc4: the source folder is one the user can write (like /Applications for an
+        // admin). Just before root's rename another program swaps the app for its own file and
+        // points the staging name at another folder. Neither side is root-only, so planning
+        // refuses the step and the script never touches anything.
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        try sandbox.file("apps/Foo.app/real", bytes: 6)
+        let app = sandbox.root.appending(path: "apps/Foo.app")
+        let kept = sandbox.root.appending(path: "apps/Foo-kept.app")
+        let priv = try sandbox.directory("priv")
+        let shell = UserShell(beforeRun: {
+            try FileManager.default.moveItem(at: app, to: kept)
+            try Data(count: 8).write(to: app)
+            try FileManager.default.createSymbolicLink(
+                at: trash.appending(path: ".dustling-TOK-0"), withDestinationURL: priv)
+        })
+        let mover = AdminMover(shell: shell, environment: sandbox.environment)
+        let results = mover.perform([moveStep(app, trash.appending(path: "Foo.app"))], prompt: "p")
+        #expect(results == [unsafe])
+        #expect(shell.calls.first?.script.hasSuffix("\nreport_ 0 unsafe\nexit 0\n") == true)
+        #expect(contents(priv).isEmpty)
+        #expect(contents(trash) == [".dustling-TOK-0"])
+        #expect(size(app) == 8)
+        #expect(size(kept.appending(path: "real")) == 6)
     }
 
     @Test func moveAcrossVolumesIsRefusedWhenPlanned() throws {

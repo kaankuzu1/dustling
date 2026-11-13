@@ -42,6 +42,19 @@ final class UserShell: AdminShell, @unchecked Sendable {
     }
 }
 
+extension TestSandbox {
+    /// A planning seam for admin scripts (a test can't make root-owned folders): the sandbox's
+    /// folders outside `home` count as root-only chains, like `/Library`; the ones in `home`, like
+    /// `~/.Trash`, don't; nothing outside the sandbox does.
+    var rootOnlyOutsideHome: @Sendable (String) -> Bool {
+        let root = self.root.path(percentEncoded: false)
+        let home = environment.home.path(percentEncoded: false)
+        return { path in
+            (path == root || path.hasPrefix(root + "/")) && path != home && !path.hasPrefix(home + "/")
+        }
+    }
+}
+
 /// An `AdminShell` that never runs anything and always answers `result` (by default the user
 /// cancelled the password box). Every call is recorded.
 final class CannedShell: AdminShell, @unchecked Sendable {

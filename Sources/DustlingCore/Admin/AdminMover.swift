@@ -6,10 +6,18 @@ import Foundation
 public struct AdminMover: Sendable {
     private let shell: any AdminShell
     private let environment: SystemEnvironment
+    private let rootOnly: @Sendable (String) -> Bool
 
     public init(shell: AdminShell, environment: SystemEnvironment) {
+        self.init(shell: shell, environment: environment, rootOnly: { RootOnlyChain.contains($0) })
+    }
+
+    /// `rootOnly` says whether a folder's whole chain is root-only (`RootOnlyChain`). Tests choose
+    /// it, since they can't make root-owned folders.
+    init(shell: AdminShell, environment: SystemEnvironment, rootOnly: @escaping @Sendable (String) -> Bool) {
         self.shell = shell
         self.environment = environment
+        self.rootOnly = rootOnly
     }
 
     /// Where `url` can go in the user's Trash: its own name, or "name 2", "name 3"… when that is
@@ -52,16 +60,22 @@ public struct AdminMover: Sendable {
         return nil
     }
 
-    /// Runs every step in one script. The folder each step acts in is read now (planning) and the
-    /// script refuses a step whose folder changed by the time it runs (see `AdminScript`). These
-    /// moves are refused (`err`, never run): across volumes; into a folder the user can't write
-    /// without the item's recorded `expectedSource` (Put back's steps carry it); with
-    /// `bootOutDaemon` when the plist's folder is one the user can write.
+    /// Runs every step in one script. The folders each step acts in are read now (planning) and the
+    /// script refuses a step whose folders changed by the time it runs (see `AdminScript`).
+    /// A move runs only when the folder on one side has a root-only chain (`RootOnlyChain`): out
+    /// of such a folder (to the Trash), or into one (Put back). Refused without running:
+    /// - `.notDone(reason: AdminScript.unsafeReason)` ("Dustling can't safely move this with your
+    ///   password. Move it to the Trash in Finder.") when neither side is root-only (for example a
+    ///   root-owned item in `~/Library`, `/Library/Caches` or, for an admin, `/Applications`), and
+    ///   for `bootOutDaemon` when the plist's folder chain isn't root-only;
+    /// - `.notDone(reason: AdminScript.refusedReason)` for a move across volumes, and for a move
+    ///   into a root-only folder from one that isn't without the recorded `expectedSource` (Put
+    ///   back's steps carry it).
     /// No steps: the shell is never called. The password box cancelled: every step is `.cancelled`.
     /// The shell failed: every step is `.notDone` with why.
     public func perform(_ steps: [AdminStep], prompt: String) -> [AdminStepResult] {
         guard !steps.isEmpty else { return [] }
-        switch shell.run(script: AdminScript.make(steps), prompt: prompt) {
+        switch shell.run(script: AdminScript.make(steps, rootOnly: rootOnly), prompt: prompt) {
         case .finished(let output):
             return AdminScript.parse(output, count: steps.count)
         case .cancelled:
