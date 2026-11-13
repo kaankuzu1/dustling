@@ -28,12 +28,13 @@ private let catalog: [JunkScreen.Entry] = [
 private func input(
     phase: JunkScreen.Phase = .ready, tiles: [CategoryTileModel], places: [Place]? = nil,
     scope: HomeScanScope? = nil, progress: [JunkCategoryID: CategoryProgress] = [:],
-    outcomes: [JunkCategoryID: CategoryOutcome] = [:]
+    outcomes: [JunkCategoryID: CategoryOutcome] = [:], fullDiskAccess: Bool = true
 ) -> JunkScreen.Input {
     let places = places ?? catalog.filter { $0.id != .trash }.map { Place(id: $0.id, access: .readable) }
     return JunkScreen.Input(
         catalog: catalog, phase: phase, tiles: tiles, places: places,
-        scope: scope ?? HomeScanScope.make(places: places), progress: progress, outcomes: outcomes)
+        scope: scope ?? HomeScanScope.make(places: places), progress: progress, outcomes: outcomes,
+        fullDiskAccess: fullDiskAccess)
 }
 
 struct JunkScreenTilesTests {
@@ -217,8 +218,11 @@ struct JunkScreenTilesTests {
         #expect(tiles.map(\.id) == [.userCaches])
         #expect(tiles[0].status == .cleaned)
         #expect(tiles[0].bytes == quarter / 2)
-        #expect(tiles[0].note == "1 item in the Trash, 1 skipped, 1 needs the cleanup helper")
+        #expect(tiles[0].note == "1 item in the Trash, 1 skipped, 1 needs your Mac password")
         #expect(tiles[0].cells == MiniMosaic(count: 1, kind: .inTrash))
+        let limited = JunkScreen.tiles(input(
+            phase: .done, tiles: [tile(.userCaches, quarter)], outcomes: [.userCaches: outcome], fullDiskAccess: false))
+        #expect(limited[0].note == "1 item in the Trash, 1 skipped, 1 needs Full Disk Access, then your Mac password")
 
         // A ticked place that held nothing isn't listed as cleaned.
         let empty = JunkScreen.tiles(input(
@@ -307,10 +311,16 @@ struct JunkSummaryTests {
             JournalEntry(originalPath: "/u/c", bytes: 1, outcome: .skipped(reason: "cleanup stopped")),
             JournalEntry(originalPath: "/u/d", bytes: 1, outcome: .needsAdmin),
         ]), appName: { _ in nil })
-        #expect(summary.sentence == "1 item moved, 2 skipped, 1 needs the cleanup helper.")
+        #expect(summary.sentence == "1 item moved, 2 skipped, 1 needs your Mac password.")
         #expect(summary.reasons.map(\.text) == [
-            "1 skipped because com.x.y is using it", "1 skipped: cleanup stopped", "1 needs the cleanup helper",
+            "1 skipped because com.x.y is using it", "1 skipped: cleanup stopped", "1 needs your Mac password",
         ])
+        let limited = JunkSummary.make(record([
+            JournalEntry(originalPath: "/u/d", bytes: 1, outcome: .needsAdmin),
+            JournalEntry(originalPath: "/u/e", bytes: 1, outcome: .needsAdmin),
+        ]), fullDiskAccess: false)
+        #expect(limited.sentence == "0 items moved, 2 need Full Disk Access, then your Mac password.")
+        #expect(limited.reasons.map(\.text) == ["2 need Full Disk Access, then your Mac password"])
     }
 
     @Test func restoreHeadlineFollowsWhatCameBack() {

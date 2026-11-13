@@ -19,7 +19,9 @@ struct SummaryView: View {
     private typealias Palette = DustlingTheme.Palette
 
     var body: some View {
-        let summary = JunkSummary.make(record) { AppModels.appName(bundleID: $0) }
+        let summary = JunkSummary.make(record, fullDiskAccess: models.health.fullDiskAccess == .granted) {
+            AppModels.appName(bundleID: $0)
+        }
         HStack(alignment: .top, spacing: 18) {
             MoteView(models.junk.restoreOutcomes == nil ? .happy : .idle, pixel: 3)
             VStack(alignment: .leading, spacing: 8) {

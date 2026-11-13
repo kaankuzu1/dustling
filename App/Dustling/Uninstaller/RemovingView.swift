@@ -134,7 +134,7 @@ private struct AppProgressSection: View {
     private static func reason(_ outcome: DeletionOutcome) -> String? {
         switch outcome {
         case .movedToTrash, .deleted: return nil
-        case .needsAdmin: return UninstallerScreen.helperNote
+        case .needsAdmin: return UninstallerScreen.passwordNote
         case .skipped(let reason), .failed(let reason): return UninstallerScreen.sentence(reason)
         }
     }

@@ -234,7 +234,7 @@ struct UninstallerModelTests {
         }
         #expect(badges(.groupContainer, .exact, data: true, admin: false) == [.teamID, .yourData])
         #expect(badges(.groupContainer, .nameBased, data: true, admin: false) == [.nameMatch, .yourData])
-        #expect(badges(.launchDaemon, .exact, data: false, admin: true) == [.helper])
+        #expect(badges(.launchDaemon, .exact, data: false, admin: true) == [.system])
         #expect(badges(.caches, .nameBased, data: false, admin: false) == [.nameMatch])
     }
 
@@ -308,12 +308,12 @@ struct UninstallerModelTests {
         await model.load()
         let alpha = try #require(model.apps.first)
         let admin = try #require(model.leftovers(for: alpha.app).first { $0.leftover.url.lastPathComponent == plist.lastPathComponent })
-        #expect(admin.badges.contains(.helper))
+        #expect(admin.badges.contains(.system))
         model.selection = [alpha.app.url]
         let withAdmin = model.confirmation
         #expect(admin.checked)
         #expect(withAdmin.adminItems == 1)
-        #expect(withAdmin.adminNote == "Needs the cleanup helper")
+        #expect(withAdmin.adminNote == "Needs your Mac password")
         #expect(withAdmin.perApp[0].adminItems == 1)
         #expect(withAdmin.perApp[0].items == 2)   // the app and its cache, not the daemon
         model.setChecked(false, leftover: admin.leftover, in: alpha.app)
@@ -653,6 +653,154 @@ struct UninstallerModelTests {
         #expect(without.perApp[0].items + without.perApp[0].dataItems
             == withAccess.perApp[0].items + withAccess.perApp[0].dataItems - 1)
         #expect(ConfirmText.make(without).notes.contains("1 item needs Full Disk Access and stays where it is."))
+    }
+
+    // MARK: the password step
+
+    /// Alpha and Beta in an application folder only an administrator can change, each with a cache of
+    /// the user's own. The folder is locked once the apps are listed.
+    private func systemAppsRig() throws -> (rig: ModelRig, caches: [URL]) {
+        let rig = try ModelRig()
+        try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        try rig.makeApp("Beta", bundleID: "com.test.beta")
+        let lib = rig.environment.userLibrary
+        let caches = [
+            try rig.file(lib.appending(path: "Caches/com.test.alpha/c.bin"), bytes: 4096),
+            try rig.file(lib.appending(path: "Caches/com.test.beta/c.bin"), bytes: 4096),
+        ]
+        try FileManager.default.createDirectory(at: rig.environment.userTrash, withIntermediateDirectories: true)
+        return (rig, caches)
+    }
+
+    @Test func systemItemsAskOnceAfterTheLoop() async throws {
+        let (rig, caches) = try systemAppsRig()
+        let shell = FakeAdminShell(okSteps: 2)
+        let completed = Counter()
+        let model = rig.uninstallerModel(onRunCompleted: { completed.bump() })
+        model.canTakeOutOfTrash = true
+        model.admin = { rig.admin(shell) }
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        let confirm = model.confirmation
+        try rig.lockFolder(rig.applicationsDirectory)
+        defer { rig.unlockFolder(rig.applicationsDirectory) }
+
+        let records = await model.uninstallSelected(confirmed: confirm, quit: FakeQuitter(running: FakeRunning()))
+
+        // One password box for both apps, after the last one was tried.
+        #expect(shell.prompts == [AdminMover.movePrompt(count: 2)])
+        #expect(records.map(\.kind) == [.uninstall(appName: "Alpha"), .uninstall(appName: "Beta")])
+        for record in records {
+            #expect(record.entries.allSatisfy { if case .movedToTrash = $0.outcome { true } else { false } })
+        }
+        // The caches waited for their app, then moved the normal way.
+        #expect(caches.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+        #expect(model.result?.records == records)
+        #expect(try rig.journal.all().filter { records.map(\.id).contains($0.id) }.allSatisfy {
+            if case .movedToTrash = $0.entries[0].outcome { true } else { false }
+        })
+        let progress = try #require(model.progress)
+        #expect(progress.apps.map(\.state) == [.finished(removed: true), .finished(removed: true)])
+        #expect(progress.apps.allSatisfy { app in
+            app.items.allSatisfy { if case .finished(.movedToTrash) = $0.state { true } else { false } }
+        })
+        // Each item counts once: the password step changes outcomes, not how many items there are.
+        #expect(await waitUntil { model.itemsDone == 4 })
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(model.itemsDone == 4)
+        // Apps that moved leave the list, and History hears about the password step too.
+        #expect(model.apps.isEmpty)
+        #expect(model.selection.isEmpty)
+        #expect(completed.value == 3)
+        #expect(!model.isWaitingForPassword)
+    }
+
+    @Test func systemItemsStayWhenThePasswordBoxIsClosed() async throws {
+        let (rig, caches) = try systemAppsRig()
+        let shell = FakeAdminShell(.cancelled)
+        let model = rig.uninstallerModel()
+        model.canTakeOutOfTrash = true
+        model.admin = { rig.admin(shell) }
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        let confirm = model.confirmation
+        try rig.lockFolder(rig.applicationsDirectory)
+        defer { rig.unlockFolder(rig.applicationsDirectory) }
+
+        let records = await model.uninstallSelected(confirmed: confirm, quit: FakeQuitter(running: FakeRunning()))
+
+        #expect(shell.prompts.count == 1)
+        #expect(records.map { $0.entries[0].outcome } == [.needsAdmin, .needsAdmin])
+        #expect(caches.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        #expect(model.progress?.apps.map(\.state) == [.finished(removed: false), .finished(removed: false)])
+        #expect(model.apps.count == 2)
+        let summary = UninstallSummary.make(records: records, stopped: [], home: rig.environment.home)
+        #expect(summary.sentence == "No apps were moved to the Trash. Alpha was left alone: needs your Mac password. "
+            + "Beta was left alone: needs your Mac password.")
+    }
+
+    @Test func withoutThePasswordStepNothingAsks() async throws {
+        let (rig, _) = try systemAppsRig()
+        let shell = FakeAdminShell(okSteps: 2)
+        let model = rig.uninstallerModel()
+        model.canTakeOutOfTrash = true
+        // What the app passes without Full Disk Access (and in the QA copy).
+        model.admin = { nil }
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        let confirm = model.confirmation
+        try rig.lockFolder(rig.applicationsDirectory)
+        defer { rig.unlockFolder(rig.applicationsDirectory) }
+
+        let records = await model.uninstallSelected(confirmed: confirm, quit: FakeQuitter(running: FakeRunning()))
+
+        #expect(shell.prompts.isEmpty)
+        #expect(records.map { $0.entries[0].outcome } == [.needsAdmin, .needsAdmin])
+        #expect(model.apps.count == 2)
+    }
+
+    @Test func stoppedUninstallNeverAsksForThePassword() async throws {
+        let (rig, _) = try systemAppsRig()
+        let shell = FakeAdminShell(okSteps: 2)
+        let running = FakeRunning()
+        let model = rig.uninstallerModel(running: running)
+        model.canTakeOutOfTrash = true
+        model.admin = { rig.admin(shell) }
+        await model.load()
+        let alpha = try #require(model.apps.first { $0.app.displayName == "Alpha" })
+        running.set(alpha.app.url, running: true)
+        model.selection = Set(model.apps.map(\.app.url))
+        let confirm = model.confirmation
+        try rig.lockFolder(rig.applicationsDirectory)
+        defer { rig.unlockFolder(rig.applicationsDirectory) }
+        // Stop is pressed while Alpha is being quit (Quit does the same).
+        let quitter = HookQuitter(running: running) { await MainActor.run { model.stop() } }
+
+        let records = await model.uninstallSelected(confirmed: confirm, quit: quitter)
+
+        #expect(shell.prompts.isEmpty)
+        #expect(records.map { $0.entries[0].outcome } == [.needsAdmin])
+        #expect(model.result?.stopped == ["Beta"])
+    }
+
+    @Test func putBackAsksForThePasswordForAFolderTheUserCantChange() async throws {
+        let rig = try ModelRig()
+        try rig.makeApp("Alpha", bundleID: "com.test.alpha")
+        let shell = FakeAdminShell(.cancelled)
+        let model = rig.uninstallerModel()
+        model.canTakeOutOfTrash = true
+        model.admin = { rig.admin(shell) }
+        await model.load()
+        model.selection = Set(model.apps.map(\.app.url))
+        let records = await model.uninstallSelected(confirmed: model.confirmation, quit: FakeQuitter(running: FakeRunning()))
+        #expect(shell.prompts.isEmpty)
+        try rig.lockFolder(rig.applicationsDirectory)
+        defer { rig.unlockFolder(rig.applicationsDirectory) }
+
+        let outcomes = try await model.putBack(records[0])
+
+        #expect(shell.prompts == [AdminMover.restorePrompt(count: 1)])
+        #expect(outcomes.contains(.failed(records[0].entries[0].originalPath, reason: RunJournal.putBackNeedsPasswordReason)))
     }
 }
 

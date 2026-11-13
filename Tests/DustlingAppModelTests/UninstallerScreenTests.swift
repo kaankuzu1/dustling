@@ -72,8 +72,8 @@ struct UninstallerScreenTests {
     @Test func badgesAndKindNamesFollowTheDesign() {
         #expect(UninstallerScreen.badge(.teamID).text == "Team ID match")
         #expect(UninstallerScreen.badge(.teamID).style == .neutral)
-        #expect(UninstallerScreen.badge(.helper).text == "Helper")
-        #expect(UninstallerScreen.badge(.helper).style == .admin)
+        #expect(UninstallerScreen.badge(.system).text == "System")
+        #expect(UninstallerScreen.badge(.system).style == .admin)
         #expect(UninstallerScreen.badge(.nameMatch).text == "Name match")
         #expect(UninstallerScreen.badge(.yourData).text == "May contain your data")
         #expect(UninstallerScreen.badge(.yourData).style == .warning)
@@ -97,8 +97,8 @@ struct UninstallerScreenTests {
         #expect(UninstallerScreen.note(for: fuzzy) == "Matched by name only, so it isn't checked")
         let helper = LeftoverRow(
             leftover: leftover("/Library/LaunchDaemons/x.plist", .launchDaemon, bytes: 1, admin: true), checked: true,
-            badges: [.helper], warning: nil, disabledReason: nil)
-        #expect(UninstallerScreen.note(for: helper) == "Needs the cleanup helper (coming in a later version)")
+            badges: [.system], warning: nil, disabledReason: nil)
+        #expect(UninstallerScreen.note(for: helper) == "Needs your Mac password")
         let plain = LeftoverRow(
             leftover: leftover("/u/Library/Caches/b", .caches, bytes: 1), checked: true, badges: [], warning: nil,
             disabledReason: nil)
@@ -113,7 +113,7 @@ struct UninstallerScreenTests {
             LeftoverRow(leftover: leftover("/b", .container, bytes: 10 * gb, data: true), checked: false,
                         badges: [.yourData], warning: nil, disabledReason: nil),
             LeftoverRow(leftover: leftover("/c", .launchDaemon, bytes: 3 * gb, admin: true), checked: true,
-                        badges: [.helper], warning: nil, disabledReason: nil),
+                        badges: [.system], warning: nil, disabledReason: nil),
             LeftoverRow(leftover: leftover("/d", .caches, bytes: 4 * gb), checked: false, badges: [], warning: nil,
                         disabledReason: "excluded in Settings"),
         ]
@@ -135,7 +135,7 @@ struct UninstallerScreenTests {
         ConfirmModel(
             plan: [], ready: ready, note: ready ? nil : "Still looking for leftovers", perApp: perApp,
             dataWarnings: data, runningApps: running, launchAgents: agents, adminItems: admin,
-            adminNote: admin > 0 ? "Needs the cleanup helper" : nil,
+            adminNote: admin > 0 ? "Needs your Mac password" : nil,
             totalBytes: perApp.reduce(0) { $0 + $1.bytes }, limitedNote: limited)
     }
 
@@ -196,9 +196,20 @@ struct UninstallerScreenTests {
         #expect(three.dataHeading == nil)
         #expect(three.notes == [
             "A and B are running. Dustling will quit them first.",
-            "2 items need the cleanup helper (coming in a later version) and stay where they are.",
+            "2 items belong to the system. Dustling will ask for your Mac password to move them.",
         ])
         #expect(three.button == "Quit 2 apps and move to Trash")
+        let single = ConfirmText.make(confirm(perApp: [per("A", items: 1, bytes: gb)], admin: 1))
+        #expect(single.notes == ["1 item belongs to the system. Dustling will ask for your Mac password to move it."])
+        // Without Full Disk Access Dustling can't run the password step, so it doesn't promise to ask.
+        let limited = ConfirmText.make(confirm(perApp: [per("A", items: 1, bytes: gb)], admin: 1, limited: "x"))
+        #expect(limited.notes == [
+            "1 item belongs to the system. It needs Full Disk Access, then your Mac password, so it stays where it is.",
+        ])
+        let limitedTwo = ConfirmText.make(confirm(perApp: [per("A", items: 1, bytes: gb)], admin: 2, limited: "x"))
+        #expect(limitedTwo.notes == [
+            "2 items belong to the system. They need Full Disk Access, then your Mac password, so they stay where they are.",
+        ])
 
         let quiet = ConfirmText.make(confirm(perApp: [per("A", items: 1, bytes: gb)]))
         #expect(quiet.button == "Move to Trash")
@@ -319,11 +330,14 @@ struct UninstallerScreenTests {
         #expect(summary.sentence == "1 app moved to the Trash. Zoom was left alone: still running after Dustling asked it to quit. "
             + "Stopped before Teams, so it was left alone.")
         #expect(summary.apps.map(\.name) == ["Docker", "Zoom"])
-        #expect(summary.apps[0].status == "2 items moved, 1 failed, 1 needs the cleanup helper")
+        #expect(summary.apps[0].status == "2 items moved, 1 failed, 1 needs your Mac password")
         #expect(summary.apps[0].problems == [
             .init(path: "~/Library/Logs/Docker", reason: "failed: permission denied"),
-            .init(path: "/Library/LaunchDaemons/com.docker.plist", reason: "needs the cleanup helper"),
+            .init(path: "/Library/LaunchDaemons/com.docker.plist", reason: "needs your Mac password"),
         ])
+        let limited = UninstallSummary.make(records: [docker], stopped: [], home: home, fullDiskAccess: false)
+        #expect(limited.apps[0].status == "2 items moved, 1 failed, 1 needs Full Disk Access, then your Mac password")
+        #expect(limited.apps[0].problems.last?.reason == "needs Full Disk Access, then your Mac password")
         #expect(summary.apps[0].canPutBack)
         #expect(summary.apps[1].status == "Left alone: still running after Dustling asked it to quit")
         #expect(summary.apps[1].problems.isEmpty)

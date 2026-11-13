@@ -65,6 +65,12 @@ public struct Uninstaller: Sendable {
         locationPaths = Set(LeftoverFinder.locationDirectories(environment).map { Self.key($0) })
     }
 
+    /// This uninstaller with its runner's `admin` replaced (`CleanupRunner.with(admin:)`), for
+    /// `moveSystemItems`. nil: nothing asks for the password.
+    public func with(admin: AdminMover?) -> Uninstaller {
+        Uninstaller(runner: runner.with(admin: admin), commands: commands, running: running, environment: environment)
+    }
+
     /// `leftovers` is the set the user selected; it is not re-filtered here, but each one must be a
     /// direct child of a declared leftover location (and not a declared location itself) or it is
     /// skipped as outside the cleanup area. `skipped` are leftovers the caller decided not to touch

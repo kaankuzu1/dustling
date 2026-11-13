@@ -208,7 +208,9 @@ struct UninstallerView: View {
         case .done:
             if let result = model.result {
                 UninstallSummaryView(summary: UninstallSummary.make(
-                    records: result.records, stopped: result.stopped, home: models.homeDirectory))
+                    records: result.records, stopped: result.stopped, home: models.homeDirectory,
+                    // Follows Full Disk Access (and the screenshot fixture's stand-in for it).
+                    fullDiskAccess: model.canTakeOutOfTrash))
             }
         case .list, .limited:
             let row = currentID(shown).flatMap { id in shown.first { $0.id == id } }
@@ -300,6 +302,7 @@ struct UninstallerView: View {
             let items = progress.apps.reduce(0) { $0 + $1.items.count }
             let done = progress.apps.reduce(0) { $0 + $1.doneCount }
             let title: String = {
+                if model.isWaitingForPassword { return "Waiting for your Mac password" }
                 guard let current = progress.current else { return "Finishing" }
                 return current.state == .quitting
                     ? "Quitting \(current.app.displayName)" : "Removing \(current.app.displayName)"
@@ -310,9 +313,12 @@ struct UninstallerView: View {
             ActionBar(title: title, caption: caption, busyLabel: "Moving…") {
                 ProgressBar(fraction: items == 0 ? 0 : Double(done) / Double(items))
                     .frame(width: 220)
+                // The password box can't be stopped from here; answering or cancelling it ends the step.
                 Button("Stop", action: model.stop)
-                    .disabled(model.stopRequested)
-                    .help("Finishes the app being removed now and leaves the rest alone")
+                    .disabled(model.stopRequested || model.isWaitingForPassword)
+                    .help(model.isWaitingForPassword
+                        ? "Answer or cancel the password box to finish"
+                        : "Finishes the app being removed now and leaves the rest alone")
             }
         }
     }

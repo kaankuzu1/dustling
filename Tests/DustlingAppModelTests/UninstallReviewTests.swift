@@ -154,8 +154,9 @@ struct UninstallReviewTests {
         #expect(rows.first { $0.id == support.url }?.checked == false)
     }
 
-    @Test func helperBlockReadsLikeTheRows() {
-        #expect(LeftoverBlock.needsHelper.text == UninstallerScreen.helperNote)
+    @Test func passwordBlockReadsLikeTheRows() {
+        #expect(LeftoverBlock.needsPassword.text == UninstallerScreen.passwordNote)
+        #expect(UninstallerScreen.passwordNote == "Needs your Mac password")
     }
 
     @Test func dataRowsCarryTheirWarning() async throws {

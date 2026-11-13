@@ -65,8 +65,8 @@ public enum FullDiskAccessLoss: Equatable, Sendable {
 }
 
 /// Remembers, across launches, that Full Disk Access was on, and for which code requirement. Losing it
-/// later is then a blocker before a scan, instead of a quietly smaller result. Someone who never granted access is in limited mode and is
-/// never blocked.
+/// later is then a blocker before a scan, instead of a quietly smaller result. Someone who never
+/// granted access is in limited mode and is never blocked.
 @MainActor
 public final class FullDiskAccessMemory {
     public static let key = "fullDiskAccessWasGranted"
@@ -135,16 +135,21 @@ public enum LastRunReview {
         public let display: String
         public let result: Result
         public let reason: String
-        /// nil when there is nothing the user can do in v1 (needs the helper, a history write).
+        /// nil when there is nothing the user can do now (a protected item, a history write, an item
+        /// needing the password while Full Disk Access is off).
         public let fix: Fix?
     }
 
     /// The problem rows in journal order. Items skipped by choice (excluded, already gone, stopped)
-    /// aren't problems and aren't listed.
-    public static func problems(in run: RunRecord, home: URL, appName: (String) -> String?) -> [Problem] {
+    /// aren't problems and aren't listed. `fullDiskAccess`: whether Dustling has it now. An item
+    /// needing admin rights moves with the Mac password then (retry); without it, access comes first.
+    public static func problems(
+        in run: RunRecord, home: URL, fullDiskAccess: Bool, appName: (String) -> String?
+    ) -> [Problem] {
         let retryable = isRetryable(run.kind)
         return run.entries.enumerated().compactMap { index, entry in
             let display = displayPath(entry.originalPath, home: home)
+            let fix: Problem.Fix? = retryable && isRetryableEntry(entry, fullDiskAccess: fullDiskAccess) ? .retry : nil
             switch entry.outcome {
             case .skipped(let reason):
                 guard let bundleID = inUseBundleID(reason) else { return nil }
@@ -152,33 +157,32 @@ public enum LastRunReview {
                 return Problem(id: index, display: display, result: .skipped, reason: "In use by \(app)",
                                fix: retryable ? .quitAndRetry(app: app) : nil)
             case .failed(let reason):
-                let internalEntry = entry.originalPath.hasPrefix("<")
-                return Problem(id: index, display: display, result: .failed, reason: sentence(reason),
-                               fix: retryable && !internalEntry && reason != TrashMover.protectedReason ? .retry : nil)
+                return Problem(id: index, display: display, result: .failed, reason: sentence(reason), fix: fix)
             case .needsAdmin:
                 return Problem(id: index, display: display, result: .needsAdmin,
-                               reason: "Needs the cleanup helper (coming in a later version)", fix: nil)
+                               reason: PasswordCopy.reason(fullDiskAccess: fullDiskAccess), fix: fix)
             case .movedToTrash, .deleted:
                 return nil
             }
         }
     }
 
-    /// How many items "Retry N items" would try again: a cleanup's in-use and failed items.
-    public static func retryableCount(in run: RunRecord) -> Int {
+    /// How many items "Retry N items" would try again: a cleanup's in-use and failed items, and with
+    /// Full Disk Access those needing admin rights (the retry asks for the Mac password once).
+    public static func retryableCount(in run: RunRecord, fullDiskAccess: Bool) -> Int {
         guard isRetryable(run.kind) else { return 0 }
-        return run.entries.filter(isRetryableEntry).count
+        return run.entries.filter { isRetryableEntry($0, fullDiskAccess: fullDiskAccess) }.count
     }
 
-    /// "2 items in use, 2 failed, 1 needs admin rights", or nil when the run had no problems.
-    public static func summary(of run: RunRecord) -> String? {
+    /// "2 items in use, 2 failed, 1 needs your Mac password", or nil when the run had no problems.
+    public static func summary(of run: RunRecord, fullDiskAccess: Bool) -> String? {
         let inUse = run.entries.filter { if case .skipped(let r) = $0.outcome { inUseBundleID(r) != nil } else { false } }.count
         let failed = run.failedCount
         let admin = run.needsAdminCount
         var parts: [String] = []
         if inUse > 0 { parts.append("\(items(inUse)) in use") }
         if failed > 0 { parts.append("\(failed) failed") }
-        if admin > 0 { parts.append("\(admin) \(admin == 1 ? "needs" : "need") admin rights") }
+        if admin > 0 { parts.append(PasswordCopy.count(admin, fullDiskAccess: fullDiskAccess)) }
         return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
@@ -200,14 +204,16 @@ public enum LastRunReview {
     }
 
     /// `catalog` should be the categories the places check allows right now
-    /// (`HomeMosaic.scannable`), and `skipping` what a cleanup would leave alone now.
+    /// (`HomeMosaic.scannable`), and `skipping` what a cleanup would leave alone now. With
+    /// `fullDiskAccess`, items that needed admin rights are tried again too (the run asks for the Mac
+    /// password once), in any category, including those that need admin rights.
     public static func retryPlan(
-        for run: RunRecord, catalog: [JunkCategory], running: Set<String>, skipping: CleanupSkip = .none
+        for run: RunRecord, catalog: [JunkCategory], running: Set<String>, skipping: CleanupSkip = .none,
+        fullDiskAccess: Bool
     ) -> RetryPlan {
         var plan = RetryPlan()
         guard isRetryable(run.kind) else { return plan }
-        let movable = catalog.filter { !$0.requiresAdmin }
-        for entry in run.entries where isRetryableEntry(entry) {
+        for entry in run.entries where isRetryableEntry(entry, fullDiskAccess: fullDiskAccess) {
             let url = URL(filePath: entry.originalPath)
             var owner: String?
             if case .skipped(let reason) = entry.outcome, let id = inUseBundleID(reason), running.contains(id) {
@@ -222,7 +228,7 @@ public enum LastRunReview {
                 continue
             }
             let parent = url.deletingLastPathComponent()
-            let candidates = movable.filter { $0.isDeclaredRoot(parent) }
+            let candidates = catalog.filter { $0.isDeclaredRoot(parent) }
             // Text only first: a place that can't be read now is never looked at.
             if candidates.contains(where: { skipping.skips(url, category: $0.id) }) {
                 plan.lockedPlaces += 1
@@ -244,11 +250,12 @@ public enum LastRunReview {
 
     private static func isRetryable(_ kind: RunKind) -> Bool { kind == .junkClean }
 
-    private static func isRetryableEntry(_ entry: JournalEntry) -> Bool {
+    private static func isRetryableEntry(_ entry: JournalEntry, fullDiskAccess: Bool) -> Bool {
         switch entry.outcome {
         case .skipped(let reason): return inUseBundleID(reason) != nil
         case .failed(let reason): return !entry.originalPath.hasPrefix("<") && reason != TrashMover.protectedReason
-        default: return false
+        case .needsAdmin: return fullDiskAccess
+        case .movedToTrash, .deleted: return false
         }
     }
 
@@ -279,7 +286,9 @@ public enum LastRunReview {
 
 /// "Retry N items": tries the last cleanup's in-use and failed items again through the same runner
 /// (and so the same protected paths and exclusions) as every cleanup, behind the same gate: in limited
-/// mode it asks first (or refuses), and places that can't be read now are left alone.
+/// mode it asks first (or refuses), and places that can't be read now are left alone. With Full Disk
+/// Access (`fullDiskAccess`) the items that needed admin rights are tried again too; the app's `run`
+/// then asks for the Mac password once for them.
 @MainActor @Observable
 public final class LastRunRetry {
     public private(set) var isRetrying = false
@@ -296,6 +305,7 @@ public final class LastRunRetry {
     @ObservationIgnored private let gate: () -> CleanupGate
     @ObservationIgnored private let skipping: () -> CleanupSkip
     @ObservationIgnored private let isBusy: () -> Bool
+    @ObservationIgnored private let fullDiskAccess: () -> Bool
     @ObservationIgnored private let run: @Sendable ([URL], [URL]) async -> RunRecord
     @ObservationIgnored private let onRunCompleted: () -> Void
 
@@ -306,6 +316,7 @@ public final class LastRunRetry {
         gate: @escaping () -> CleanupGate,
         skipping: @escaping () -> CleanupSkip,
         isBusy: @escaping () -> Bool,
+        fullDiskAccess: @escaping () -> Bool,
         run: @escaping @Sendable ([URL], [URL]) async -> RunRecord,
         onRunCompleted: @escaping () -> Void
     ) {
@@ -315,6 +326,7 @@ public final class LastRunRetry {
         self.gate = gate
         self.skipping = skipping
         self.isBusy = isBusy
+        self.fullDiskAccess = fullDiskAccess
         self.run = run
         self.onRunCompleted = onRunCompleted
     }
@@ -346,7 +358,8 @@ public final class LastRunRetry {
         case .allowed, .confirmFirst:
             break
         }
-        let plan = LastRunReview.retryPlan(for: record, catalog: catalog(), running: running(), skipping: skipping())
+        let plan = LastRunReview.retryPlan(
+            for: record, catalog: catalog(), running: running(), skipping: skipping(), fullDiskAccess: fullDiskAccess())
         let open = plan.stillOpen.map { appName($0) ?? $0 }
         let openList = ListFormatter.localizedString(byJoining: open)
         var notes: [String] = []
@@ -376,6 +389,9 @@ public final class LastRunRetry {
         var parts = ["\(moved) moved to the Trash"]
         if result.skippedCount > 0 { parts.append("\(result.skippedCount) skipped") }
         if result.failedCount > 0 { parts.append("\(result.failedCount) failed") }
+        if result.needsAdminCount > 0 {
+            parts.append(PasswordCopy.count(result.needsAdminCount, fullDiskAccess: fullDiskAccess()))
+        }
         message = (["Retried \(LastRunReview.items(plan.urls.count)): " + parts.joined(separator: ", ") + "."] + notes)
             .joined(separator: " ")
         onRunCompleted()

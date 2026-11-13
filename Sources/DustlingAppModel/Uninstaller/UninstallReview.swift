@@ -5,15 +5,16 @@ import Foundation
 public enum LeftoverBlock: Equatable, Sendable {
     /// Excluded in Settings, or only the link of a shortcut is removed.
     case excluded(String)
-    /// Only the cleanup helper could move it.
-    case needsHelper
+    /// It belongs to the system: it moves only with the Mac password, asked once after the last app,
+    /// so totals count it apart.
+    case needsPassword
     /// Its folder can't be read without Full Disk Access.
     case needsFullDiskAccess
 
     public var text: String {
         switch self {
         case .excluded(let reason): UninstallerScreen.sentence(reason)
-        case .needsHelper: UninstallerScreen.helperNote
+        case .needsPassword: UninstallerScreen.passwordNote
         case .needsFullDiskAccess: "Needs Full Disk Access"
         }
     }

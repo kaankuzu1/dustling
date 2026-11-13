@@ -480,6 +480,82 @@ extension JunkScanModelTests {
         #expect(outcome.failedCount == 1)
         #expect(model.categoryOutcomes[.iosBackups] == nil)
     }
+
+    // MARK: the password step
+
+    @Test func cleanAsksOnceForWhatBelongsToTheSystem() async throws {
+        let rig = try ModelRig()
+        try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        // Folders only an administrator could move (Dustling's user can't change them).
+        let first = rig.cachesDirectory.appending(path: "com.root.one")
+        let second = rig.cachesDirectory.appending(path: "com.root.two")
+        try rig.file(first.appending(path: "blob"), bytes: 4096)
+        try rig.file(second.appending(path: "blob"), bytes: 4096)
+        try FileManager.default.createDirectory(at: rig.environment.userTrash, withIntermediateDirectories: true)
+        let shell = FakeAdminShell(.cancelled)
+        let model = makeModel(rig)
+        model.canTakeOutOfTrash = true
+        model.admin = { rig.admin(shell) }
+        await scanned(model)
+        try rig.lockFolder(first)
+        try rig.lockFolder(second)
+        defer {
+            rig.unlockFolder(first)
+            rig.unlockFolder(second)
+        }
+
+        await model.clean()
+
+        #expect(shell.prompts == [AdminMover.movePrompt(count: 2)])
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+        #expect(record.needsAdminCount == 2)
+        #expect(record.bytesMovedToTrash == 4096)
+        #expect(model.categoryOutcomes[.userCaches]?.needsAdminCount == 2)
+        #expect(JunkSummary.make(record).sentence == "1 item moved, 2 need your Mac password.")
+    }
+
+    @Test func cleanWithoutThePasswordStepNeverAsks() async throws {
+        let rig = try ModelRig()
+        let folder = rig.cachesDirectory.appending(path: "com.root.one")
+        try rig.file(folder.appending(path: "blob"), bytes: 4096)
+        let shell = FakeAdminShell(.cancelled)
+        let model = makeModel(rig)
+        model.canTakeOutOfTrash = true
+        // What the app passes without Full Disk Access (and in the QA copy).
+        model.admin = { nil }
+        await scanned(model)
+        try rig.lockFolder(folder)
+        defer { rig.unlockFolder(folder) }
+
+        await model.clean()
+
+        #expect(shell.prompts.isEmpty)
+        guard case .done(let record) = model.state else { Issue.record("expected done"); return }
+        #expect(record.needsAdminCount == 1)
+    }
+
+    @Test func putEverythingBackAsksForThePasswordForAFolderTheUserCantChange() async throws {
+        let rig = try ModelRig()
+        let a = try rig.file(rig.cachesDirectory.appending(path: "a.log"), bytes: 4096)
+        let shell = FakeAdminShell(.cancelled)
+        let model = makeModel(rig)
+        model.canTakeOutOfTrash = true
+        model.admin = { rig.admin(shell) }
+        await scanned(model)
+        await model.clean()
+        #expect(shell.prompts.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: a.path))
+        guard case .done(let record) = model.state, let moved = record.entries.first else {
+            Issue.record("expected done"); return
+        }
+        try rig.lockFolder(rig.cachesDirectory)
+        defer { rig.unlockFolder(rig.cachesDirectory) }
+
+        let outcomes = try await model.putEverythingBack()
+
+        #expect(shell.prompts == [AdminMover.restorePrompt(count: 1)])
+        #expect(outcomes == [.failed(moved.originalPath, reason: RunJournal.putBackNeedsPasswordReason)])
+    }
 }
 
 /// A tiny thread-safe counter / recorder for callbacks.

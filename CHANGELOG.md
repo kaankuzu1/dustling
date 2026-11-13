@@ -6,11 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Apps and files that belong to the system, such as an app an installer put in Applications with an administrator's rights, a launch daemon an app left behind, or a cache folder only an administrator can change, no longer stay where they are. Dustling asks for your Mac password once per cleanup, uninstall, Empty Trash or Put back, with the standard macOS password box, and moves them to the Trash (or deletes them, or puts them back) together. This needs Full Disk Access; without it, Dustling says those items need Full Disk Access, then your Mac password. Switching system startup items on or off, and cleaning System caches and logs, still wait for the cleanup helper.
+
+### Changed
+
+- Items that need administrator rights now say "Needs your Mac password" instead of "Needs the cleanup helper (coming in a later version)", and Retry on the Dustling health page tries them again, asking for your password once. In the Uninstaller such leftovers are marked System instead of Helper, and before an uninstall the confirmation says how many items belong to the system and that Dustling will ask for your Mac password to move them.
+- If you quit while the password box is open, Dustling says it is waiting for your answer, and a box still open closes when Dustling quits, so nothing can move after Dustling is gone.
+
 ### Fixed
 
 - Empty Trash now deletes items you locked (Get Info's Locked box) and folders you made read-only, as Finder does. When something can't be deleted, the sheet stays open and says how many items are left and why: items an installer left to another account on this Mac (with a button that opens the Trash in Finder, which asks for your password), items macOS protects, and anything else.
 - When Full Disk Access is off for this copy of Dustling but System Settings still shows it switched on, Dustling now says macOS is holding it for another copy and how to fix it (select Dustling, click −, drag this copy in). Setup also warns when you open Dustling from the disk image or Downloads.
 - When macOS refuses to move a cache folder it protects, the run history now says "Protected by macOS" instead of a vague permission error, and Dustling no longer offers to retry it.
+- Running Dustling from an Applications folder on another disk no longer brings up setup's warning about opening it from the disk image.
+- The diagnostics report names "protected by macOS" and the password step's reasons instead of counting them as "other error".
 
 ## [0.1.2] - 2026-11-09
 

@@ -71,7 +71,16 @@ struct HistoryScreenTests {
             JournalEntry(originalPath: "/y", bytes: 0, outcome: .needsAdmin),
         ], restorable: true), c)
         #expect(apps.title == "Uninstaller: Docker Desktop")
-        #expect(apps.caption == "3 items, 1 failed, 1 needs the helper")
+        #expect(apps.caption == "3 items, 1 failed, 1 needs your Mac password")
+        let limited = HistoryScreen.runLine(row(.junkClean, at(8, 18, 40), [
+            JournalEntry(originalPath: "/y", bytes: 0, outcome: .needsAdmin),
+            JournalEntry(originalPath: "/z", bytes: 0, outcome: .needsAdmin),
+        ]), context(trash: false))
+        #expect(limited.caption == "2 items, 2 need Full Disk Access, then your Mac password")
+        let daemon = HistoryScreen.runLine(row(.startupChange, at(8, 18, 40), [
+            JournalEntry(originalPath: "/Library/LaunchDaemons/x.plist", bytes: 0, outcome: .needsAdmin),
+        ]), c)
+        #expect(daemon.caption.hasSuffix("1 needs the helper"))
     }
 
     @Test func startupTogglesReadTurnedOffNeverSkipped() {
@@ -177,14 +186,23 @@ struct HistoryScreenTests {
             JournalEntry(originalPath: "<log>", bytes: 0, outcome: .failed(reason: "disk full")),
         ], restorable: true)
         let rows = HistoryScreen.logRows(record, context())
-        #expect(rows.map(\.result) == ["moved", "skipped", "needs helper", "failed", "put back", "failed"])
+        #expect(rows.map(\.result) == ["moved", "skipped", "needs password", "failed", "put back", "failed"])
         #expect(rows.map(\.tone) == [.done, .skipped, .skipped, .failed, .done, .failed])
         #expect(rows.map(\.path) == [
             "~/Library/Caches/A", "~/Library/Mail/x", "/Library/Caches/y", "~/z", "~/back", "Dustling's log file",
         ])
         #expect(rows.map(\.note) == [
-            "3.41 GB", "in use by Mail", "needs the cleanup helper", "disk exploded", "10 bytes", "disk full",
+            "3.41 GB", "in use by Mail", "needs your Mac password", "disk exploded", "10 bytes", "disk full",
         ])
+        // Without Full Disk Access the password step can't run: access comes first.
+        #expect(HistoryScreen.logRows(record, context(trash: false))[2].note
+            == "needs Full Disk Access, then your Mac password")
+        // Switching startup items is still the cleanup helper's job.
+        let startup = RunRecord(startedAt: at(8, 19, 4), kind: .startupChange, entries: [
+            JournalEntry(originalPath: "/Library/LaunchDaemons/x.plist", bytes: 0, outcome: .needsAdmin),
+        ], restorable: false)
+        #expect(HistoryScreen.logRows(startup, context())[0].result == "needs helper")
+        #expect(HistoryScreen.logRows(startup, context())[0].note == "needs the cleanup helper")
     }
 
     @Test func logRowsForStartupAndEmptyTrash() {
@@ -312,7 +330,11 @@ struct HistoryScreenTests {
         #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .skipped(reason: "in use")))
             == HistoryScreen.ItemStatus(text: "Skipped: in use", tone: .warning))
         #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .failed(reason: "x"))).tone == .warning)
-        #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .needsAdmin)).text == "Needs the cleanup helper")
+        #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .needsAdmin)).text == "Needs your Mac password")
+        #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .needsAdmin), in: context(trash: false)).text
+            == "Needs Full Disk Access, then your Mac password")
+        #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .needsAdmin), .startupChange).text
+            == "Needs the cleanup helper")
         #expect(status(JournalEntry(originalPath: "/a", bytes: 0, outcome: .skipped(reason: "disabled")), .startupChange)
             == HistoryScreen.ItemStatus(text: "Turned off", tone: .neutral))
         #expect(status(JournalEntry(originalPath: "/a", bytes: 9, outcome: .deleted), .emptyTrash).text == "Deleted")

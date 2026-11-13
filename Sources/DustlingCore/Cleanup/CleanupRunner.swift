@@ -26,6 +26,12 @@ public struct CleanupRunner: Sendable {
         self.admin = admin
     }
 
+    /// This runner with `admin` in place of its own: the app decides per action whether the password
+    /// step may run (only while Dustling has Full Disk Access). nil: nothing asks for the password.
+    public func with(admin: AdminMover?) -> CleanupRunner {
+        CleanupRunner(mover: mover, journal: journal, logger: logger, sizer: sizer, admin: admin)
+    }
+
     /// `extraEntries` (e.g. launch-agent unload failures) are appended after the runner's own entries.
     /// A journal or log failure is recorded once, as a failed `<history>` / `<log>` entry in the record
     /// (at the point it happened, so it is also journaled and returned); the run then carries on.

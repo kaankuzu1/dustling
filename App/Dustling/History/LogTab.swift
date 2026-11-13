@@ -124,7 +124,8 @@ private struct LogLineView: View {
                 .fontWeight(.medium)
                 .foregroundStyle(row.tone == .done ? Palette.success : Palette.warning)
                 .skeletonText()
-                .frame(width: 96, alignment: .leading)
+                // Fits the longest result, "needs password".
+                .frame(width: 110, alignment: .leading)
             Text(row.path)
                 .foregroundStyle(Palette.ink2)
                 .lineLimit(1)

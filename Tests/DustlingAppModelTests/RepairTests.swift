@@ -42,15 +42,15 @@ struct RepairTests {
     // MARK: last run problems
 
     @Test func lastRunProblemsListOnlyWhatNeedsTheUser() {
-        let problems = LastRunReview.problems(in: partialRun, home: home, appName: appName)
+        let problems = LastRunReview.problems(in: partialRun, home: home, fullDiskAccess: true, appName: appName)
         #expect(problems.map(\.result) == [.skipped, .skipped, .failed, .needsAdmin, .failed])
         #expect(problems[0].reason == "In use by Mail")
         #expect(problems[0].fix == .quitAndRetry(app: "Mail"))
         #expect(problems[0].display == "~/…/Mail Downloads/A1F2")
         #expect(problems[2].reason == "No access (Full Disk Access may be needed)")
         #expect(problems[2].fix == .retry)
-        #expect(problems[3].reason == "Needs the cleanup helper (coming in a later version)")
-        #expect(problems[3].fix == nil)
+        #expect(problems[3].reason == "Needs your Mac password")
+        #expect(problems[3].fix == .retry)
         #expect(problems[3].display == "/Library/Caches/com.apple.iconservices.store")
         // A history write failure is a problem too, but there is nothing to retry.
         #expect(problems[4].display == "Run history")
@@ -61,18 +61,57 @@ struct RepairTests {
         let entry = JournalEntry(originalPath: caches.appending(path: "com.apple.textunderstandingd").path, bytes: 5,
                                  outcome: .failed(reason: "protected by macOS"))
         let review = run([entry])
-        let problems = LastRunReview.problems(in: review, home: home, appName: appName)
+        let problems = LastRunReview.problems(in: review, home: home, fullDiskAccess: true, appName: appName)
         #expect(problems.count == 1)
         #expect(problems[0].result == .failed)
         #expect(problems[0].reason == "Protected by macOS")
         #expect(problems[0].fix == nil)
-        #expect(LastRunReview.retryableCount(in: review) == 0)
+        #expect(LastRunReview.retryableCount(in: review, fullDiskAccess: true) == 0)
     }
 
-    @Test func retryCountCoversInUseAndFailedItemsOfACleanup() {
-        #expect(LastRunReview.retryableCount(in: partialRun) == 3)
+    @Test func retryCountCoversInUseFailedAndNeedsAdminItemsOfACleanup() {
+        #expect(LastRunReview.retryableCount(in: partialRun, fullDiskAccess: true) == 4)
+        // Without Full Disk Access the password step can't run, so the needs-admin item waits.
+        #expect(LastRunReview.retryableCount(in: partialRun, fullDiskAccess: false) == 3)
         let uninstall = run(partialRun.entries, kind: .uninstall(appName: "Zoom"))
-        #expect(LastRunReview.retryableCount(in: uninstall) == 0)
+        #expect(LastRunReview.retryableCount(in: uninstall, fullDiskAccess: true) == 0)
+    }
+
+    @Test func needsAdminProblemsCanBeRetried() {
+        let system = JunkCategory(
+            id: .systemCachesAndLogs, title: "System", selection: .preselected, requiresAdmin: true,
+            roots: [URL(filePath: "/Library/Caches")])
+        let rootOwned = caches.appending(path: "com.root.owned").path
+        let systemCache = "/Library/Caches/com.apple.iconservices.store"
+        let record = run([
+            JournalEntry(originalPath: rootOwned, bytes: 5, outcome: .needsAdmin),
+            JournalEntry(originalPath: systemCache, bytes: 5, outcome: .needsAdmin),
+        ])
+
+        let problems = LastRunReview.problems(in: record, home: home, fullDiskAccess: true, appName: appName)
+        #expect(problems.map(\.reason) == ["Needs your Mac password", "Needs your Mac password"])
+        #expect(problems.map(\.fix) == [.retry, .retry])
+        #expect(LastRunReview.retryableCount(in: record, fullDiskAccess: true) == 2)
+        // Categories that need admin rights are no longer left out of a retry.
+        let plan = LastRunReview.retryPlan(
+            for: record, catalog: [cachesCategory, system], running: [], fullDiskAccess: true)
+        #expect(plan.urls.map(\.path) == [rootOwned, systemCache])
+        #expect(plan.outsideCleanupArea == 0)
+
+        // Without Full Disk Access, Dustling can't open the Trash for the password step: access first.
+        let without = LastRunReview.problems(in: record, home: home, fullDiskAccess: false, appName: appName)
+        #expect(without.map(\.reason) == Array(repeating: "Needs Full Disk Access, then your Mac password", count: 2))
+        #expect(without.map(\.fix) == [nil, nil])
+        #expect(LastRunReview.retryableCount(in: record, fullDiskAccess: false) == 0)
+        #expect(LastRunReview.retryPlan(
+            for: record, catalog: [cachesCategory, system], running: [], fullDiskAccess: false).urls.isEmpty)
+        #expect(LastRunReview.summary(of: record, fullDiskAccess: true) == "2 need your Mac password")
+        #expect(LastRunReview.summary(of: record, fullDiskAccess: false) == "2 need Full Disk Access, then your Mac password")
+
+        // Only a cleanup is retried from Diagnostics.
+        let uninstall = run(record.entries, kind: .uninstall(appName: "Zoom"))
+        #expect(LastRunReview.problems(in: uninstall, home: home, fullDiskAccess: true, appName: appName)
+            .map(\.fix) == [nil, nil])
     }
 
     @Test func lastRunLightOffersRetryWithTheCount() async {
@@ -81,8 +120,8 @@ struct RepairTests {
         await model.refresh()
         let light = model.lights.first { $0.kind == .lastRun }
         #expect(light?.state == .warning)
-        #expect(light?.fix == .retryItems(count: 3))
-        #expect(light?.detail == "2 items in use, 2 failed, 1 needs admin rights")
+        #expect(light?.fix == .retryItems(count: 4))
+        #expect(light?.detail == "2 items in use, 2 failed, 1 needs your Mac password")
         #expect(model.lastRun == record)
     }
 
@@ -103,19 +142,19 @@ struct RepairTests {
             JunkCategory(id: .mailDownloads, title: "Mail", selection: .review, requiresAdmin: false, roots: [],
                          expansions: [RootExpansion(parent: containers, subpath: "Data/Library/Mail Downloads")]),
         ]
-        let open = LastRunReview.retryPlan(for: partialRun, catalog: catalog, running: ["com.apple.mail"])
+        let open = LastRunReview.retryPlan(for: partialRun, catalog: catalog, running: ["com.apple.mail"], fullDiskAccess: false)
         #expect(open.urls == [caches.appending(path: "com.locked")])
         #expect(open.stillOpen == ["com.apple.mail"])
         #expect(open.allowedRoots.map(\.path) == [caches.path])
 
-        let closed = LastRunReview.retryPlan(for: partialRun, catalog: catalog, running: [])
+        let closed = LastRunReview.retryPlan(for: partialRun, catalog: catalog, running: [], fullDiskAccess: false)
         #expect(closed.urls.count == 3)
         #expect(closed.stillOpen.isEmpty)
         #expect(Set(closed.allowedRoots.map(\.path)) == [caches.path, mailDownloads.path])
 
         // Nothing outside a junk folder is ever retried, whatever the journal says.
         let odd = run([JournalEntry(originalPath: "/Users/tester/Projects/app/build", bytes: 1, outcome: .failed(reason: "x"))])
-        let plan = LastRunReview.retryPlan(for: odd, catalog: catalog, running: [])
+        let plan = LastRunReview.retryPlan(for: odd, catalog: catalog, running: [], fullDiskAccess: true)
         #expect(plan.urls.isEmpty)
         #expect(plan.outsideCleanupArea == 1)
     }
@@ -129,6 +168,9 @@ struct RepairTests {
         var busy = false
         var running: Set<String> = ["com.apple.mail"]
         var catalog: [JunkCategory]
+        var fullDiskAccess = true
+        /// What the run reports for each item.
+        nonisolated(unsafe) var outcome = DeletionOutcome.movedToTrash(trashedPath: "/t")
     
         init(catalog: [JunkCategory]) { self.catalog = catalog }
 
@@ -136,10 +178,11 @@ struct RepairTests {
             LastRunRetry(
                 catalog: { self.catalog }, running: { self.running }, appName: appName,
                 gate: { self.gate }, skipping: { self.skipping }, isBusy: { self.busy },
+                fullDiskAccess: { self.fullDiskAccess },
                 run: { [self] urls, _ in
                     self.ran = urls
                     return RunRecord(startedAt: Date(), kind: .junkClean, entries: urls.map {
-                        JournalEntry(originalPath: $0.path, bytes: 1, outcome: .movedToTrash(trashedPath: "/t"))
+                        JournalEntry(originalPath: $0.path, bytes: 1, outcome: self.outcome)
                     }, restorable: true)
                 },
                 onRunCompleted: { self.completed += 1 })
@@ -163,6 +206,24 @@ struct RepairTests {
         #expect(rig.ran == [caches.appending(path: "com.locked")])
         #expect(rig.completed == 1)
         #expect(retry.message == "Retried 1 item: 1 moved to the Trash. Mail is still open, so 2 items were left. Quit Mail, then retry.")
+    }
+
+    @Test func retryTriesNeedsAdminItemsAgainWithFullDiskAccess() async {
+        let rootOwned = caches.appending(path: "com.root.owned")
+        let record = run([JournalEntry(originalPath: rootOwned.path, bytes: 5, outcome: .needsAdmin)])
+        let rig = RetryRig(catalog: [cachesCategory])
+        rig.outcome = .needsAdmin   // the password box was closed again
+        let retry = rig.make(appName: appName)
+        await retry.retry(record)
+        #expect(rig.ran == [rootOwned])
+        #expect(retry.message == "Retried 1 item: 0 moved to the Trash, 1 needs your Mac password.")
+
+        // Without Full Disk Access there is nothing a retry could do for it yet.
+        let noAccess = RetryRig(catalog: [cachesCategory])
+        noAccess.fullDiskAccess = false
+        let refused = noAccess.make(appName: appName)
+        await refused.retry(record)
+        #expect(noAccess.ran == nil)
     }
 
     @Test func retryWithEveryItemStillOpenAsksToQuitFirst() async {
@@ -233,7 +294,8 @@ struct RepairTests {
     @Test func failedItemOfARunningAppIsLeft() {
         let record = run([JournalEntry(originalPath: caches.appending(path: "com.tinyspeck.slackmacgap").path,
                                        bytes: 1, outcome: .failed(reason: "x"))])
-        let plan = LastRunReview.retryPlan(for: record, catalog: [cachesCategory], running: ["com.tinyspeck.slackmacgap"])
+        let plan = LastRunReview.retryPlan(
+            for: record, catalog: [cachesCategory], running: ["com.tinyspeck.slackmacgap"], fullDiskAccess: true)
         #expect(plan.urls.isEmpty)
         #expect(plan.stillOpen == ["com.tinyspeck.slackmacgap"])
     }
@@ -246,7 +308,7 @@ struct RepairTests {
             JournalEntry(originalPath: caches.appending(path: "recent").path, bytes: 1, outcome: .failed(reason: "x")),
             JournalEntry(originalPath: caches.appending(path: "old").path, bytes: 1, outcome: .failed(reason: "x")),
         ])
-        let plan = LastRunReview.retryPlan(for: record, catalog: [picky], running: [])
+        let plan = LastRunReview.retryPlan(for: record, catalog: [picky], running: [], fullDiskAccess: true)
         #expect(plan.urls == [caches.appending(path: "old")])
         #expect(plan.outsideCleanupArea == 1)
     }
@@ -451,5 +513,32 @@ struct RepairTests {
         #expect(!emptyReport.contains(home.path))
         #expect(emptyReport.contains("failed: other error (1)"))
         #expect(emptyReport.contains("failed: Permission denied (1)"))
+    }
+
+    @Test func diagnosticsReportKnowsTheProtectedAndPasswordReasons() {
+        let reasons = [
+            TrashMover.protectedReason, AdminScript.refusedReason, AdminScript.unsafeReason,
+            AdminScript.putBackUnsafeReason, AdminScript.movedAwayReason, AdminScript.existsReason,
+            AdminScript.noResultReason, OsascriptAdminShell.tooManyItemsReason, OsascriptAdminShell.stoppedReason,
+            RunJournal.putBackNeedsPasswordReason,
+        ]
+        let record = run(reasons.enumerated().map { index, reason in
+            JournalEntry(originalPath: home.appending(path: "Library/Caches/x\(index)").path, bytes: 1,
+                         outcome: .failed(reason: reason))
+        })
+        let report = DiagnosticsReport.make(DiagnosticsReport.Input(
+            macOS: "macOS 26.1", appVersion: "0.2.0 (1)", checks: [], lastRun: record, home: home, generatedAt: Date()))
+        for reason in reasons { #expect(report.contains("failed: \(reason) (1)")) }
+        #expect(!report.contains("other error"))
+    }
+
+    @Test func helperCheckNoLongerSaysLaunchDaemonsStay() {
+        // Uninstalling an app's launch daemon now moves it with the password; switching system
+        // startup items and cleaning system caches still wait for the helper.
+        let checks = Diagnostics.checks(Diagnostics.Input(
+            fullDiskAccess: .granted, published: true, checkedAt: nil, now: Date(), helper: .notAvailable,
+            logFolder: .notCreatedYet, logFolderDisplay: "~/Library/Logs/Dustling"))
+        #expect(checks.first { $0.kind == .helper }?.detail
+            == "Coming in a later version. System caches and system startup items stay as they are.")
     }
 }

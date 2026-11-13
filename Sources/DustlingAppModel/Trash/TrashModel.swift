@@ -83,8 +83,9 @@ public final class TrashModel {
     /// volumes out by choice is not "skipped" (nothing is shown as locked).
     @ObservationIgnored public var includeExternalVolumes = true
 
-    /// Builds the inspector for one refresh: `true` includes other volumes' Trash folders.
-    @ObservationIgnored private let makeInspector: @Sendable (_ includeExternalVolumes: Bool) -> TrashInspector
+    /// Builds the inspector for one refresh: `true` includes other volumes' Trash folders. Called on
+    /// the main actor, so the app can give it the password step that applies now.
+    @ObservationIgnored private let makeInspector: @MainActor (_ includeExternalVolumes: Bool) -> TrashInspector
     /// The inspector the shown contents came from; Empty Trash re-reads and empties with the same one.
     @ObservationIgnored private var inspector: TrashInspector
     @ObservationIgnored private let journal: RunJournal
@@ -100,8 +101,9 @@ public final class TrashModel {
     }
 
     /// `makeInspector(true)` must include other volumes' Trash folders, `makeInspector(false)` only `~/.Trash`.
+    /// Empty Trash deletes with the inspector the last refresh built, and so with its `admin`.
     public init(
-        makeInspector: @escaping @Sendable (_ includeExternalVolumes: Bool) -> TrashInspector, journal: RunJournal,
+        makeInspector: @escaping @MainActor (_ includeExternalVolumes: Bool) -> TrashInspector, journal: RunJournal,
         onRunCompleted: @escaping @MainActor () -> Void = {}
     ) {
         self.makeInspector = makeInspector

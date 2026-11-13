@@ -52,6 +52,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             (Self.models?.quit.shouldTerminate() ?? true) ? .terminateNow : .terminateCancel
         }
     }
+
+    /// Every quit ends here (after `QuitCoordinator` waited for the work it could): a password box
+    /// still open is closed, so an answer given after Dustling is gone can't move anything.
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            Self.models?.stopPasswordSteps()
+        }
+    }
 }
 
 /// Shows AppKit alerts and panels as sheets the quit coordinator can take down. An app-modal

@@ -259,6 +259,10 @@ public final class JunkScanModel {
     /// Reads the bundle IDs running right now; `clean()` re-checks in-use with it before every cleanup.
     /// nil: keep what the scan saw.
     @ObservationIgnored public var runningBundleIDs: (@Sendable () -> Set<String>)?
+    /// What moves items of the system with the Mac password now, read when a cleanup or Put
+    /// everything back starts: one password box for all of them. The app passes one only while
+    /// Dustling has Full Disk Access (and never in its QA copy); nil: they stay needing admin.
+    @ObservationIgnored public var admin: @MainActor () -> AdminMover? = { nil }
     /// Owner bundle ID → running, from the last re-check. Empty until one (the scan's view holds).
     private var runningNow: [String: Bool] = [:]
     /// Apps closed before the last cleanup, by name, for the summary. A rescan clears them.
@@ -657,7 +661,7 @@ public final class JunkScanModel {
         categoryOutcomes = [:]
         self.closedApps = closedApps
         state = .moving(done: 0, total: urls.count, bytes: 0)
-        let runner = self.runner
+        let runner = self.runner.with(admin: admin())
         let allowedRoots = Array(roots)
         let itemSizes = sizes
         let itemCategories = urlCategory
@@ -706,10 +710,11 @@ public final class JunkScanModel {
         guard !paths.isEmpty else { throw RunJournalError.notRestorable(record.id) }
         let journal = self.journal
         let id = record.id
+        let admin = self.admin()
         isRestoring = true
         defer { isRestoring = false }
         do {
-            let outcomes = try await Blocking.run { try journal.restore(runID: id, paths: paths) }
+            let outcomes = try await Blocking.run { try journal.restore(runID: id, paths: paths, admin: admin) }
             // Only onto the summary of this same run.
             if case .done(let shown) = state, shown.id == id {
                 restoreOutcomes = outcomes

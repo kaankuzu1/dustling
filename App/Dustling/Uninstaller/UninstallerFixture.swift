@@ -157,8 +157,8 @@ private struct UninstallerFixtureData {
         ]
     }
 
-    /// A record as the uninstaller would write it: everything moved, helper items need admin, and
-    /// `failing` leftovers failed.
+    /// A record as the uninstaller would write it when the password box was closed: everything moved,
+    /// items of the system still need admin, and `failing` leftovers failed.
     func record(_ planned: ConfirmModel.Planned, failing: Int = 0) -> RunRecord {
         var entries = [JournalEntry(
             originalPath: planned.app.url.path(percentEncoded: false), bytes: planned.app.bytes,

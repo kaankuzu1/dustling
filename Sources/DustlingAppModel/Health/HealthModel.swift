@@ -120,8 +120,9 @@ public final class HealthModel {
     }
 
     private var lastRunLight: HealthLight {
-        if let run = lastRun, let detail = LastRunReview.summary(of: run) {
-            let retry = LastRunReview.retryableCount(in: run)
+        let access = fullDiskAccess == .granted
+        if let run = lastRun, let detail = LastRunReview.summary(of: run, fullDiskAccess: access) {
+            let retry = LastRunReview.retryableCount(in: run, fullDiskAccess: access)
             return HealthLight(
                 kind: .lastRun, state: .warning, detail: detail, fix: retry > 0 ? .retryItems(count: retry) : nil)
         }
@@ -159,7 +160,9 @@ public final class HealthModel {
         let run = await Blocking.run { read() }
         guard mine == lastRunGeneration else { return }
         lastRun = run
-        lastRunProblem = run.flatMap(LastRunReview.summary(of:)).map { "The last cleanup left problems: " + $0 }
+        let access = fullDiskAccess == .granted
+        lastRunProblem = run.flatMap { LastRunReview.summary(of: $0, fullDiskAccess: access) }
+            .map { "The last cleanup left problems: " + $0 }
     }
 
     /// Probes now, then every `interval` until `stopPolling()`. Used while onboarding is open so the

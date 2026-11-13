@@ -283,6 +283,41 @@ struct TerminationPolicyTests {
     }
 }
 
+@MainActor
+struct PasswordStepTests {
+    /// Holds `run` until the gate opens, as the password box holds the file work.
+    private final class HeldShell: AdminShell, @unchecked Sendable {
+        let gate = Gate()
+        func run(script: String, prompt: String) -> AdminShellResult {
+            gate.wait()
+            return .cancelled
+        }
+    }
+
+    @Test func aPasswordStepIsRunningOnlyWhileTheShellRuns() async throws {
+        let steps = PasswordSteps()
+        let held = HeldShell()
+        let shell = WatchedAdminShell(held, steps: steps)
+        #expect(!steps.isRunning)
+        let work = Task.detached { shell.run(script: "true", prompt: "p") }
+        #expect(await soon { held.gate.hasEntered })
+        #expect(steps.isRunning)
+        held.gate.open()
+        #expect(await work.value == .cancelled)
+        #expect(!steps.isRunning)
+    }
+
+    @Test func quitWaitsForThePasswordBoxAndSaysSo() {
+        let work = BusyWork.passwordStep
+        #expect(!work.stopsEarly)
+        #expect(work.sentence == "Dustling is asking for your Mac password. It finishes once you answer or cancel "
+            + "the password box; a box still open closes when Dustling quits.")
+        let question = TerminationPolicy.question(for: [.cleanup, .passwordStep])
+        #expect(question.title == "Stop and quit?")
+        #expect(question.detail.hasSuffix(work.sentence))
+    }
+}
+
 struct QuitReasonTests {
     @Test(arguments: ["logo", "rlgo", "rrst", "rest", "rsdn", "shut"])
     func logoutRestartAndShutdownAreSystemQuits(code: String) {

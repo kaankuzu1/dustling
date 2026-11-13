@@ -158,6 +158,29 @@ struct HistoryModelTests {
         #expect(completed.value == 2)
     }
 
+    @Test func putBackAsksForThePasswordForAFolderTheUserCantChange() async throws {
+        let rig = try ModelRig()
+        let folder = rig.root.appending(path: "orig")
+        let original = try rig.file(folder.appending(path: "file.txt"), bytes: 100)
+        // Moved by the runner, so the journal records who owned the item (Put back needs that).
+        let record = await rig.runner().run([original], kind: .junkClean, allowedRoots: [folder], onItem: { _, _ in })
+        let shell = FakeAdminShell(.cancelled)
+        let model = HistoryModel(journal: rig.journal)
+        model.admin = { rig.admin(shell) }
+        await model.refresh()
+        try rig.lockFolder(folder)
+        defer { rig.unlockFolder(folder) }
+
+        let outcomes = try await model.restore(runID: record.id)
+
+        #expect(shell.prompts == [AdminMover.restorePrompt(count: 1)])
+        #expect(outcomes == [.failed(original.path, reason: RunJournal.putBackNeedsPasswordReason)])
+        // The checked-items route passes it too: one password box per run.
+        let items = try await model.restore(items: model.allItems.filter { $0.runID == record.id })
+        #expect(shell.prompts.count == 2)
+        #expect(items == outcomes)
+    }
+
     @Test func unreadableRecordsAreReported() async throws {
         let rig = try ModelRig()
         try FileManager.default.createDirectory(at: rig.environment.historyDirectory, withIntermediateDirectories: true)

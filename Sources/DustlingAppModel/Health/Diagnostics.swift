@@ -83,7 +83,7 @@ public enum Diagnostics {
         switch status {
         case .notAvailable:
             return Check(kind: .helper, title: title,
-                         detail: "Coming in a later version. System caches and launch daemons stay as they are.",
+                         detail: "Coming in a later version. System caches and system startup items stay as they are.",
                          state: .info, chip: "Not available yet", repair: nil)
         case .ok:
             return Check(kind: .helper, title: title, detail: "Registered and responding", state: .ok, chip: "OK", repair: nil)
@@ -236,6 +236,12 @@ public enum DiagnosticsReport {
             TrashMover.noAccessReason, "already gone", "excluded in Settings",
             "contains a folder excluded in Settings", "protected location", "another user's files",
             "outside the cleanup area", "cleanup stopped", CleanupSkip.reason,
+            TrashMover.protectedReason,
+            // The password step's own reasons.
+            AdminScript.refusedReason, AdminScript.unsafeReason, AdminScript.putBackUnsafeReason,
+            AdminScript.movedAwayReason, AdminScript.existsReason, AdminScript.noResultReason,
+            AdminScript.skippedReason, OsascriptAdminShell.tooManyItemsReason, OsascriptAdminShell.stoppedReason,
+            RunJournal.putBackNeedsPasswordReason,
         ]
         for code in Int32(1)...Int32(106) { set.insert(TrashMover.describe(code)) }
         return set

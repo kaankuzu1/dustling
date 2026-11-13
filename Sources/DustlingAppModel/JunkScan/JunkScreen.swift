@@ -138,10 +138,14 @@ public enum JunkScreen {
         public var scope: HomeScanScope?
         public var progress: [JunkCategoryID: CategoryProgress]
         public var outcomes: [JunkCategoryID: CategoryOutcome]
+        /// Whether Dustling has Full Disk Access now: an item still needing the password reads "needs
+        /// your Mac password" with it, "needs Full Disk Access, then your Mac password" without.
+        public var fullDiskAccess: Bool
 
         public init(
             catalog: [Entry], phase: Phase, tiles: [CategoryTileModel], places: [Place]?, scope: HomeScanScope?,
-            progress: [JunkCategoryID: CategoryProgress], outcomes: [JunkCategoryID: CategoryOutcome]
+            progress: [JunkCategoryID: CategoryProgress], outcomes: [JunkCategoryID: CategoryOutcome],
+            fullDiskAccess: Bool = true
         ) {
             self.catalog = catalog
             self.phase = phase
@@ -150,9 +154,13 @@ public enum JunkScreen {
             self.scope = scope
             self.progress = progress
             self.outcomes = outcomes
+            self.fullDiskAccess = fullDiskAccess
         }
     }
 
+    /// The System caches and logs tile: cleaning it is still the cleanup helper's job, so it is shown
+    /// with its size and never selected. (Items of the system found in other places move with the
+    /// Mac password.)
     public static let helperNote = "Needs the cleanup helper (coming in a later version)"
     public static let lockedNote = "Couldn't scan, needs Full Disk Access"
     public static let unreadableNote = "Couldn't scan, Dustling can't open this folder"
@@ -189,7 +197,7 @@ public enum JunkScreen {
                 return JunkTile(
                     id: entry.id, title: entry.title, section: section, status: allBack ? .putBack : .cleaned,
                     bytes: outcome.movedBytes, isLowerBound: false, isSelected: true, canToggle: false,
-                    note: cleanedNote(outcome),
+                    note: cleanedNote(outcome, fullDiskAccess: input.fullDiskAccess),
                     cells: MiniMosaic(count: MiniMosaic.cells(bytes: outcome.movedBytes), kind: allBack ? .selected : .inTrash))
             }
 
@@ -291,7 +299,7 @@ public enum JunkScreen {
         }
     }
 
-    private static func cleanedNote(_ outcome: CategoryOutcome) -> String {
+    private static func cleanedNote(_ outcome: CategoryOutcome, fullDiskAccess: Bool) -> String {
         let back = min(outcome.restoredCount, outcome.movedCount)
         var parts: [String]
         if back == 0 {
@@ -304,7 +312,7 @@ public enum JunkScreen {
         if outcome.skippedCount > 0 { parts.append("\(outcome.skippedCount) skipped") }
         if outcome.failedCount > 0 { parts.append("\(outcome.failedCount) failed") }
         if outcome.needsAdminCount > 0 {
-            parts.append("\(outcome.needsAdminCount) \(outcome.needsAdminCount == 1 ? "needs" : "need") the cleanup helper")
+            parts.append(PasswordCopy.count(outcome.needsAdminCount, fullDiskAccess: fullDiskAccess))
         }
         return parts.joined(separator: ", ")
     }
@@ -373,7 +381,10 @@ public struct JunkSummary: Equatable, Sendable {
     public let reasons: [Reason]
 
     /// `appName` turns a bundle ID into the app's name, nil when unknown.
-    public static func make(_ record: RunRecord, appName: (String) -> String? = { _ in nil }) -> JunkSummary {
+    /// `fullDiskAccess`: whether Dustling has it now, for how an item still needing the password reads.
+    public static func make(
+        _ record: RunRecord, fullDiskAccess: Bool = true, appName: (String) -> String? = { _ in nil }
+    ) -> JunkSummary {
         var moved = 0, skipped = 0, failed = 0, admin = 0
         var groups: [(kind: Reason.Kind, reason: String, paths: [String])] = []
         func add(_ kind: Reason.Kind, _ reason: String, _ path: String) {
@@ -395,7 +406,7 @@ public struct JunkSummary: Equatable, Sendable {
         var parts = [moved == 1 ? "1 item moved" : "\(moved.formatted(.number.locale(Locale(identifier: "en_US")))) items moved"]
         if skipped > 0 { parts.append("\(skipped) skipped") }
         if failed > 0 { parts.append("\(failed) failed") }
-        if admin > 0 { parts.append("\(admin) \(admin == 1 ? "needs" : "need") the cleanup helper") }
+        if admin > 0 { parts.append(PasswordCopy.count(admin, fullDiskAccess: fullDiskAccess)) }
 
         let reasons = groups.map { group -> Reason in
             let n = group.paths.count
@@ -410,7 +421,7 @@ public struct JunkSummary: Equatable, Sendable {
                     text = "\(n) skipped: \(group.reason)"
                 }
             case .failed: text = "\(n) failed: \(group.reason)"
-            case .needsAdmin: text = "\(n) \(n == 1 ? "needs" : "need") the cleanup helper"
+            case .needsAdmin: text = PasswordCopy.count(n, fullDiskAccess: fullDiskAccess)
             }
             return Reason(kind: group.kind, text: text, paths: group.paths)
         }
