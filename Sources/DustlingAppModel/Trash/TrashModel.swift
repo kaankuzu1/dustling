@@ -177,8 +177,9 @@ public final class TrashModel {
     }
 
     /// False until the Trash has been read, when a trash location (or, for lack of Full Disk Access, an
-    /// item) is unreadable, and when it holds nothing. Items of another account that can't be read
-    /// don't count: Empty Trash deletes them with the Mac password.
+    /// item) is unreadable, and when it holds no items. Items of another account that can't be read
+    /// don't count as unreadable: Empty Trash deletes them with the Mac password. Emptiness is decided
+    /// by the items, never by the size: such an item, or one of 0 bytes, still has to be deleted.
     public var canEmpty: Bool { disabledReason == nil }
 
     /// Why Empty Trash is off, in plain words; nil when it is available.
@@ -190,7 +191,7 @@ public final class TrashModel {
                 ? "Dustling can't see inside the Trash without Full Disk Access"
                 : "Dustling can't read part of the Trash, so it won't empty it"
         }
-        if contents.size.bytes == 0 { return "The Trash is empty" }
+        if items.isEmpty { return "The Trash is empty" }
         return nil
     }
 

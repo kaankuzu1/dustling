@@ -113,8 +113,9 @@ struct JunkScanView: View {
         let isDone: Bool = { if case .done = models.junk.state { return true } else { return false } }()
         let isReady: Bool = { if case .ready = models.junk.state { return true } else { return false } }()
         if isReady && JunkScreen.isAllClean(tiles) {
-            // "All clean": no row of empty places, only the Trash while it holds something to empty.
-            if (models.trash.contents?.size.bytes ?? 0) > 0 {
+            // "All clean": no row of empty places, only the Trash while it holds something to empty
+            // (by its items: one of 0 bytes, or of the system that can't be measured, is still there).
+            if !models.trash.items.isEmpty {
                 TileGrid { TrashTile(confirmingEmptyTrash: $confirmingEmptyTrash) }
                     .padding(.top, 6)
             }

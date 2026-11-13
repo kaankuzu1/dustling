@@ -73,6 +73,46 @@ struct TrashModelTests {
         #expect(model.disabledReason == "The Trash is empty")
     }
 
+    @Test func aTrashOfZeroByteItemsIsNotEmpty() async throws {
+        // An empty folder or file still has to be deleted: emptiness is decided by the items.
+        let rig = try ModelRig()
+        try FileManager.default.createDirectory(
+            at: rig.environment.userTrash.appending(path: "Empty folder"), withIntermediateDirectories: true)
+        try rig.file(rig.environment.userTrash.appending(path: "empty.txt"), bytes: 0)
+        let model = makeTrashModel(rig)
+        await model.refresh()
+        #expect(model.contents?.size.bytes == 0)
+        #expect(model.items.count == 2)
+        #expect(model.canEmpty)
+        #expect(model.disabledReason == nil)
+    }
+
+    @Test func aTrashHoldingOnlyASystemFolderItCantReadIsNotEmpty() async throws {
+        // All the Trash holds is a folder of another account Dustling can't look inside: its size reads
+        // 0 bytes "or more", and Empty Trash stays on to delete it with the Mac password.
+        let rig = try ModelRig()
+        let store = rig.environment.userTrash.appending(path: "com.apple.iconservices.store")
+        try rig.file(store.appending(path: "inner.bin"), bytes: 4096)
+        _ = chmod(store.path(percentEncoded: false), 0o111)
+        defer { _ = chmod(store.path(percentEncoded: false), 0o755) }
+        var environment = rig.environment
+        environment.userID = getuid() &+ 1   // so the folder belongs to "another account"
+        let journal = rig.journal
+        let model = TrashModel(
+            makeInspector: { _ in
+                TrashInspector(
+                    environment: environment, journal: journal, logger: RunLogger(directory: environment.logsDirectory),
+                    sizer: DirectorySizer(), includeExternalVolumes: false)
+            },
+            journal: journal)
+        await model.refresh(fullDiskAccessGranted: true)
+        #expect(model.contents?.size.bytes == 0)
+        #expect(model.unreadableSystemItems == 1)
+        #expect(model.sizeIsLowerBound)
+        #expect(model.canEmpty)
+        #expect(model.disabledReason == nil)
+    }
+
     @Test func emptyTrashEnabledWhenReadableAndNotEmpty() async throws {
         let rig = try ModelRig()
         try rig.file(rig.environment.userTrash.appending(path: "old.txt"), bytes: 4096)

@@ -21,7 +21,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Fixed
 
 - Empty Trash now deletes items you locked (Get Info's Locked box) and folders you made read-only, as Finder does. When something can't be deleted, the sheet stays open and says how many items are left and why: items that belong to the system (empty the Trash again and enter your Mac password, or use the button that opens the Trash in Finder), items macOS protects, and anything else.
-- Empty Trash no longer says it needs Full Disk Access when the Trash holds a folder of another account that Dustling can't look inside, such as one an installer left. It empties the Trash, deleting that folder with your Mac password, and shows the size as "or more".
+- Empty Trash no longer says it needs Full Disk Access, or that the Trash is empty, when the Trash holds a folder of another account that Dustling can't look inside, such as one an installer left. It empties the Trash, deleting that folder with your Mac password, and shows the size as "or more".
 - When Full Disk Access is off for this copy of Dustling but System Settings still shows it switched on, Dustling now says macOS is holding it for another copy and how to fix it (select Dustling, click −, drag this copy in). Setup also warns when you open Dustling from the disk image or Downloads.
 - When macOS refuses to move a cache folder it protects, or won't even let Dustling look at it, the run history now says "Protected by macOS" instead of a vague permission error, and Dustling no longer offers to retry it.
 - Running Dustling from an Applications folder on another disk no longer brings up setup's warning about opening it from the disk image.
