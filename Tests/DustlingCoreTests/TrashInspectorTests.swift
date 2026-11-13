@@ -472,4 +472,39 @@ struct TrashInspectorTests {
         #expect(entries.map(\.outcome) == [.needsAdmin, .needsAdmin])
         #expect(FileManager.default.fileExists(atPath: outside.path))
     }
+
+    @Test func emptyTrashLeavesItemsOnAnotherVolumeWithoutAsking() throws {
+        // Root only renames through its bridge on /Library's volume: an external disk's Trash item
+        // would be refused with advice meant for moves into the Trash. It is never in the script.
+        let sandbox = try TestSandbox()
+        let trash = try sandbox.directory("home/.Trash")
+        let inside = try sandbox.file("home/.Trash/TI App/inner.bin", bytes: 8).deletingLastPathComponent()
+        let elsewhere = try sandbox.file("home/.Trash/Disk Thing", bytes: 4)
+        let shell = CannedShell(.cancelled)
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let inspector = adminInspector(sandbox, admin: admin, stuck: [])
+        let real = try #require(ItemIdentity.of(elsewhere))
+        let otherVolume = ItemIdentity(device: real.device &+ 1, inode: real.inode, owner: real.owner)
+        var entries = [
+            JournalEntry(originalPath: elsewhere.path, bytes: 4, outcome: .needsAdmin),
+            JournalEntry(originalPath: inside.path, bytes: 8, outcome: .needsAdmin),
+        ]
+        inspector.deleteWithPassword([
+            TrashInspector.SystemChild(entry: 0, location: trash, name: "Disk Thing", identity: otherVolume),
+            TrashInspector.SystemChild(entry: 1, location: trash, name: "TI App", identity: ItemIdentity.of(inside)),
+        ], into: &entries)
+        #expect(shell.calls.count == 1)
+        #expect(shell.calls.first?.prompt == AdminMover.deletePrompt(count: 1))
+        #expect(shell.calls.first?.script.contains("Disk Thing") == false)
+        #expect(entries.map(\.outcome) == [.needsAdmin, .needsAdmin])
+        // Only that item: no password box at all.
+        let alone = CannedShell(.cancelled)
+        let aloneInspector = adminInspector(
+            sandbox, admin: AdminMover(shell: alone, environment: sandbox.environment, planning: try sandbox.adminPlanning()),
+            stuck: [])
+        aloneInspector.deleteWithPassword(
+            [TrashInspector.SystemChild(entry: 0, location: trash, name: "Disk Thing", identity: otherVolume)],
+            into: &entries)
+        #expect(alone.calls.isEmpty)
+    }
 }

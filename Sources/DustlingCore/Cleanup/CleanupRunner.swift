@@ -38,14 +38,16 @@ public struct CleanupRunner: Sendable {
     /// `onItemStart` fires before each move, `onItem` after it. The work runs on a GCD queue
     /// (`FileWork`), so the callbacks arrive on that queue.
     ///
-    /// With `admin`, an item that needs admin and can be renamed into the Trash is held: neither
-    /// recorded nor reported yet. After the last item, one password box moves every held item
-    /// (`AdminMover.movePrompt`); then each is recorded and `onItem` fires for it, once, with what
-    /// happened: moved to the Trash (with its identity, owner included, for Put back), still needing
-    /// admin (the box was closed, or Dustling can't open a folder the move needs, such as `~/.Trash`
-    /// without Full Disk Access), skipped if already gone, or failed with the script's reason. A run
-    /// stopped before then never asks: its held items are recorded (and reported) as
-    /// `.skipped(reason: "cleanup stopped")`, ahead of the items never attempted.
+    /// With `admin`, an item that needs admin is held: neither recorded nor reported yet, its identity
+    /// (owner included) taken right after the attempt. After the last item, each held item gets its
+    /// name in the Trash (only now, so a later item of the run that moved the normal way can't take
+    /// it) and one password box moves them all (`AdminMover.movePrompt`); then each is recorded and
+    /// `onItem` fires for it, once, with what happened: moved to the Trash (with that identity, for
+    /// Put back), still needing admin (it can't be renamed into the Trash, the box was closed, or
+    /// Dustling can't open a folder the move needs, such as `~/.Trash` without Full Disk Access),
+    /// skipped if already gone, or failed with the script's reason. A run stopped before then never
+    /// asks: its held items are recorded (and reported) as `.skipped(reason: "cleanup stopped")`,
+    /// ahead of the items never attempted.
     public func run(
         _ urls: [URL],
         kind: RunKind,
@@ -121,8 +123,7 @@ public struct CleanupRunner: Sendable {
         log(nil)
         save()
         let stopped = DeletionOutcome.skipped(reason: "cleanup stopped")
-        var held: [(url: URL, entry: JournalEntry, move: AdminMover.TrashMove)] = []
-        var taken = Set<String>()
+        var held: [(url: URL, entry: JournalEntry, identity: TrashedIdentity)] = []
         var notAttempted: ArraySlice<URL> = []
         for (index, url) in urls.enumerated() {
             if isCancelled() {
@@ -131,8 +132,8 @@ public struct CleanupRunner: Sendable {
             }
             onItemStart(url)
             let entry = attempt(url, allowedRoots: allowedRoots)
-            if entry.outcome == .needsAdmin, let move = admin?.trashMove(for: url, taken: &taken) {
-                held.append((url, entry, move))
+            if entry.outcome == .needsAdmin, admin != nil, let identity = AdminMover.identity(of: url) {
+                held.append((url, entry, identity))
                 continue
             }
             add(entry)
@@ -147,11 +148,17 @@ public struct CleanupRunner: Sendable {
                 })
                 for item in held { onItem(item.url, stopped) }
             } else {
-                let results = admin.performOpenable(held.map(\.move.step), prompt: AdminMover.movePrompt)
-                for (item, result) in zip(held, results) {
+                var taken = Set<String>()
+                let moves = held.map { admin.trashMove(for: $0.url, identity: $0.identity, taken: &taken) }
+                var results = admin.performOpenable(moves.compactMap { $0?.step }, prompt: AdminMover.movePrompt)
+                    .makeIterator()
+                for (item, move) in zip(held, moves) {
                     var entry = item.entry
-                    entry.outcome = AdminMover.trashOutcome(result, destination: item.move.destination)
-                    if result == .done { entry.trashedIdentity = item.move.identity }
+                    if let move {
+                        let result = results.next() ?? nil
+                        entry.outcome = AdminMover.trashOutcome(result, destination: move.destination)
+                        if result == .done { entry.trashedIdentity = move.identity }
+                    }
                     add(entry)
                     onItem(item.url, entry.outcome)
                 }

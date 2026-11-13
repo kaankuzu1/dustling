@@ -547,4 +547,26 @@ struct RunJournalTests {
         let encoded = try JSONEncoder().encode(TrashedIdentity(dev: 1, ino: 2, birthtime: 3.5, owner: 0))
         #expect(try JSONDecoder().decode(TrashedIdentity.self, from: encoded).owner == 0)
     }
+
+    @Test func restoreNeverAsksForAFolderThatIsALink() throws {
+        // Planning refuses a destination folder that is a link (it opens with O_NOFOLLOW), so the
+        // password would only be asked for to be refused: the move's own failure stands.
+        let s = try TestSandbox()
+        let real = try s.directory("Library/Tools-real")
+        let tools = s.root.appending(path: "Library/PrivilegedHelperTools")
+        try FileManager.default.createSymbolicLink(at: tools, withDestinationURL: real)
+        let helper = try s.file("home/.Trash/com.example.helper", bytes: 4)
+        let original = tools.appending(path: "com.example.helper")
+        let run = trashedRecord([(helper, original)])
+        let j = journal(s)
+        try j.save(run)
+        FolderMode.lock(real)
+        defer { FolderMode.unlock(real) }
+        let shell = CannedShell(.finished(output: "R\t0\tok\n"))
+        let out = try j.restore(runID: run.id, admin: try adminMover(shell, s))
+        guard case .failed(_, let reason) = out.first else { Issue.record("expected failed, got \(out)"); return }
+        #expect(!reason.contains("Finder") && !reason.contains("password"))
+        #expect(shell.calls.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: helper.path(percentEncoded: false)))
+    }
 }

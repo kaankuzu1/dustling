@@ -207,12 +207,14 @@ public struct RunJournal: Sendable {
     }
 
     /// Whether only the password can put the item back: the move failed for lack of permission and
-    /// the destination folder exists but isn't writable, or the item is a folder Dustling's user
-    /// can't write (moving it to another folder changes its `..`).
+    /// the destination folder is a real folder (lstat: not a link, which planning would refuse) that
+    /// isn't writable, or the item is a folder Dustling's user can't write (moving it to another
+    /// folder changes its `..`).
     private static func needsPassword(_ error: Error, trashed: String, folder: URL, folderWritable: Bool) -> Bool {
         guard isPermissionError(error) else { return false }
         var info = stat()
-        guard stat(folder.path(percentEncoded: false), &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return false }
+        let folderPath = AdminPath.trimmingTrailingSlashes(folder.path(percentEncoded: false))
+        guard lstat(folderPath, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return false }
         if !folderWritable { return true }
         let item = AdminPath.trimmingTrailingSlashes(trashed)
         guard lstat(item, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return false }
@@ -241,7 +243,8 @@ public struct RunJournal: Sendable {
     /// `putBackNeedsPasswordReason`. The name taken meanwhile: `.conflict`; the item gone:
     /// `.missingFromTrash`; otherwise `.failed` with the script's reason. An entry recorded without
     /// an owner (older records) isn't sent: it fails with the move's reason and
-    /// `putBackInFinderNote`. One whose folders Dustling can't open fails with the move's reason.
+    /// `putBackInFinderNote`. One whose folders Dustling can't open, or whose destination folder is
+    /// missing or a link, fails with the move's reason and is never sent.
     /// The journal is saved once after the password step.
     public func restore(runID: UUID, paths: Set<String>? = nil, admin: AdminMover? = nil) throws -> [RestoreOutcome] {
         guard var run = try all().first(where: { $0.id == runID }) else {

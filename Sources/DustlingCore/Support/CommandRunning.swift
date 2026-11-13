@@ -31,6 +31,14 @@ public struct ProcessCommandRunner: CommandRunning {
     public func run(_ executable: String, _ arguments: [String], environment: [String: String]?) throws
         -> CommandResult
     {
+        try run(executable, arguments, environment: environment, started: { _ in })
+    }
+
+    /// `started` gets the process right after it launched, before its output is read (so a caller
+    /// can stop it from another thread).
+    func run(
+        _ executable: String, _ arguments: [String], environment: [String: String]?, started: (Process) -> Void
+    ) throws -> CommandResult {
         let process = Process()
         process.executableURL = URL(filePath: executable)
         process.arguments = arguments
@@ -41,6 +49,7 @@ public struct ProcessCommandRunner: CommandRunning {
         process.standardError = errPipe
         process.standardInput = FileHandle.nullDevice
         try process.run()
+        started(process)
 
         // Drain both pipes concurrently so a full pipe buffer can never block the child. Dedicated
         // threads, not the global queue: when callers block every Swift concurrency thread in here

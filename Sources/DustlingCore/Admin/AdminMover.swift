@@ -6,7 +6,7 @@ import Foundation
 public struct AdminMover: Sendable {
     private let shell: any AdminShell
     let environment: SystemEnvironment
-    private let planning: AdminPlanning
+    let planning: AdminPlanning
 
     public init(shell: AdminShell, environment: SystemEnvironment) {
         self.init(shell: shell, environment: environment,

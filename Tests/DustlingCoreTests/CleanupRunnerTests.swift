@@ -638,4 +638,25 @@ struct CleanupRunnerTests {
         ])
         #expect(!record.restorable)
     }
+
+    @Test func heldItemGetsItsTrashNameOnlyRightBeforeThePasswordStep() async throws {
+        // A system item held early in the run must not lose its name in the Trash to a later item
+        // of the run that moves the normal way: names are chosen right before the password step.
+        let sandbox = try TestSandbox()
+        try sandbox.directory("home/.Trash")
+        let system = try sandbox.file("Library/Caches/x.log", bytes: 3)
+        let mine = try sandbox.file("home/Library/Caches/x.log", bytes: 3)
+        let folder = system.deletingLastPathComponent()
+        FolderMode.lock(folder)
+        defer { FolderMode.unlock(folder) }
+        let shell = UserShell(beforeRun: { FolderMode.unlock(folder) })
+        let admin = AdminMover(shell: shell, environment: sandbox.environment, planning: try sandbox.adminPlanning())
+        let record = await adminRunner(sandbox, admin: admin).run(
+            [system, mine], kind: .junkClean,
+            allowedRoots: [folder, mine.deletingLastPathComponent()]) { _, _ in }
+        #expect(shell.calls.count == 1)
+        #expect(record.entries.map(\.originalPath) == [path(mine), path(system)])
+        #expect(record.entries.map(\.outcome) == [trashed(sandbox, "x.log"), trashed(sandbox, "x 2.log")])
+        #expect(!FileManager.default.fileExists(atPath: path(system)))
+    }
 }

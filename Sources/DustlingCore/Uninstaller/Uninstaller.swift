@@ -134,8 +134,13 @@ public struct Uninstaller: Sendable {
     /// `uninstall` was given; a record is matched to its job by the app's path (its first entry).
     /// - An app that needs admin moves with the password, and the admin leftovers kept for it move
     ///   in the same script only if it did. Once it moved, its kept leftovers of the user's own move
-    ///   the normal way (launch agents booted out first, as `uninstall` does).
-    /// - An app already in the Trash: each leftover that needs admin moves with the password.
+    ///   the normal way (launch agents booted out first, as `uninstall` does); one of them that turns
+    ///   out to need admin stays so (a later call moves it, see next).
+    /// - An app already in the Trash: each leftover entry that needs admin moves with the password,
+    ///   whether the finder expected it to (`requiresAdmin`) or the normal move found it so.
+    ///
+    /// `jobs` must hold, for each record, the leftovers its `uninstall` was given. A leftover entry
+    /// that matches none is never moved: once its app is in the Trash it needs admin.
     ///
     /// A leftover moves only when `uninstall` would move it: a direct child of a declared location
     /// that the guard allows; otherwise, once its app is in the Trash, it is skipped with that reason
@@ -207,7 +212,10 @@ public struct Uninstaller: Sendable {
                 continue
             }
             for (entryIndex, entry) in record.entries.enumerated().dropFirst() where entry.outcome == waiting {
-                guard let leftover = leftover(of: job, entry), leftover.requiresAdmin else { continue }
+                // Kept for an app that needs admin: only the system's leftovers go into the script
+                // (the user's follow the normal way once the app moved).
+                guard let leftover = leftover(of: job, entry), leftover.requiresAdmin || plan.app == nil
+                else { continue }
                 if let outcome = refusal(leftover.url) {
                     plan.settled.append((entryIndex, outcome))
                 } else if let move = admin.trashMove(for: leftover.url, taken: &taken, dependsOn: plan.app) {
@@ -260,6 +268,11 @@ public struct Uninstaller: Sendable {
                     changed.insert(entryIndex)
                 }
                 appended = moved.unloadFailures
+                // Kept for the app, but in none of `jobs`: never moved here, and no longer kept.
+                for entryIndex in record.entries.indices.dropFirst() where record.entries[entryIndex].outcome == kept {
+                    record.entries[entryIndex].outcome = .needsAdmin
+                    changed.insert(entryIndex)
+                }
                 record.entries += appended
             }
             let changedEntries = changed.sorted().filter { record.entries[$0] != records[plan.record].entries[$0] }

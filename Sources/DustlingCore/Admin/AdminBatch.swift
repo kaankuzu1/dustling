@@ -15,14 +15,28 @@ extension AdminMover {
         let identity: TrashedIdentity
     }
 
-    /// The step that moves `url` to a free name in the Trash (`trashDestination`, never one in
-    /// `taken`, which then gets it), expecting the item that is there now. A plist directly in
-    /// `<system Library>/LaunchDaemons` gets `bootOutDaemon`, so its daemon stops before it moves.
-    /// Nil when the item can't be read or can't be renamed into the Trash (another volume).
+    /// The item at `url` as it is now (lstat, owner included), or nil when it can't be read. What a
+    /// later `trashMove(for:identity:taken:)` expects to move.
+    static func identity(of url: URL) -> TrashedIdentity? {
+        TrashedIdentity.of(path: AdminPath.trimmingTrailingSlashes(url.path(percentEncoded: false)))
+    }
+
+    /// `trashMove(for:identity:taken:dependsOn:)` expecting the item that is there now.
     func trashMove(for url: URL, taken: inout Set<String>, dependsOn: Int? = nil) -> TrashMove? {
-        let path = AdminPath.trimmingTrailingSlashes(url.path(percentEncoded: false))
-        guard let identity = TrashedIdentity.of(path: path), let expected = identity.itemIdentity,
-              let destination = trashDestination(for: url, taken: taken)
+        guard let identity = Self.identity(of: url) else { return nil }
+        return trashMove(for: url, identity: identity, taken: &taken, dependsOn: dependsOn)
+    }
+
+    /// The step that moves `url`, expected to be `identity`, to a free name in the Trash
+    /// (`trashDestination`, never one in `taken`, which then gets it). Call it right before
+    /// `performOpenable`: a name is free only until something else moves to the Trash. A plist
+    /// directly in `<system Library>/LaunchDaemons` gets `bootOutDaemon`, so its daemon stops before
+    /// it moves. Nil without an owner in `identity`, or when the item can't be renamed into the
+    /// Trash (gone, or on another volume).
+    func trashMove(
+        for url: URL, identity: TrashedIdentity, taken: inout Set<String>, dependsOn: Int? = nil
+    ) -> TrashMove? {
+        guard let expected = identity.itemIdentity, let destination = trashDestination(for: url, taken: taken)
         else { return nil }
         taken.insert(destination.path(percentEncoded: false))
         let folder = AdminPath.trimmingTrailingSlashes(url.deletingLastPathComponent().path(percentEncoded: false))
@@ -55,6 +69,13 @@ extension AdminMover {
             }
             return code != EPERM && code != EACCES
         }
+    }
+
+    /// Whether `identity` is on the volume of the bridge root's script passes every item through
+    /// (`/Library`'s). Planning refuses any other item as unsafe, with advice that fits a move into
+    /// the Trash, so callers whose item is elsewhere (Empty Trash on an external disk) leave it out.
+    func isOnBridgeVolume(_ identity: ItemIdentity) -> Bool {
+        ItemIdentity.of(path: planning.bridgeParent, directoryOnly: true)?.device == identity.device
     }
 
     /// `perform` for one user action, leaving out what the password can't help with yet: a step

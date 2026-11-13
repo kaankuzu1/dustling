@@ -202,15 +202,18 @@ public struct TrashInspector: Sendable {
     /// writes what happened into their entries. Only `<location>/<name>` of a Trash location this
     /// inspector finds now (looked up again, so every folder on the way is still a real directory)
     /// is ever in the script, and only the item seen after the failed delete (`identity`, the step's
-    /// `expectedSource`). Any other child, one whose identity couldn't be read, and one in a folder
-    /// Dustling can't open stays `.needsAdmin`. Deleted: `.deleted`; the password box closed:
-    /// `.needsAdmin`; otherwise `.failed` with the script's reason. Without `admin` nothing changes.
+    /// `expectedSource`). Any other child, one whose identity couldn't be read, one on another volume
+    /// than the script's bridge (an external disk's Trash: root only renames, so it would be refused)
+    /// and one in a folder Dustling can't open stays `.needsAdmin`, without a password box for it.
+    /// Deleted: `.deleted`; the password box closed: `.needsAdmin`; otherwise `.failed` with the
+    /// script's reason. Without `admin` nothing changes.
     func deleteWithPassword(_ children: [SystemChild], into entries: inout [JournalEntry]) {
         guard let admin, !children.isEmpty else { return }
         func key(_ url: URL) -> String { AdminPath.trimmingTrailingSlashes(url.path(percentEncoded: false)) }
         let locations = Set(trashLocations().map(key))
         let sent = children.filter { child in
-            entries.indices.contains(child.entry) && child.identity != nil && locations.contains(key(child.location))
+            guard let identity = child.identity, admin.isOnBridgeVolume(identity) else { return false }
+            return entries.indices.contains(child.entry) && locations.contains(key(child.location))
                 && !child.name.isEmpty && !child.name.contains("/") && child.name != "." && child.name != ".."
         }
         let steps = sent.map {

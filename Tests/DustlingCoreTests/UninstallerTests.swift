@@ -631,4 +631,46 @@ struct UninstallerTests {
         #expect(records == [first])
         #expect(FileManager.default.fileExists(atPath: path(appURL)))
     }
+
+    @Test func userLeftoverThatTurnsOutToNeedAdminMovesWithPassword() async throws {
+        // The finder thought the cache was the user's, but its folder can't be written: once the app
+        // is in the Trash, every leftover that needs admin is a step.
+        let sandbox = try TestSandbox()
+        try sandbox.directory("home/.Trash")
+        let appURL = try sandbox.app("home/Applications/Foo.app", bundleID: "com.example.foo")
+        let cache = try sandbox.file("home/Library/Caches/com.example.foo/c.bin", bytes: 10).deletingLastPathComponent()
+        FolderMode.lock(cache)
+        defer { FolderMode.unlock(cache) }
+        let shell = UserShell(beforeRun: { FolderMode.unlock(cache) })
+        let uninstaller = adminUninstaller(sandbox, admin: try adminMover(shell, sandbox))
+        let app = installedApp(appURL)
+        let leftovers = [leftover(cache, kind: .caches, bytes: 10)]
+        let first = try await uninstaller.uninstall(app, leftovers: leftovers) { _, _ in }
+        #expect(first.entries.map(\.outcome) == [trashed(sandbox, "Foo.app"), .needsAdmin])
+        let records = await uninstaller.moveSystemItems([first], jobs: [UninstallJob(app: app, leftovers: leftovers)])
+        #expect(shell.calls.count == 1)
+        #expect(records.first?.entries.map(\.outcome) == [trashed(sandbox, "Foo.app"), trashed(sandbox, "com.example.foo")])
+        #expect(!FileManager.default.fileExists(atPath: path(cache)))
+    }
+
+    @Test func keptLeftoverMissingFromJobsNeedsAdminOnceTheAppMoved() async throws {
+        let sandbox = try TestSandbox()
+        try sandbox.directory("home/.Trash")
+        let appURL = try sandbox.app("Applications/Foo.app", bundleID: "com.example.foo")
+        let cache = try sandbox.file("home/Library/Caches/com.example.foo/c.bin", bytes: 10).deletingLastPathComponent()
+        let apps = sandbox.root.appending(path: "Applications")
+        FolderMode.lock(apps)
+        defer { FolderMode.unlock(apps) }
+        let shell = UserShell(beforeRun: { FolderMode.unlock(apps) })
+        let uninstaller = adminUninstaller(sandbox, admin: try adminMover(shell, sandbox))
+        let app = installedApp(appURL)
+        let first = try await uninstaller.uninstall(app, leftovers: [leftover(cache, kind: .caches)]) { _, _ in }
+        #expect(first.entries.map(\.outcome) == [.needsAdmin, Self.kept])
+        // The caller left the cache out of the jobs: it is never moved, and no longer kept for the app.
+        let records = await uninstaller.moveSystemItems([first], jobs: [UninstallJob(app: app, leftovers: [])])
+        #expect(records.first?.entries.map(\.outcome) == [trashed(sandbox, "Foo.app"), .needsAdmin])
+        #expect(FileManager.default.fileExists(atPath: path(cache)))
+        #expect(try RunJournal(directory: sandbox.environment.historyDirectory).all().first?.entries
+            == records.first?.entries)
+    }
 }

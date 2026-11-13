@@ -22,6 +22,8 @@ public protocol AdminShell: Sendable {
 public struct OsascriptAdminShell: AdminShell {
     private let privileged: Bool
     private let commands = ProcessCommandRunner()
+    /// Shared by every copy of this shell (an `AdminMover` holds one).
+    private let children = AdminChildren()
 
     /// The whole environment osascript (and so the script's shell) gets. Nothing is inherited from
     /// Dustling: /bin/sh is bash, which runs code from variables like `BASH_FUNC_name%%`,
@@ -39,14 +41,41 @@ public struct OsascriptAdminShell: AdminShell {
     }
 
     public func run(script: String, prompt: String) -> AdminShellResult {
+        guard !children.isStopped else { return .failed(reason: Self.stoppedReason) }
         let source = Self.appleScript(script: script, prompt: prompt, privileged: privileged)
+        var launched: Process?
+        defer { if let launched { children.remove(launched) } }
         do {
-            return Self.result(from: try commands.run(
-                "/usr/bin/osascript", ["-e", source], environment: Self.childEnvironment))
+            let command = try commands.run(
+                "/usr/bin/osascript", ["-e", source], environment: Self.childEnvironment,
+                started: { process in
+                    launched = process
+                    children.add(process)
+                })
+            // Stopped by `terminateRunning`, unless it had finished just before.
+            if command.status != 0, children.isStopped { return .failed(reason: Self.stoppedReason) }
+            return Self.result(from: command)
         } catch {
             return Self.result(from: error)
         }
     }
+
+    /// Why a password step ended (or never started) after `terminateRunning`.
+    public static let stoppedReason = "Dustling stopped before the password step finished."
+
+    /// Ends this shell's work for good: every `osascript` it started that is still running is
+    /// terminated (SIGTERM; a password box it shows goes with it, so an answer given after Dustling
+    /// quit can't move anything), and every later `run` returns `.failed(reason: stoppedReason)`
+    /// without starting one. A step that ran this way is `.failed`, not `.cancelled`: the box may
+    /// already have been answered and the script running as root, so nothing can say that nothing
+    /// ran. Call it when the app terminates. Safe from any thread; copies of this shell share it.
+    public func terminateRunning() {
+        children.stopAll()
+    }
+
+    /// How many `osascript` children of this shell are running, and how many it ever started (tests).
+    var runningCount: Int { children.count }
+    var startedCount: Int { children.started }
 
     /// The script did not fit in one command line (the system's argument size limit).
     public static let tooManyItemsReason = "Too many items for one password request. Try again with fewer items."
@@ -103,4 +132,39 @@ public struct OsascriptAdminShell: AdminShell {
     }
 
     private static let argumentListTooLong = "Argument list too long"
+}
+
+/// The `osascript` processes an `OsascriptAdminShell` started and hasn't seen end, and whether it was
+/// stopped. A process registered after `stopAll` (it launched while stopping) is terminated at once.
+final class AdminChildren: @unchecked Sendable {
+    private let lock = NSLock()
+    private var running: [ObjectIdentifier: Process] = [:]
+    private var stopped = false
+    private var launched = 0
+
+    var isStopped: Bool { lock.withLock { stopped } }
+    var count: Int { lock.withLock { running.count } }
+    var started: Int { lock.withLock { launched } }
+
+    func add(_ process: Process) {
+        lock.withLock {
+            launched += 1
+            if stopped {
+                process.terminate()
+            } else {
+                running[ObjectIdentifier(process)] = process
+            }
+        }
+    }
+
+    func remove(_ process: Process) {
+        _ = lock.withLock { running.removeValue(forKey: ObjectIdentifier(process)) }
+    }
+
+    func stopAll() {
+        lock.withLock {
+            stopped = true
+            for process in running.values where process.isRunning { process.terminate() }
+        }
+    }
 }

@@ -1386,6 +1386,41 @@ struct AdminScriptTests {
         #expect(OsascriptAdminShell.childEnvironment == ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
     }
 
+    @Test func terminateRunningStopsTheOsascriptChildAndEveryLaterRun() throws {
+        // Without privileges (no password box): the script sleeps where the box would wait.
+        let shell = OsascriptAdminShell(privileged: false)
+        final class Outcome: @unchecked Sendable {
+            let done = DispatchSemaphore(value: 0)
+            var result: AdminShellResult?
+        }
+        let outcome = Outcome()
+        let started = Date()
+        Thread.detachNewThread {
+            outcome.result = shell.run(script: "/bin/sleep 20; echo done", prompt: "x")
+            outcome.done.signal()
+        }
+        let deadline = Date().addingTimeInterval(10)
+        while shell.runningCount == 0, Date() < deadline { usleep(10_000) }
+        #expect(shell.runningCount == 1)
+        shell.terminateRunning()
+        #expect(outcome.done.wait(timeout: .now() + 15) == .success)
+        #expect(outcome.result == .failed(reason: OsascriptAdminShell.stoppedReason))
+        #expect(Date().timeIntervalSince(started) < 15)
+        #expect(shell.runningCount == 0)
+        // Nothing starts afterwards (not even for a moment: with privileges a box would flash), on
+        // this shell or a copy of it…
+        let copy = shell
+        #expect(copy.run(script: "echo late", prompt: "x") == .failed(reason: OsascriptAdminShell.stoppedReason))
+        #expect(shell.runningCount == 0)
+        #expect(shell.startedCount == 1)
+        #expect(OsascriptAdminShell.stoppedReason == "Dustling stopped before the password step finished.")
+        // …while another shell is unaffected.
+        guard case .finished = OsascriptAdminShell(privileged: false).run(script: "echo ok", prompt: "x") else {
+            Issue.record("another shell must still run")
+            return
+        }
+    }
+
     @Test func processRunnerCanReplaceTheEnvironment() throws {
         let poisoned = [
             "PATH": "/usr/bin:/bin",
