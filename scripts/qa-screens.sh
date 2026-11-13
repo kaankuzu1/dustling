@@ -38,8 +38,12 @@ trap 'rm -rf "$WORK"; defaults delete $QA_ID >/dev/null 2>&1 || true' EXIT
 
 echo "Building the QA copy…"
 (cd "$ROOT/App" && xcodegen generate --quiet)
+# Whole-module, like Release. An incremental Debug build can compile a file against the concrete type
+# behind another file's `some View` (e.g. `skeleton(_:index:)`), then not recompile it when that
+# function's body changes; the stale object reads the new layout wrong and the QA copy crashes.
 xcodebuild -project "$ROOT/App/Dustling.xcodeproj" -scheme Dustling -configuration Debug \
-  -derivedDataPath "$BUILD" PRODUCT_BUNDLE_IDENTIFIER=$QA_ID build -quiet > "$OUT/xcodebuild.log" 2>&1 \
+  -derivedDataPath "$BUILD" PRODUCT_BUNDLE_IDENTIFIER=$QA_ID SWIFT_COMPILATION_MODE=wholemodule \
+  build -quiet > "$OUT/xcodebuild.log" 2>&1 \
   || { tail -30 "$OUT/xcodebuild.log"; exit 1; }
 APP=$BUILD/Build/Products/Debug/Dustling.app
 
