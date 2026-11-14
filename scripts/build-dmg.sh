@@ -127,8 +127,18 @@ echo "    version $BUILT_VERSION, build $BUILT_NUMBER, architectures: $ARCHS_BUI
 STAGE="$(mktemp -d -t dustling-dmg)"
 MOUNT=""
 KEYCHAIN=""
+# The user's keychain search list before the signing keychain was added to it (CI only), so it
+# can be put back exactly.
+SAVED_SEARCH_LIST=()
+SEARCH_LIST_CHANGED=0
+restore_search_list() {
+  [[ $SEARCH_LIST_CHANGED -eq 1 ]] || return 0
+  security list-keychains -d user -s ${SAVED_SEARCH_LIST[@]+"${SAVED_SEARCH_LIST[@]}"} 2>/dev/null || true
+  SEARCH_LIST_CHANGED=0
+}
 cleanup() {
   [[ -n "$MOUNT" ]] && hdiutil detach -quiet "$MOUNT" 2>/dev/null || true
+  restore_search_list
   [[ -n "$KEYCHAIN" ]] && security delete-keychain "$KEYCHAIN" 2>/dev/null || true
   rm -rf "$STAGE"
 }
@@ -158,8 +168,10 @@ if [[ -n "$P12_FILE" ]]; then
   PINNED="$(printf '%s' "$PINNED" | tr 'A-F' 'a-f')"
   [[ "$PINNED" =~ ^[0-9a-f]{40}$ ]] || fail "the pinned certificate SHA-1 isn't 40 hex digits"
 
-  # A keychain of its own, in a temporary folder and never on the search list: the key doesn't
-  # touch the login keychain, and the cleanup trap deletes it.
+  # A keychain of its own, in a temporary folder: the key doesn't touch the login keychain, and
+  # the cleanup trap deletes it. On a Mac you use it stays off the search list. On CI it has to be
+  # on it: `codesign --keychain` only narrows the search to that keychain, and on macOS 26 it finds
+  # no identity in a keychain that isn't on the list ("no identity found").
   KEYCHAIN="$STAGE/signing.keychain-db"
   KEYCHAIN_PASSWORD="$(uuidgen)"
   security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -169,6 +181,16 @@ if [[ -n "$P12_FILE" ]]; then
     -T /usr/bin/codesign > /dev/null 2>&1 || fail "couldn't import the signing key (wrong password?)"
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" \
     "$KEYCHAIN" > /dev/null 2>&1 || fail "couldn't let codesign use the signing key"
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    while IFS= read -r entry; do
+      entry="${entry#"${entry%%[![:space:]]*}"}"   # leading spaces
+      entry="${entry#\"}"; entry="${entry%\"}"
+      [[ -n "$entry" ]] && SAVED_SEARCH_LIST+=("$entry")
+    done < <(security list-keychains -d user)
+    security list-keychains -d user -s "$KEYCHAIN" ${SAVED_SEARCH_LIST[@]+"${SAVED_SEARCH_LIST[@]}"} \
+      || fail "couldn't put the signing keychain on the search list"
+    SEARCH_LIST_CHANGED=1
+  fi
 
   # Not `find-identity -v`: a self-signed identity is listed as not trusted, which is fine here.
   # The same identity can be listed twice (once per keychain search), so dedupe by hash.
@@ -190,6 +212,7 @@ if [[ -n "$P12_FILE" ]]; then
     || fail "the app's designated requirement is not the expected one. Got: $REQUIREMENT"
   SIGNATURE="Dustling release certificate ($PINNED)"
   # The key isn't needed any more; don't leave it around for the rest of the run.
+  restore_search_list
   security delete-keychain "$KEYCHAIN" 2>/dev/null || true
   KEYCHAIN=""
   [[ "$P12_FILE" != "$STAGE/signing.p12" ]] || rm -f "$P12_FILE"
