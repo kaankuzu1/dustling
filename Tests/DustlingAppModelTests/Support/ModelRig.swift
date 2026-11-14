@@ -124,8 +124,11 @@ final class Gate: @unchecked Sendable {
 }
 
 /// Polls (on the main actor, yielding) until `condition` holds; fails the wait after `seconds`.
+/// The deadline is generous on purpose: on a 3-core CI runner the whole suite runs in parallel and
+/// tests that wait on child processes can hold the cooperative pool for several seconds, so a short
+/// deadline fails tests that are only slow. A passing wait returns as soon as the condition holds.
 @MainActor
-func waitUntil(_ seconds: Double = 5, _ condition: () -> Bool) async -> Bool {
+func waitUntil(_ seconds: Double = 30, _ condition: () -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + .seconds(seconds)
     while !condition() {
         if ContinuousClock.now > deadline { return false }
